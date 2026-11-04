@@ -6,7 +6,7 @@ use super::*;
 
 #[test]
 fn quoted_and_bare_entries_are_read() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.id\" = \"uuid::Uuid\"\n\
          users.created_at = \"chrono::NaiveDateTime\"\n",
@@ -26,11 +26,11 @@ fn quoted_and_bare_entries_are_read() {
 
 #[test]
 fn the_legacy_schema_key_stays_an_alias() {
-    let config = CodegenConfig::parse("schema = \"app\"\n").expect("the schema key parses");
+    let config = ProjectConfig::parse("schema = \"app\"\n").expect("the schema key parses");
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(config.schema(), Some("app"));
 
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "schema = \"  app  \"\n\
          [codegen]\n\
          domain_types = true\n",
@@ -43,7 +43,7 @@ fn the_legacy_schema_key_stays_an_alias() {
 #[test]
 fn the_primary_schema_key_names_the_described_schema() {
     let config =
-        CodegenConfig::parse("primary_schema = \"  app  \"\n").expect("the key parses");
+        ProjectConfig::parse("primary_schema = \"  app  \"\n").expect("the key parses");
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(
         config.schema(),
@@ -54,7 +54,7 @@ fn the_primary_schema_key_names_the_described_schema() {
 
 #[test]
 fn secondary_schemas_are_read_in_document_order() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\", \" billing \"]\n",
     )
@@ -66,7 +66,7 @@ fn secondary_schemas_are_read_in_document_order() {
 
 #[test]
 fn declaring_schema_beside_primary_schema_is_refused() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schema = \"legacy\"\n",
     )
@@ -84,7 +84,7 @@ fn declaring_schema_beside_primary_schema_is_refused() {
         "the canonical key keeps its own position: {message}"
     );
 
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "schema = \"legacy\"\n\
          primary_schema = \"app\"\n",
     )
@@ -103,13 +103,13 @@ fn declaring_schema_beside_primary_schema_is_refused() {
 #[test]
 fn the_schema_selection_is_absent_by_default() {
     assert_eq!(
-        CodegenConfig::parse("")
+        ProjectConfig::parse("")
             .expect("an empty file is valid")
             .primary_schema(),
         None
     );
 
-    let config = CodegenConfig::parse("[codegen.type_overrides]\n")
+    let config = ProjectConfig::parse("[codegen.type_overrides]\n")
         .expect("an empty overrides table is valid");
     assert_eq!(config.primary_schema(), None);
     assert!(config.schemas().is_empty());
@@ -117,7 +117,7 @@ fn the_schema_selection_is_absent_by_default() {
 
 #[test]
 fn a_blank_or_non_string_schema_is_rejected() {
-    let blank = CodegenConfig::parse("schema = \"   \"\n")
+    let blank = ProjectConfig::parse("schema = \"   \"\n")
         .expect_err("a blank schema name selects nothing");
     assert!(
         matches!(&blank, ConfigError::Syntax { line: 1, .. }),
@@ -126,7 +126,7 @@ fn a_blank_or_non_string_schema_is_rejected() {
     assert!(blank.to_string().contains("schema"), "{blank}");
 
     let numeric =
-        CodegenConfig::parse("schema = 42\n").expect_err("a numeric schema name is rejected");
+        ProjectConfig::parse("schema = 42\n").expect_err("a numeric schema name is rejected");
     assert!(
         matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
         "{numeric}"
@@ -136,7 +136,7 @@ fn a_blank_or_non_string_schema_is_rejected() {
 
 #[test]
 fn a_blank_or_non_string_primary_schema_is_rejected() {
-    let blank = CodegenConfig::parse("primary_schema = \"   \"\n")
+    let blank = ProjectConfig::parse("primary_schema = \"   \"\n")
         .expect_err("a blank primary schema name selects nothing");
     assert!(
         matches!(&blank, ConfigError::Syntax { line: 1, .. }),
@@ -144,7 +144,7 @@ fn a_blank_or_non_string_primary_schema_is_rejected() {
     );
     assert!(blank.to_string().contains("primary_schema"), "{blank}");
 
-    let numeric = CodegenConfig::parse("primary_schema = 42\n")
+    let numeric = ProjectConfig::parse("primary_schema = 42\n")
         .expect_err("a numeric primary schema name is rejected");
     assert!(
         matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
@@ -155,7 +155,7 @@ fn a_blank_or_non_string_primary_schema_is_rejected() {
 
 #[test]
 fn schemas_must_be_an_array_of_names() {
-    let scalar = CodegenConfig::parse("schemas = \"auth\"\n")
+    let scalar = ProjectConfig::parse("schemas = \"auth\"\n")
         .expect_err("a bare string is not a schema list");
     assert!(
         matches!(&scalar, ConfigError::Syntax { line: 1, .. }),
@@ -163,7 +163,7 @@ fn schemas_must_be_an_array_of_names() {
     );
     assert!(scalar.to_string().contains("schemas"), "{scalar}");
 
-    let numeric = CodegenConfig::parse("schemas = [\"auth\", 42]\n")
+    let numeric = ProjectConfig::parse("schemas = [\"auth\", 42]\n")
         .expect_err("a non-string entry is rejected");
     assert!(
         matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
@@ -174,7 +174,7 @@ fn schemas_must_be_an_array_of_names() {
         "the entry is named by its index: {numeric}"
     );
 
-    let blank = CodegenConfig::parse("schemas = [\"auth\", \"  \"]\n")
+    let blank = ProjectConfig::parse("schemas = [\"auth\", \"  \"]\n")
         .expect_err("a blank entry names nothing");
     assert!(
         blank.to_string().contains("schemas[1]"),
@@ -184,7 +184,7 @@ fn schemas_must_be_an_array_of_names() {
 
 #[test]
 fn schemas_with_duplicates_are_rejected() {
-    let err = CodegenConfig::parse("schemas = [\"auth\", \" auth \"]\n")
+    let err = ProjectConfig::parse("schemas = [\"auth\", \" auth \"]\n")
         .expect_err("a repeated schema is refused");
     assert!(matches!(&err, ConfigError::Syntax { line: 1, .. }), "{err}");
     assert!(err.to_string().contains("duplicate schema `auth`"), "{err}");
@@ -203,7 +203,7 @@ fn a_schema_name_containing_a_dot_is_refused() {
             "billing.v2",
         ),
     ] {
-        let err = CodegenConfig::parse(contents)
+        let err = ProjectConfig::parse(contents)
             .expect_err("no override can ever address a schema name carrying a dot");
 
         assert!(
@@ -244,7 +244,7 @@ fn schema_entries_are_reported_at_their_own_position() {
             "duplicate schema `auth` in `schemas`",
         ),
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("the entry is rejected");
+        let err = ProjectConfig::parse(contents).expect_err("the entry is rejected");
 
         assert!(
             matches!(&err, ConfigError::Syntax { line: 3, column: 5, .. }),
@@ -260,7 +260,7 @@ fn schema_entries_are_reported_at_their_own_position() {
 
 #[test]
 fn schemas_must_not_repeat_the_primary_schema() {
-    let declared = CodegenConfig::parse(
+    let declared = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\", \"app\"]\n",
     )
@@ -271,14 +271,14 @@ fn schemas_must_not_repeat_the_primary_schema() {
     );
     assert!(declared.to_string().contains("`app`"), "{declared}");
 
-    let aliased = CodegenConfig::parse(
+    let aliased = ProjectConfig::parse(
         "schema = \"app\"\n\
          schemas = [\"app\"]\n",
     )
     .expect_err("the aliased primary schema is not a secondary one either");
     assert!(aliased.to_string().contains("`app`"), "{aliased}");
 
-    let defaulted = CodegenConfig::parse("schemas = [\"public\"]\n")
+    let defaulted = ProjectConfig::parse("schemas = [\"public\"]\n")
         .expect_err("the public default is the primary schema when none is named");
     assert!(
         defaulted.to_string().contains("public"),
@@ -287,7 +287,7 @@ fn schemas_must_not_repeat_the_primary_schema() {
 
     // `public` becomes an ordinary secondary schema once the project names
     // another primary one.
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"public\"]\n",
     )
@@ -297,7 +297,7 @@ fn schemas_must_not_repeat_the_primary_schema() {
 
 #[test]
 fn schema_qualified_override_paths_are_read() {
-    let quoted = CodegenConfig::parse(
+    let quoted = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
@@ -312,7 +312,7 @@ fn schema_qualified_override_paths_are_read() {
         Some("uuid::Uuid")
     );
 
-    let dotted = CodegenConfig::parse(
+    let dotted = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
          auth.users.id = \"uuid::Uuid\"\n",
@@ -326,7 +326,7 @@ fn schema_qualified_override_paths_are_read() {
         Some("uuid::Uuid")
     );
 
-    let nested = CodegenConfig::parse(
+    let nested = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides.auth.users]\n\
          id = \"uuid::Uuid\"\n",
@@ -340,7 +340,7 @@ fn schema_qualified_override_paths_are_read() {
         Some("uuid::Uuid")
     );
 
-    let two_levels = CodegenConfig::parse(
+    let two_levels = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides.auth]\n\
          users.id = \"uuid::Uuid\"\n",
@@ -357,7 +357,7 @@ fn schema_qualified_override_paths_are_read() {
 
 #[test]
 fn a_three_segment_override_must_name_a_declared_schema() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
@@ -378,7 +378,7 @@ fn a_three_segment_override_must_name_a_declared_schema() {
 
 #[test]
 fn a_three_segment_override_needs_a_declared_secondary_schema() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"auth.users.id\" = \"uuid::Uuid\"\n",
     )
@@ -390,7 +390,7 @@ fn a_three_segment_override_needs_a_declared_secondary_schema() {
 
 #[test]
 fn a_three_segment_override_naming_the_primary_schema_is_refused() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          [codegen.type_overrides]\n\
          \"app.users.id\" = \"uuid::Uuid\"\n",
@@ -409,7 +409,7 @@ fn a_three_segment_override_naming_the_primary_schema_is_refused() {
 
 #[test]
 fn the_default_primary_schema_is_refused_in_a_three_segment_override() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"public.users.id\" = \"uuid::Uuid\"\n",
     )
@@ -422,7 +422,7 @@ fn the_default_primary_schema_is_refused_in_a_three_segment_override() {
 fn the_schema_cross_check_considers_the_whole_document() {
     // A dotted root key declares the override before the `schemas` key that
     // authorises it, so the check cannot run while the overrides are read.
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "codegen.type_overrides.auth.users.id = \"uuid::Uuid\"\n\
          schemas = [\"auth\"]\n",
     )
@@ -439,7 +439,7 @@ fn the_schema_cross_check_considers_the_whole_document() {
 
 #[test]
 fn a_secondary_schema_override_is_answered_from_the_column_parts() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
          users.id = \"UsersId\"\n\
@@ -461,7 +461,7 @@ fn a_secondary_schema_override_is_answered_from_the_column_parts() {
 
 #[test]
 fn the_flat_rendering_and_the_parts_name_the_same_overrides() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
          users.id = \"uuid::Uuid\"\n\
@@ -501,14 +501,14 @@ fn the_flat_rendering_and_the_parts_name_the_same_overrides() {
 
 #[test]
 fn override_paths_carry_two_or_three_segments() {
-    let bare = CodegenConfig::parse(
+    let bare = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          id = \"uuid::Uuid\"\n",
     )
     .expect_err("a bare column names no table");
     assert!(bare.to_string().contains("table.column"), "{bare}");
 
-    let deep = CodegenConfig::parse(
+    let deep = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"a.b.c.d\" = \"uuid::Uuid\"\n",
     )
@@ -521,7 +521,7 @@ fn override_path_segments_must_be_non_empty() {
     for spelling in ["\"users.\"", "\".id\"", "\"auth..id\""] {
         let contents = format!("[codegen.type_overrides]\n{spelling} = \"uuid::Uuid\"\n");
         let err =
-            CodegenConfig::parse(&contents).expect_err("an empty segment names nothing");
+            ProjectConfig::parse(&contents).expect_err("an empty segment names nothing");
 
         assert!(
             matches!(&err, ConfigError::Syntax { line: 2, .. }),
@@ -541,7 +541,7 @@ fn an_empty_quoted_key_contributes_an_empty_segment() {
         "[codegen.type_overrides]\n\"\" = { users.id = \"uuid::Uuid\" }\n",
         "[codegen.type_overrides.users]\n\"\" = \"uuid::Uuid\"\n",
     ] {
-        let err = CodegenConfig::parse(contents)
+        let err = ProjectConfig::parse(contents)
             .expect_err("an empty key names an empty path segment");
 
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
@@ -574,7 +574,7 @@ fn vacuous_override_tables_are_rejected() {
             "codegen.type_overrides.auth",
         ),
     ] {
-        let err = CodegenConfig::parse(contents)
+        let err = ProjectConfig::parse(contents)
             .expect_err("a table that declares no column records no override");
 
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
@@ -590,11 +590,11 @@ fn vacuous_override_tables_are_rejected() {
         );
     }
 
-    let root = CodegenConfig::parse("[codegen.type_overrides]\n")
+    let root = ProjectConfig::parse("[codegen.type_overrides]\n")
         .expect("a root table without overrides declares nothing and is accepted");
     assert!(root.type_overrides().is_empty());
 
-    let inline = CodegenConfig::parse(
+    let inline = ProjectConfig::parse(
         "schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
          auth = { users = { id = \"uuid::Uuid\" } }\n",
@@ -610,7 +610,7 @@ fn vacuous_override_tables_are_rejected() {
 /// the operator sees the declaration that has to change.
 #[test]
 fn a_vacuous_override_table_is_reported_at_the_key_that_opens_it() {
-    let err = CodegenConfig::parse("[codegen.type_overrides]\nusers = {}\n")
+    let err = ProjectConfig::parse("[codegen.type_overrides]\nusers = {}\n")
         .expect_err("an inline table that declares no column records no override");
 
     assert!(
@@ -625,7 +625,7 @@ fn a_vacuous_override_table_is_reported_at_the_key_that_opens_it() {
 
 #[test]
 fn nested_three_segment_entries_are_reported_at_their_own_line() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# `auth.users.id` is generated from the database\n\
          [codegen.type_overrides.auth.users]\n\
          id = \"\"\n",
@@ -638,7 +638,7 @@ fn nested_three_segment_entries_are_reported_at_their_own_line() {
 
 #[test]
 fn quoted_and_nested_spellings_of_one_path_collide() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"auth.users.id\" = \"uuid::Uuid\"\n\
          \n\
@@ -656,7 +656,7 @@ fn quoted_and_nested_spellings_of_one_path_collide() {
 
 #[test]
 fn whitespace_around_override_segments_is_trimmed() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \" users.id \" = \"uuid::Uuid\"\n",
     )
@@ -670,7 +670,7 @@ fn whitespace_around_override_segments_is_trimmed() {
 
 #[test]
 fn declared_override_rust_types_are_stored_trimmed() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.id\" = \"  uuid::Uuid  \"\n\
          \"users.created_at\" = '''\n\
@@ -712,7 +712,7 @@ fn unknown_sections_are_rejected() {
         "workspace = { members = [\"a\", \"b\"] }\n",
         "[[workspace]]\nmembers = [\"a\"]\n",
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("unknown sections are rejected");
+        let err = ProjectConfig::parse(contents).expect_err("unknown sections are rejected");
 
         let message = err.to_string();
         assert!(message.contains("`workspace`"), "{message}");
@@ -730,7 +730,7 @@ fn unknown_root_scalar_keys_are_reported_as_keys() {
         ("roots = \"rurqe\"\n", "roots"),
         ("domains = true\n", "domains"),
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("an unknown root key is rejected");
+        let err = ProjectConfig::parse(contents).expect_err("an unknown root key is rejected");
 
         assert!(
             matches!(&err, ConfigError::Syntax { line: 1, column: 1, .. }),
@@ -752,35 +752,35 @@ fn unknown_root_scalar_keys_are_reported_as_keys() {
 
 #[test]
 fn unknown_codegen_keys_are_rejected() {
-    let err = CodegenConfig::parse("[codegen]\ndomain_type = true\n")
+    let err = ProjectConfig::parse("[codegen]\ndomain_type = true\n")
         .expect_err("misspelled key rejected");
     assert!(err.to_string().contains("domain_type"));
 }
 
 #[test]
 fn domain_types_in_codegen_section() {
-    let config = CodegenConfig::parse("[codegen]\ndomain_types = true\n")
+    let config = ProjectConfig::parse("[codegen]\ndomain_types = true\n")
         .expect("codegen section parsed");
     assert!(config.domain_types());
 
-    let config_false = CodegenConfig::parse("[codegen]\ndomain_types = false\n")
+    let config_false = ProjectConfig::parse("[codegen]\ndomain_types = false\n")
         .expect("codegen section parsed");
     assert!(!config_false.domain_types());
 }
 
 #[test]
 fn domain_types_are_off_by_default() {
-    let config = CodegenConfig::parse("").expect("an empty file is valid");
+    let config = ProjectConfig::parse("").expect("an empty file is valid");
     assert!(!config.domain_types());
 
-    let config = CodegenConfig::parse("[codegen.type_overrides]\n")
+    let config = ProjectConfig::parse("[codegen.type_overrides]\n")
         .expect("an empty overrides table is valid");
     assert!(!config.domain_types());
 }
 
 #[test]
 fn invalid_domain_types_is_rejected() {
-    let err = CodegenConfig::parse("[codegen]\ndomain_types = \"not_a_bool\"\n")
+    let err = ProjectConfig::parse("[codegen]\ndomain_types = \"not_a_bool\"\n")
         .expect_err("non-boolean rejected");
     assert!(
         err.to_string().contains("domain_types") || err.to_string().contains("invalid type")
@@ -790,22 +790,22 @@ fn invalid_domain_types_is_rejected() {
 #[test]
 fn malformed_entries_are_reported_with_their_line() {
     let missing_separator =
-        CodegenConfig::parse("[codegen.type_overrides]\n\"users.id\" \"uuid::Uuid\"\n")
+        ProjectConfig::parse("[codegen.type_overrides]\n\"users.id\" \"uuid::Uuid\"\n")
             .expect_err("a missing `=` is rejected");
     assert!(matches!(
         missing_separator,
         ConfigError::Syntax { line: 2, .. }
     ));
 
-    let empty_type = CodegenConfig::parse("[codegen.type_overrides]\n\"users.id\" = \"\"\n")
+    let empty_type = ProjectConfig::parse("[codegen.type_overrides]\n\"users.id\" = \"\"\n")
         .expect_err("an empty type is rejected");
     assert!(empty_type.to_string().contains("cannot be empty"));
 
-    let unqualified = CodegenConfig::parse("[codegen.type_overrides]\nid = \"uuid::Uuid\"\n")
+    let unqualified = ProjectConfig::parse("[codegen.type_overrides]\nid = \"uuid::Uuid\"\n")
         .expect_err("an unqualified path is rejected");
     assert!(unqualified.to_string().contains("table.column"));
 
-    let duplicate = CodegenConfig::parse(
+    let duplicate = ProjectConfig::parse(
         "[codegen.type_overrides]\n\"users.id\" = \"a::Type\"\n\"users.id\" = \"b::Type\"\n",
     )
     .expect_err("repeated keys are rejected");
@@ -814,7 +814,7 @@ fn malformed_entries_are_reported_with_their_line() {
             || duplicate.to_string().contains("more than once")
     );
 
-    let bad_section = CodegenConfig::parse("[codegen.type_overrides\n")
+    let bad_section = ProjectConfig::parse("[codegen.type_overrides\n")
         .expect_err("an unterminated section header is rejected");
     assert!(
         bad_section.to_string().contains("section")
@@ -897,7 +897,7 @@ fn configuration_files_are_read_from_disk() {
     )
     .expect("the configuration is written");
 
-    let config = CodegenConfig::load(&path).expect("the file is valid");
+    let config = ProjectConfig::load(&path).expect("the file is valid");
 
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(
@@ -911,7 +911,7 @@ fn a_missing_configuration_is_an_error() {
     let directory = temporary_project("missing");
     let path = directory.join(DEFAULT_CONFIG_PATH);
 
-    let err = CodegenConfig::load(&path).expect_err("an absent path is not a configuration");
+    let err = ProjectConfig::load(&path).expect_err("an absent path is not a configuration");
 
     let absent = path.display().to_string();
     assert!(
@@ -926,8 +926,8 @@ fn a_missing_configuration_is_an_error() {
     // The contrast the finding is about: the same absent path reaches the
     // engine-neutral defaults only through the explicit conventional loader, so
     // a mistyped explicit path can never silently degrade into them.
-    let fallback = CodegenConfig::load_or_default(&path).expect("the fallback keeps the defaults");
-    assert_eq!(fallback, CodegenConfig::default());
+    let fallback = ProjectConfig::load_or_default(&path).expect("the fallback keeps the defaults");
+    assert_eq!(fallback, ProjectConfig::default());
     assert_eq!(fallback.primary_schema(), None);
     assert!(fallback.schemas().is_empty());
     assert!(fallback.type_override(None, "users", "id").is_none());
@@ -937,7 +937,7 @@ fn a_missing_configuration_is_an_error() {
 fn an_unreadable_configuration_is_an_error() {
     let directory = temporary_project("unreadable");
 
-    let err = CodegenConfig::load(&directory).expect_err("a directory is not a configuration file");
+    let err = ProjectConfig::load(&directory).expect_err("a directory is not a configuration file");
 
     assert!(matches!(&err, ConfigError::Io { .. }), "{err}");
     assert!(
@@ -957,7 +957,7 @@ fn an_unreadable_configuration_keeps_the_operating_system_error() {
     let path = directory.join(DEFAULT_CONFIG_PATH);
     std::fs::write(&path, [0xffu8, 0xfe]).expect("the invalid configuration is written");
 
-    let err = CodegenConfig::load(&path).expect_err("the contents are not UTF-8");
+    let err = ProjectConfig::load(&path).expect_err("the contents are not UTF-8");
 
     let source = err
         .source()
@@ -979,7 +979,7 @@ fn an_unreadable_configuration_keeps_the_operating_system_error() {
 
 #[test]
 fn diagnostics_point_at_the_entry_not_at_an_earlier_mention() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# `users.id` is generated from the database\n\
          [codegen.type_overrides]\n\
          \"users.id\" = \"\"\n",
@@ -992,7 +992,7 @@ fn diagnostics_point_at_the_entry_not_at_an_earlier_mention() {
 
 #[test]
 fn commented_out_entries_are_not_located() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# \"users.id\" = \"uuid::Uuid\"\n\
          [codegen.type_overrides]\n\
          \"users.id\" = \"\"  # an empty type is rejected\n",
@@ -1004,7 +1004,7 @@ fn commented_out_entries_are_not_located() {
 
 #[test]
 fn nested_entries_are_reported_at_their_own_line() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# `created_at` is generated from the database\n\
          [codegen.type_overrides.users]\n\
          created_at = \"\"\n",
@@ -1016,7 +1016,7 @@ fn nested_entries_are_reported_at_their_own_line() {
 
 #[test]
 fn dotted_entries_are_reported_at_their_own_line() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# `chrono::NaiveDateTime` is the supported timestamp type\n\
          [codegen.type_overrides]\n\
          users.created_at = \"\"\n",
@@ -1028,7 +1028,7 @@ fn dotted_entries_are_reported_at_their_own_line() {
 
 #[test]
 fn non_string_entries_are_rejected_at_their_own_line() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.id\" = 42\n",
     )
@@ -1039,7 +1039,7 @@ fn non_string_entries_are_rejected_at_their_own_line() {
 
 #[test]
 fn unknown_sections_are_reported_at_their_own_line() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "# project configuration\n\
          [workspace]\n\
          members = [\"a\", \"b\"]\n",
@@ -1051,7 +1051,7 @@ fn unknown_sections_are_reported_at_their_own_line() {
 
 #[test]
 fn quoted_and_dotted_spellings_collide() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.id\" = \"uuid::Uuid\"\n\
          users.id = \"chrono::NaiveDateTime\"\n",
@@ -1066,7 +1066,7 @@ fn quoted_and_dotted_spellings_collide() {
 
 #[test]
 fn diagnostics_carry_the_column_of_the_entry() {
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.id\" = \"\"\n",
     )
@@ -1091,7 +1091,7 @@ fn declarations_inside_a_string_literal_do_not_displace_the_diagnostic() {
     // The literal on lines 2-4 spells a complete override, which a scan of the
     // source text cannot tell apart from a real declaration; the span of the
     // parsed key can.
-    let err = CodegenConfig::parse(
+    let err = ProjectConfig::parse(
         "[codegen.type_overrides]\n\
          \"users.note\" = '''\n\
          \"users.id\" = \"uuid::Uuid\"\n\
@@ -1116,23 +1116,23 @@ fn declarations_inside_a_string_literal_do_not_displace_the_diagnostic() {
 
 #[test]
 fn the_artifact_root_is_read_and_trimmed() {
-    let config = CodegenConfig::parse("").expect("an empty file is valid");
+    let config = ProjectConfig::parse("").expect("an empty file is valid");
     assert_eq!(config.root(), "rurqe");
 
-    let config = CodegenConfig::parse("root = \"  artifacts  \"\n").expect("the key parses");
+    let config = ProjectConfig::parse("root = \"  artifacts  \"\n").expect("the key parses");
     assert_eq!(config.root(), "artifacts");
 }
 
 #[test]
 fn a_blank_or_non_string_root_is_rejected() {
-    let blank = CodegenConfig::parse("root = \"   \"\n").expect_err("a blank root selects nothing");
+    let blank = ProjectConfig::parse("root = \"   \"\n").expect_err("a blank root selects nothing");
     assert!(
         matches!(&blank, ConfigError::Syntax { line: 1, .. }),
         "{blank}"
     );
     assert!(blank.to_string().contains("root"), "{blank}");
 
-    let numeric = CodegenConfig::parse("root = 42\n").expect_err("a numeric root is rejected");
+    let numeric = ProjectConfig::parse("root = 42\n").expect_err("a numeric root is rejected");
     assert!(
         matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
         "{numeric}"
@@ -1142,7 +1142,7 @@ fn a_blank_or_non_string_root_is_rejected() {
 
 #[test]
 fn the_migration_directory_is_read_and_trimmed() {
-    let config = CodegenConfig::parse("[migrations]\ndir = \"  db/migrations  \"\n")
+    let config = ProjectConfig::parse("[migrations]\ndir = \"  db/migrations  \"\n")
         .expect("the migrations section parses");
 
     assert_eq!(
@@ -1158,7 +1158,7 @@ fn the_migrations_section_is_validated_strictly() {
         ("[migrations]\npath = \"db\"\n", "`path`"),
         ("migrations = 42\n", "table"),
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("the migrations section is malformed");
+        let err = ProjectConfig::parse(contents).expect_err("the migrations section is malformed");
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
         assert!(err.to_string().contains(expected), "{err}");
     }
@@ -1166,7 +1166,7 @@ fn the_migrations_section_is_validated_strictly() {
 
 #[test]
 fn the_stage_directory_and_checkpoint_are_read() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "[stage]\n\
          dir = \"  ddl  \"\n\
          checkpoint = \"  ddl/checkpoint.toml  \"\n",
@@ -1189,7 +1189,7 @@ fn the_stage_section_is_validated_strictly() {
         ("[stage]\nbase = \"ddl\"\n", "`base`"),
         ("stage = 42\n", "table"),
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("the stage section is malformed");
+        let err = ProjectConfig::parse(contents).expect_err("the stage section is malformed");
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
         assert!(err.to_string().contains(expected), "{err}");
     }
@@ -1197,7 +1197,7 @@ fn the_stage_section_is_validated_strictly() {
 
 #[test]
 fn the_codegen_output_is_read_and_validated() {
-    let config = CodegenConfig::parse("[codegen]\noutput = \"  src/db/schema.rs  \"\n")
+    let config = ProjectConfig::parse("[codegen]\noutput = \"  src/db/schema.rs  \"\n")
         .expect("the output key parses");
     let directory = Path::new("project");
     assert_eq!(
@@ -1205,7 +1205,7 @@ fn the_codegen_output_is_read_and_validated() {
         Some(directory.join("src").join("db").join("schema.rs"))
     );
 
-    let blank = CodegenConfig::parse("[codegen]\noutput = \"\"\n")
+    let blank = ProjectConfig::parse("[codegen]\noutput = \"\"\n")
         .expect_err("a blank output names nothing");
     assert!(
         matches!(&blank, ConfigError::Syntax { line: 2, .. }),
@@ -1216,7 +1216,7 @@ fn the_codegen_output_is_read_and_validated() {
 
 #[test]
 fn the_artifact_layout_defaults_beneath_the_root() {
-    let config = CodegenConfig::parse("").expect("an empty file is valid");
+    let config = ProjectConfig::parse("").expect("an empty file is valid");
     let directory = Path::new("project");
     let root = directory.join("rurqe");
 
@@ -1232,7 +1232,7 @@ fn the_artifact_layout_defaults_beneath_the_root() {
 
 #[test]
 fn the_root_key_moves_every_default_artifact() {
-    let config = CodegenConfig::parse("root = \"artifacts\"\n").expect("the key parses");
+    let config = ProjectConfig::parse("root = \"artifacts\"\n").expect("the key parses");
     let directory = Path::new("project");
     let root = directory.join("artifacts");
 
@@ -1247,7 +1247,7 @@ fn the_root_key_moves_every_default_artifact() {
 
 #[test]
 fn declared_artifact_paths_resolve_against_the_configuration_directory() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "root = \"artifacts\"\n\
          [migrations]\n\
          dir = \"db/migrations\"\n\
@@ -1275,7 +1275,7 @@ fn declared_artifact_paths_resolve_against_the_configuration_directory() {
 
 #[test]
 fn the_checkpoint_default_follows_the_resolved_migration_directory() {
-    let config = CodegenConfig::parse("[migrations]\ndir = \"db/migrations\"\n")
+    let config = ProjectConfig::parse("[migrations]\ndir = \"db/migrations\"\n")
         .expect("the migration directory parses");
     let directory = Path::new("project");
 
@@ -1287,7 +1287,7 @@ fn the_checkpoint_default_follows_the_resolved_migration_directory() {
 
 #[test]
 fn dotted_forms_of_the_artifact_keys_are_read() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "root = \"artifacts\"\n\
          migrations.dir = \"db/migrations\"\n\
          stage.dir = \"db/schema\"\n\
@@ -1470,7 +1470,7 @@ fn an_absolute_declared_path_is_rejected() {
             2,
         ),
     ] {
-        let err = CodegenConfig::parse(contents)
+        let err = ProjectConfig::parse(contents)
             .expect_err("an absolute path would discard the configuration directory");
 
         assert!(
@@ -1500,7 +1500,7 @@ fn a_declared_path_carrying_a_parent_segment_is_rejected() {
             "codegen.output",
         ),
     ] {
-        let err = CodegenConfig::parse(contents)
+        let err = ProjectConfig::parse(contents)
             .expect_err("a `..` segment is refused, whether or not it leaves the directory");
 
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
@@ -1518,7 +1518,7 @@ fn a_declared_path_carrying_a_parent_segment_is_rejected() {
 /// the diagnostic says so.
 #[test]
 fn a_parent_segment_is_refused_even_when_it_stays_inside_the_project() {
-    let err = CodegenConfig::parse("[stage]\ndir = \"ddl/../schema\"\n")
+    let err = ProjectConfig::parse("[stage]\ndir = \"ddl/../schema\"\n")
         .expect_err("a `..` round trip inside the project is refused like one that leaves it");
 
     assert!(
@@ -1544,7 +1544,7 @@ fn a_parent_segment_is_refused_even_when_it_stays_inside_the_project() {
 
 #[test]
 fn a_declared_path_resolves_inside_the_configuration_directory() {
-    let config = CodegenConfig::parse(
+    let config = ProjectConfig::parse(
         "root = \"artifacts\"\n\
          [migrations]\n\
          dir = \"db/migrations\"\n\
@@ -1586,8 +1586,8 @@ fn load_or_default_falls_back_only_when_the_file_is_absent() {
     let directory = temporary_project("load-or-default");
     let path = directory.join(DEFAULT_CONFIG_PATH);
 
-    let absent = CodegenConfig::load_or_default(&path).expect("an absent file is the default");
-    assert_eq!(absent, CodegenConfig::default());
+    let absent = ProjectConfig::load_or_default(&path).expect("an absent file is the default");
+    assert_eq!(absent, ProjectConfig::default());
 
     std::fs::write(
         &path,
@@ -1595,7 +1595,7 @@ fn load_or_default_falls_back_only_when_the_file_is_absent() {
     )
     .expect("the configuration is written");
 
-    let present = CodegenConfig::load_or_default(&path).expect("the file is valid");
+    let present = ProjectConfig::load_or_default(&path).expect("the file is valid");
     assert_eq!(present.primary_schema(), Some("app"));
     assert_eq!(
         present.type_override(None, "users", "id"),
@@ -1605,8 +1605,8 @@ fn load_or_default_falls_back_only_when_the_file_is_absent() {
     std::fs::write(&path, "[codegen]\ndomain_type = true\n")
         .expect("the malformed configuration is written");
     let malformed =
-        CodegenConfig::load_or_default(&path).expect_err("a malformed file is an error");
-    let unreadable = CodegenConfig::load_or_default(&directory)
+        ProjectConfig::load_or_default(&path).expect_err("a malformed file is an error");
+    let unreadable = ProjectConfig::load_or_default(&directory)
         .expect_err("a directory is not a configuration file");
 
     assert!(
@@ -1659,7 +1659,7 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
     let answer = discover_or_default_in(&nested, chain);
     let (configuration, directory) = answer.expect("no configuration is declared");
 
-    assert_eq!(configuration, CodegenConfig::default());
+    assert_eq!(configuration, ProjectConfig::default());
     assert_eq!(directory, nested, "the default is anchored at the caller");
 }
 
@@ -1670,7 +1670,7 @@ fn a_malformed_document_reports_the_file_it_was_read_from() {
     std::fs::write(&path, "[codegen]\ndomain_type = true\n")
         .expect("the malformed configuration is written");
 
-    let err = CodegenConfig::load(&path).expect_err("the misspelled key is refused");
+    let err = ProjectConfig::load(&path).expect_err("the misspelled key is refused");
     let declared = path.display().to_string();
     assert!(
         matches!(
@@ -1720,7 +1720,7 @@ fn a_discovered_malformed_document_reports_the_file_the_walk_selected() {
 
 #[test]
 fn a_direct_parse_reports_no_file() {
-    let err = CodegenConfig::parse("[codegen]\ndomain_type = true\n")
+    let err = ProjectConfig::parse("[codegen]\ndomain_type = true\n")
         .expect_err("the misspelled key is refused");
 
     assert!(
@@ -1764,7 +1764,7 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
 
     let answer = read_discovered(&path, &member);
     let (configuration, directory) = answer.expect("an absent file is the walk's own tier");
-    assert_eq!(configuration, CodegenConfig::default());
+    assert_eq!(configuration, ProjectConfig::default());
     assert_eq!(
         directory, member,
         "the default is anchored at the directory the walk started from"
@@ -1797,7 +1797,7 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
     // anchored at the caller's directory, exactly as a tree that declares none does.
     let vanished =
         read_discovered(&path, &member).expect("an absent file is the walk's own tier");
-    assert_eq!(vanished, (CodegenConfig::default(), member.clone()));
+    assert_eq!(vanished, (ProjectConfig::default(), member.clone()));
 
     // The same chain the walk climbed answers the same tuple, so a configuration that
     // vanished between the two filesystem calls and a tree that never declared one are
@@ -1834,9 +1834,9 @@ fn only_an_unreadable_configuration_carries_a_source() {
     use std::error::Error as _;
 
     let project = temporary_project("source-tier");
-    let syntax = CodegenConfig::parse("[codegen]\ndomain_type = true\n")
+    let syntax = ProjectConfig::parse("[codegen]\ndomain_type = true\n")
         .expect_err("the misspelled key is refused");
-    let absent = CodegenConfig::load(&project.join("absent.toml"))
+    let absent = ProjectConfig::load(&project.join("absent.toml"))
         .expect_err("an absent path is not a configuration");
 
     assert!(matches!(&syntax, ConfigError::Syntax { .. }), "{syntax}");

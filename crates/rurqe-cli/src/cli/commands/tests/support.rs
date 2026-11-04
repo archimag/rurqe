@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::config::CodegenConfig;
+use crate::config::ProjectConfig;
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
@@ -11,7 +11,7 @@ use super::super::stage::cleanup_scratch_catalog;
 
 #[test]
 fn the_command_line_schema_wins_over_the_configured_one() {
-    let configured = CodegenConfig::parse("schema = \"app\"\n").expect("the schema key parses");
+    let configured = ProjectConfig::parse("schema = \"app\"\n").expect("the schema key parses");
 
     let selection = selection_of(Some("reporting"), &configured).expect("the selection resolves");
     assert_eq!(selection.primary(), "reporting");
@@ -23,7 +23,7 @@ fn the_command_line_schema_wins_over_the_configured_one() {
     let selection = selection_of(None, &configured).expect("the configured schema is selected");
     assert_eq!(selection.primary(), "app");
 
-    let selection = selection_of(None, &CodegenConfig::default()).expect("the default resolves");
+    let selection = selection_of(None, &ProjectConfig::default()).expect("the default resolves");
     assert_eq!(selection.primary(), DEFAULT_SCHEMA);
 }
 
@@ -165,7 +165,7 @@ fn a_live_creator_keeps_its_database_off_the_candidate_list() {
 
 #[test]
 fn the_selection_carries_the_primary_schema_first_and_the_secondaries_after_it() {
-    let configured = CodegenConfig::parse(
+    let configured = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\", \"billing\"]\n",
     )
@@ -187,7 +187,7 @@ fn the_selection_carries_the_primary_schema_first_and_the_secondaries_after_it()
 
 #[test]
 fn the_command_line_schema_wins_over_the_configured_primary_one() {
-    let configured = CodegenConfig::parse(
+    let configured = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\"]\n",
     )
@@ -205,7 +205,7 @@ fn the_command_line_schema_wins_over_the_configured_primary_one() {
 
 #[test]
 fn a_default_selection_describes_the_public_schema_alone() {
-    let selection = selection_of(None, &CodegenConfig::default()).expect("the default resolves");
+    let selection = selection_of(None, &ProjectConfig::default()).expect("the default resolves");
 
     assert_eq!(selection.primary(), DEFAULT_SCHEMA);
     assert!(selection.secondary().is_empty());
@@ -214,7 +214,7 @@ fn a_default_selection_describes_the_public_schema_alone() {
 
 #[test]
 fn a_secondary_schema_colliding_with_the_effective_primary_is_refused() {
-    let configured = CodegenConfig::parse(
+    let configured = ProjectConfig::parse(
         "primary_schema = \"app\"\n\
          schemas = [\"auth\"]\n",
     )
@@ -231,7 +231,7 @@ fn a_secondary_schema_colliding_with_the_effective_primary_is_refused() {
 
 #[test]
 fn the_explicit_schema_is_trimmed_before_it_is_compared_with_the_secondaries() {
-    let configured = CodegenConfig::parse("schemas = [\"auth\"]\n").expect("the keys parse");
+    let configured = ProjectConfig::parse("schemas = [\"auth\"]\n").expect("the keys parse");
 
     let error = selection_of(Some("  auth  "), &configured)
         .expect_err("the trimmed argument names the declared secondary schema");

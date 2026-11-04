@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rurqe_project::CodegenConfig;
+use rurqe_project::ProjectConfig;
 
 use super::*;
 
@@ -30,8 +30,8 @@ fn write(path: &Path, contents: &str) {
 }
 
 /// A configuration declaring the two artifact directories of a fixture.
-fn fixture_configuration(tail: &str, stage: &str) -> CodegenConfig {
-    CodegenConfig::parse(&format!(
+fn fixture_configuration(tail: &str, stage: &str) -> ProjectConfig {
+    ProjectConfig::parse(&format!(
         "[migrations]\ndir = \"{tail}\"\n\n[stage]\ndir = \"{stage}\"\n"
     ))
     .expect("the fixture configuration parses")
@@ -428,7 +428,7 @@ fn a_checkpoint_path_that_cannot_be_inspected_is_rejected() {
     write(&root.join("migrations/V1__init.sql"), "SELECT 1;");
     write(&root.join("guard/checkpoint.toml"), "anything");
 
-    let configuration = CodegenConfig::parse(
+    let configuration = ProjectConfig::parse(
         "[migrations]\ndir = \"migrations\"\n[stage]\ncheckpoint = \"guard/checkpoint.toml\"\n",
     )
     .expect("the fixture configuration parses");

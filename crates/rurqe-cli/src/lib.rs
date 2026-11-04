@@ -19,7 +19,7 @@ mod target;
 
 pub use cli::{parse_args, run_cli, CliCause, CliCommand, CliError, CommandOutput};
 pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};
-pub use config::{CodegenConfig, ConfigError, SchemaSelection};
+pub use config::{ConfigError, ProjectConfig, SchemaSelection};
 pub use drift::{verify_drift, DiffWording, DriftError, DriftReport, SchemaDiff};
 pub use driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 pub use introspect::{

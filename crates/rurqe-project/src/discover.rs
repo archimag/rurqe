@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{CodegenConfig, ConfigError, DEFAULT_CONFIG_PATH};
+use crate::{ConfigError, DEFAULT_CONFIG_PATH, ProjectConfig};
 
 /// The configuration file of the project rooted at `directory`.
 ///
@@ -93,7 +93,7 @@ where
 
 /// The configuration of the project at or above `start`, or the default when none exists.
 ///
-/// This is the discovery-walk form of the rule [`CodegenConfig::load_or_default`] applies to
+/// This is the discovery-walk form of the rule [`ProjectConfig::load_or_default`] applies to
 /// a known path: a project that declares no configuration is an ordinary project, so a walk
 /// that finds nothing answers with the engine-neutral defaults instead of an error. The walk
 /// is the one [`discover_config`] performs — the nearest `rurqe.toml` at or above `start` —
@@ -102,7 +102,7 @@ where
 /// answer is the default anchored at `start` itself, so the conventional artifact layout
 /// applies beneath the caller's own directory.
 ///
-/// A configuration the walk does find is read through [`CodegenConfig::load`], so a malformed
+/// A configuration the walk does find is read through [`ProjectConfig::load`], so a malformed
 /// file is reported with the position of its offending declaration instead of being silently
 /// replaced by the defaults.
 ///
@@ -120,7 +120,7 @@ where
 /// tier and answers with the defaults anchored at `start`, exactly as a walk that found
 /// nothing does, so the answer describes the state of the tree rather than the timing of the
 /// two calls. A file that exists and cannot be read, and a malformed one, stay errors.
-pub fn discover_or_default(start: &Path) -> Result<(CodegenConfig, PathBuf), ConfigError> {
+pub fn discover_or_default(start: &Path) -> Result<(ProjectConfig, PathBuf), ConfigError> {
     discover_or_default_in(start, start.ancestors())
 }
 
@@ -134,13 +134,13 @@ pub fn discover_or_default(start: &Path) -> Result<(CodegenConfig, PathBuf), Con
 pub(crate) fn discover_or_default_in<I, P>(
     start: &Path,
     ancestors: I,
-) -> Result<(CodegenConfig, PathBuf), ConfigError>
+) -> Result<(ProjectConfig, PathBuf), ConfigError>
 where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
     let Some(path) = discover_config_in(ancestors)? else {
-        return Ok((CodegenConfig::default(), start.to_path_buf()));
+        return Ok((ProjectConfig::default(), start.to_path_buf()));
     };
 
     read_discovered(&path, start)
@@ -150,7 +150,7 @@ where
 /// `start`.
 ///
 /// The walk and the read are two filesystem operations, so the file the walk selected can be
-/// removed before it is read. [`CodegenConfig::load`] reports that removal as
+/// removed before it is read. [`ProjectConfig::load`] reports that removal as
 /// [`ConfigError::NotFound`] — the operator-facing refusal of an explicitly named path —
 /// while a discovered path answers with the defaults anchored at `start`: the walk's own
 /// absence tier, because the tree holds no readable declaration either way. Every other
@@ -160,11 +160,11 @@ where
 pub(crate) fn read_discovered(
     path: &Path,
     start: &Path,
-) -> Result<(CodegenConfig, PathBuf), ConfigError> {
-    let configuration = match CodegenConfig::load(path) {
+) -> Result<(ProjectConfig, PathBuf), ConfigError> {
+    let configuration = match ProjectConfig::load(path) {
         Ok(configuration) => configuration,
         Err(ConfigError::NotFound { .. }) => {
-            return Ok((CodegenConfig::default(), start.to_path_buf()));
+            return Ok((ProjectConfig::default(), start.to_path_buf()));
         }
         Err(error) => return Err(error),
     };

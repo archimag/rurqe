@@ -111,7 +111,7 @@ const DEFAULT_LOCK_NAME: &str = "schema.lock";
 
 /// The project configuration read from `rurqe.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CodegenConfig {
+pub struct ProjectConfig {
     /// The primary schema declared through `primary_schema` or its legacy alias.
     primary_schema: Option<String>,
     /// The secondary schemas declared through `schemas`, in document order.
@@ -136,7 +136,7 @@ pub struct CodegenConfig {
     codegen_output: Option<String>,
 }
 
-impl CodegenConfig {
+impl ProjectConfig {
     /// Reads the configuration file at `path`.
     ///
     /// A missing file is an error in its own right — a [`ConfigError::NotFound`]
@@ -148,11 +148,11 @@ impl CodegenConfig {
     /// A malformed document is reported with the position of the rejected
     /// declaration and with the file it was read from: this is the entry point
     /// that knows the path, so it is the one that attaches it to the refusal
-    /// [`CodegenConfig::parse`] produced.
+    /// [`ProjectConfig::parse`] produced.
     ///
     /// Defaulting on absence has exactly one home, and it is not here: a caller
     /// that reads a known conventional path falls back through
-    /// [`CodegenConfig::load_or_default`], and a caller that walks the directory
+    /// [`ProjectConfig::load_or_default`], and a caller that walks the directory
     /// tree falls back through [`discover_or_default`]. Both spell the rule out at
     /// the call site, where the tier the path came from is known, instead of
     /// hiding it behind a read that cannot tell the two apart.
@@ -242,7 +242,7 @@ impl CodegenConfig {
     /// authorises it.
     ///
     /// Every refusal carries the position of the declaration that caused it but
-    /// no file, because the document arrives as text: [`CodegenConfig::load`] is
+    /// no file, because the document arrives as text: [`ProjectConfig::load`] is
     /// the entry point that knows the path it read and attaches it.
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
         parse::document(contents)
@@ -254,7 +254,7 @@ impl CodegenConfig {
     /// primary one, because that is how the file spells an override path: a column
     /// of the primary schema is declared as `table.column` and a column of a
     /// secondary schema as `schema.table.column` for a schema the document lists in
-    /// [`schemas`](CodegenConfig::schemas). A schema the document does not declare
+    /// [`schemas`](ProjectConfig::schemas). A schema the document does not declare
     /// holds no override, so the answer is `None` rather than a default mapping.
     ///
     /// The lookup matches the parts, so a consumer resolving the type of every
@@ -263,7 +263,7 @@ impl CodegenConfig {
     /// against the segments the document declared, and the caller never assembles
     /// `schema.table.column` itself only to look it back up. A consumer whose own
     /// model is keyed by that path renders the whole set once through
-    /// [`CodegenConfig::type_overrides`].
+    /// [`ProjectConfig::type_overrides`].
     pub fn type_override(&self, schema: Option<&str>, table: &str, column: &str) -> Option<&str> {
         self.type_overrides.get(schema, table, column)
     }
@@ -310,12 +310,12 @@ impl CodegenConfig {
     /// A primary-schema column is keyed as `table.column` and a secondary-schema
     /// one as `schema.table.column` for a schema declared in `schemas`, with every
     /// segment trimmed. The rendering is a projection of the very entries
-    /// [`CodegenConfig::type_override`] answers, so a consumer keyed by the path and
+    /// [`ProjectConfig::type_override`] answers, so a consumer keyed by the path and
     /// a consumer resolving one column never describe different overrides.
     ///
     /// The rendering exists for such a consumer — the code generator carries its
     /// overrides in a map of its own — while a per-column lookup belongs to
-    /// [`CodegenConfig::type_override`], which neither spells a key nor allocates
+    /// [`ProjectConfig::type_override`], which neither spells a key nor allocates
     /// one per column.
     pub fn type_overrides(&self) -> BTreeMap<String, String> {
         self.type_overrides.flatten()
@@ -324,7 +324,7 @@ impl CodegenConfig {
     /// Consumes the configuration, yielding the overrides for code generation.
     ///
     /// The entries are rendered onto their schema paths exactly as
-    /// [`CodegenConfig::type_overrides`] renders them.
+    /// [`ProjectConfig::type_overrides`] renders them.
     pub fn into_type_overrides(self) -> BTreeMap<String, String> {
         self.type_overrides.flatten()
     }
@@ -544,8 +544,8 @@ pub enum ConfigError {
     /// position of the other key in the message, so both are readable at once.
     ///
     /// The file the declaration was read from is carried whenever the caller
-    /// knew it: a command reads the document through [`CodegenConfig::load`],
-    /// which attaches its path, while [`CodegenConfig::parse`] has no path to
+    /// knew it: a command reads the document through [`ProjectConfig::load`],
+    /// which attaches its path, while [`ProjectConfig::parse`] has no path to
     /// attach and leaves the field empty. The rendered line names the file
     /// exactly when it is known, so the diagnostic of a direct parse keeps the
     /// position-and-message wording it has always had.
@@ -563,7 +563,7 @@ pub enum ConfigError {
     ///
     /// An absence is reported in its own right instead of as an [`Io`](ConfigError::Io)
     /// failure, so the caller that reads the file decides what it means: a conventional path
-    /// falls back to the defaults through [`CodegenConfig::load_or_default`], while a path an
+    /// falls back to the defaults through [`ProjectConfig::load_or_default`], while a path an
     /// operator named explicitly is the mistake it is.
     NotFound {
         /// The path that does not exist.
@@ -585,8 +585,8 @@ pub enum ConfigError {
 impl ConfigError {
     /// Attaches the file the document was read from to a position-bearing refusal.
     ///
-    /// [`CodegenConfig::parse`] reads a document it was handed and knows no file,
-    /// so its refusals carry a position and a message alone. [`CodegenConfig::load`]
+    /// [`ProjectConfig::parse`] reads a document it was handed and knows no file,
+    /// so its refusals carry a position and a message alone. [`ProjectConfig::load`]
     /// is the entry point that knows which file it read, so it attaches the path
     /// here; that is what lets a diagnostic name the configuration that is
     /// actually malformed, whether the file came from a discovery walk that may

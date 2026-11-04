@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::codegen::CodegenOptions;
-use crate::config::{CodegenConfig, SchemaSelection};
+use crate::config::{ProjectConfig, SchemaSelection};
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{process_may_be_alive, process_nonce};
 
@@ -80,7 +80,7 @@ const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
 #[derive(Debug)]
 pub(super) struct Project {
     /// The parsed configuration, validated strictly whenever the file exists.
-    config: CodegenConfig,
+    config: ProjectConfig,
     /// The directory holding the configuration file every declared path resolves against.
     directory: PathBuf,
 }
@@ -242,11 +242,11 @@ impl Project {
 /// default schema. A file the conventional path does name is validated exactly
 /// like a named one, so a malformed file aborts the command instead of silently
 /// emitting wrong types for overridden columns or describing the wrong schema.
-fn load_config(path: &Path, required: bool) -> Result<CodegenConfig, CliError> {
+fn load_config(path: &Path, required: bool) -> Result<ProjectConfig, CliError> {
     let config = if required {
-        CodegenConfig::load(path)
+        ProjectConfig::load(path)
     } else {
-        CodegenConfig::load_or_default(path)
+        ProjectConfig::load_or_default(path)
     };
 
     config.map_err(|error| CliError::with_cause(CliCause::Config(error)))
@@ -266,7 +266,7 @@ fn load_config(path: &Path, required: bool) -> Result<CodegenConfig, CliError> {
 /// a selection naming one schema twice would introspect the same catalog twice.
 fn selection_of(
     explicit: Option<&str>,
-    config: &CodegenConfig,
+    config: &ProjectConfig,
 ) -> Result<SchemaSelection, CliError> {
     let primary = explicit
         .map(str::trim)

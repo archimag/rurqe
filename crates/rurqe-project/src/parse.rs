@@ -1,4 +1,4 @@
-//! Reading of the `rurqe.toml` document into a [`CodegenConfig`].
+//! Reading of the `rurqe.toml` document into a [`ProjectConfig`].
 //!
 //! Positions come from [`toml_edit::ImDocument`], which keeps the byte span of
 //! every key it read, so a diagnostic lands on the declaration that caused it
@@ -20,7 +20,7 @@ use std::ops::Range;
 use toml_edit::{ImDocument, Item, TableLike};
 
 use self::paths::read_required_path;
-use super::{CodegenConfig, ConfigError, DEFAULT_SCHEMA, OverridePath};
+use super::{ConfigError, DEFAULT_SCHEMA, OverridePath, ProjectConfig};
 
 mod paths;
 /// The document-root key naming the database schema every catalog digest describes.
@@ -59,8 +59,8 @@ const TYPE_OVERRIDES_KEY: &str = "type_overrides";
 /// The key naming the generated schema module inside the `codegen` section.
 const OUTPUT_KEY: &str = "output";
 
-/// Reads `contents` into a [`CodegenConfig`].
-pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
+/// Reads `contents` into a [`ProjectConfig`].
+pub(super) fn document(contents: &str) -> Result<ProjectConfig, ConfigError> {
     let document = ImDocument::parse(contents).map_err(|error| {
         syntax_error(
             contents,
@@ -70,7 +70,7 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
     })?;
 
     let root = document.as_table();
-    let mut config = CodegenConfig::default();
+    let mut config = ProjectConfig::default();
     let mut primary: Option<(String, Option<Range<usize>>)> = None;
     let mut legacy: Option<(String, Option<Range<usize>>)> = None;
     let mut secondary: Option<(Vec<String>, Option<Range<usize>>)> = None;
@@ -178,7 +178,7 @@ fn resolve_primary_schema(
     }
 }
 
-impl CodegenConfig {
+impl ProjectConfig {
     /// Reads the keys of the `[codegen]` table.
     fn read_codegen_section(
         &mut self,

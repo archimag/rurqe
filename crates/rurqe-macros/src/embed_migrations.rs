@@ -18,7 +18,7 @@
 //! the manifest directory for a configuration, and falls back to the conventional
 //! `<manifest>/rurqe` artifact layout when no ancestor declares one.
 //!
-//! Every artifact path is resolved through `CodegenConfig` against the directory
+//! Every artifact path is resolved through `ProjectConfig` against the directory
 //! holding the configuration: `migrations_dir`, `stage_dir`, `checkpoint_path`,
 //! and `schema_lock_path` answer the four locations, and the filesystem decides
 //! which of them exist.
@@ -85,7 +85,7 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{LitStr, Token};
 
-use rurqe_project::{discover_or_default, CodegenConfig};
+use rurqe_project::{discover_or_default, ProjectConfig};
 
 /// The file extension naming a script of an artifact directory.
 const SCRIPT_EXTENSION: &str = "sql";
@@ -212,7 +212,7 @@ fn resolve_artifacts(argument: Option<&Path>, manifest: &Path) -> Result<Artifac
 fn configuration(
     argument: Option<&Path>,
     manifest: &Path,
-) -> Result<(CodegenConfig, PathBuf), String> {
+) -> Result<(ProjectConfig, PathBuf), String> {
     let Some(path) = argument else {
         return discover_or_default(manifest).map_err(|error| error.to_string());
     };
@@ -239,13 +239,13 @@ fn configuration(
 }
 
 /// Reads the configuration at `path` and anchors its artifacts at its directory.
-fn configuration_of(path: &Path) -> Result<(CodegenConfig, PathBuf), String> {
+fn configuration_of(path: &Path) -> Result<(ProjectConfig, PathBuf), String> {
     let directory = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    let configuration = CodegenConfig::load(path).map_err(|error| error.to_string())?;
+    let configuration = ProjectConfig::load(path).map_err(|error| error.to_string())?;
 
     Ok((configuration, directory.to_path_buf()))
 }
@@ -260,7 +260,7 @@ fn configuration_of(path: &Path) -> Result<(CodegenConfig, PathBuf), String> {
 /// The scripts of both sets are ordered by file name alone, which is the bake
 /// order the module documents: the run order is derived from the names by the
 /// migration crate at startup, so a version suffix is never compared as text here.
-fn plan(configuration: &CodegenConfig, directory: &Path) -> Result<Artifacts, String> {
+fn plan(configuration: &ProjectConfig, directory: &Path) -> Result<Artifacts, String> {
     let tail_directory = configuration.migrations_dir(directory);
     let stage_directory = configuration.stage_dir(directory);
 
