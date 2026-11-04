@@ -20,7 +20,7 @@ The two statements must share the dialect and the output row type — the signat
 ```
 
 ```sql
-(SELECT "name" FROM "users") UNION ALL (SELECT "name" FROM "archived_users")
+SELECT "name" FROM "users" UNION ALL SELECT "name" FROM "archived_users"
 ```
 
 ## Effect on Scope and Typestate

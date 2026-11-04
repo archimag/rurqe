@@ -64,10 +64,8 @@ SELECT "user_id" AS "owner_id", SUM("amount") AS "total" FROM "orders" GROUP BY 
 The fragment states the aggregate as well, because an included region stands on its own: it declares the relation it reads instead of relying on a binding established elsewhere. The statement it assembles is one round trip:
 
 ```sql
-WITH "user_totals" AS (
-    SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
-    FROM "orders" GROUP BY "user_id"
-)
+WITH "user_totals" AS (SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
+                       FROM "orders" GROUP BY "user_id")
 SELECT "users"."name" AS "user_name", "user_totals"."total" AS "total_spent"
 FROM "users" INNER JOIN "user_totals" ON ("user_totals"."owner_id" = "users"."id")
 ```
@@ -102,10 +100,9 @@ A finished statement also participates in a query without being given a name of 
 
 ```sql
 SELECT "users"."name" AS "user_name", "user_totals"."total" AS "total_spent"
-FROM "users" INNER JOIN (
-    SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
-    FROM "orders" GROUP BY "user_id"
-) AS "user_totals" ON ("user_totals"."owner_id" = "users"."id")
+FROM "users" INNER JOIN (SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
+                         FROM "orders" GROUP BY "user_id") AS "user_totals"
+    ON ("user_totals"."owner_id" = "users"."id")
 ```
 
 `.as_table::<UserTotals>()` publishes the finished aggregate as the relation marker `UserTotals`, and `.inner_join_subquery(...)` reads it inline: the statement is rendered as the joined relation itself, so the enclosing query reads its rows in one round trip and the relation behaves like a stored one while its rows come from the derived statement.

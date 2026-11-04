@@ -51,7 +51,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 ```
 
 ```sql
-INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id"
+INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id" AS "user_id"
 ```
 
 `.values(...)` takes a tuple of assignments that all target the table named by `insert_into`. The tuple is the column list: the columns are rendered in the order the assignments were written, and the parameters follow that same order. The statement returns the written `"id"` instead of a row count, because `.returning(...)` recorded a projection.

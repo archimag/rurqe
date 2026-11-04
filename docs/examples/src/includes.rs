@@ -7,8 +7,9 @@
 //! the SQL a fragment renders with the SQL its chapter quotes. Both audits
 //! have to agree on what an inclusion is — which chapter includes which
 //! fragment, and inside which fence — so the directive model, the walk that
-//! collects the directives, and the path resolution live here, once, and every
-//! guard consumes this module instead of re-deriving the answer.
+//! collects the directives, the section boundaries of a chapter, and the path
+//! resolution live here, once, and every guard consumes this module instead of
+//! re-deriving the answer.
 //!
 //! The module reads source text only and compiles nothing: compiling the
 //! example targets is the job of `cargo check --workspace --all-targets` in
@@ -25,8 +26,11 @@ pub const SUMMARY_FILE: &str = "SUMMARY.md";
 
 /// One `{{#rustdoc_include}}` directive of a chapter.
 pub struct Directive {
-    /// The chapter file carrying the directive.
+    /// The chapter file carrying the directive, relative to the book source.
     pub chapter: String,
+    /// The heading line of the section carrying the directive, empty before the
+    /// first heading of the chapter.
+    pub section: String,
     /// Path of the addressed file relative to the package root, `/`-separated.
     ///
     /// The directive resolves the path the chapter names rather than a file
@@ -38,6 +42,14 @@ pub struct Directive {
     pub anchor: String,
     /// The info string of the fence the directive sits in, empty outside one.
     pub fence: String,
+}
+
+/// One heading-delimited section of a chapter.
+pub struct Section<'a> {
+    /// The heading line that opens the section, empty before the first heading.
+    pub heading: &'a str,
+    /// The lines the section carries, its heading excluded.
+    pub body: Vec<&'a str>,
 }
 
 /// Root of the `rurqe-examples` package.
@@ -117,12 +129,17 @@ pub fn relative_chapter_files(dir: &Path, book: &Path, chapters: &mut Vec<String
             if is_book_metadata(&path) {
                 continue;
             }
-            let relative = path
-                .strip_prefix(book)
-                .unwrap_or_else(|error| panic!("chapter {path:?} lies under {book:?}: {error}"));
-            chapters.push(relative.to_string_lossy().replace('\\', "/"));
+            chapters.push(relative_chapter(&path, book));
         }
     }
+}
+
+/// The path of `path` relative to the book source, `/`-separated.
+fn relative_chapter(path: &Path, book: &Path) -> String {
+    let relative = path
+        .strip_prefix(book)
+        .unwrap_or_else(|error| panic!("chapter {path:?} lies under {book:?}: {error}"));
+    relative.to_string_lossy().replace('\\', "/")
 }
 
 /// The path an include directive addresses, relative to the package root.
@@ -139,6 +156,37 @@ pub fn example_path_of(path: &str) -> Option<String> {
     (!rest.is_empty()).then(|| rest.join("/"))
 }
 
+/// Splits `text` into the sections its headings delimit.
+///
+/// A heading opens a section wherever it stands outside a fenced block, and the
+/// text before the first heading is a section of its own with an empty heading,
+/// so every line of the chapter belongs to exactly one section. A guard that
+/// pairs a clause of a chapter with something else — the `sql` block of a
+/// section with the fragment the same section includes — reads the boundaries
+/// from here instead of counting blank lines.
+pub fn sections(text: &str) -> Vec<Section<'_>> {
+    let mut sections = vec![Section {
+        heading: "",
+        body: Vec::new(),
+    }];
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && line.starts_with('#') {
+            sections.push(Section {
+                heading: line.trim_end(),
+                body: Vec::new(),
+            });
+            continue;
+        }
+        if let Some(section) = sections.last_mut() {
+            section.body.push(line);
+        }
+    }
+    sections
+}
+
 /// Every include directive of the book that addresses the `examples/` crate,
 /// as the chapter that carries it, the package-relative path of the addressed
 /// file, and the anchor region it names.
@@ -151,11 +199,12 @@ pub fn example_path_of(path: &str) -> Option<String> {
 /// no anchor at all stays visible instead of disappearing from the walk.
 pub fn example_directives() -> Vec<Directive> {
     let mut directives = Vec::new();
-    collect_directives(&book_source(), &mut directives);
+    let book = book_source();
+    collect_directives(&book, &book, &mut directives);
     directives
 }
 
-fn collect_directives(dir: &Path, directives: &mut Vec<Directive>) {
+fn collect_directives(dir: &Path, book: &Path, directives: &mut Vec<Directive>) {
     let entries = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
     for entry in entries {
@@ -166,23 +215,27 @@ fn collect_directives(dir: &Path, directives: &mut Vec<Directive>) {
             if is_skipped_directory(&path) {
                 continue;
             }
-            collect_directives(&path, directives);
+            collect_directives(&path, book, directives);
         } else if path.extension().is_some_and(|ext| ext == "md") {
             if is_book_metadata(&path) {
                 continue;
             }
-            collect_file_directives(&path, directives);
+            collect_file_directives(&path, book, directives);
         }
     }
 }
 
-fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
+fn collect_file_directives(path: &Path, book: &Path, directives: &mut Vec<Directive>) {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
+    let chapter = relative_chapter(path, book);
     let mut in_fence = false;
     // The info string of the fence the walk is inside; it is cleared when the
     // block closes, so a directive outside every fence records an empty one.
     let mut fence = String::new();
+    // The heading of the section the walk is inside, so a guard can pair the
+    // directive with the block of the section that carries it.
+    let mut section = String::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
         if let Some(opening) = trimmed.strip_prefix("```") {
@@ -194,6 +247,9 @@ fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
                 fence = opening.trim().to_owned();
             }
             continue;
+        }
+        if !in_fence && line.starts_with('#') {
+            section = line.trim_end().to_owned();
         }
         let mut rest = line;
         while let Some(start) = rest.find(INCLUDE_TAG) {
@@ -209,7 +265,8 @@ fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
             };
             if let Some(addressed) = example_path_of(path_part) {
                 directives.push(Directive {
-                    chapter: path.display().to_string(),
+                    chapter: chapter.clone(),
+                    section: section.clone(),
                     path: addressed,
                     anchor: anchor.to_owned(),
                     fence: fence.clone(),

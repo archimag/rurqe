@@ -36,7 +36,7 @@ use std::path::Path;
 use rurqe_examples::anchors::{self, AnchorLine};
 use rurqe_examples::includes::{
     Directive, book_source, example_directives, is_book_metadata, is_skipped_directory,
-    package_root, relative_chapter_files, summary_entries,
+    package_root, relative_chapter_files, sections, summary_entries,
 };
 use serde::Deserialize;
 
@@ -579,7 +579,13 @@ fn every_include_sits_inside_the_fence_of_its_file_class() {
     let registered = registered_examples();
     let mut misplaced = Vec::new();
     for directive in example_directives() {
-        let Directive { chapter, path, anchor, fence } = directive;
+        let Directive {
+            chapter,
+            path,
+            anchor,
+            fence,
+            ..
+        } = directive;
         let expected = match classify_include(&registered, &path) {
             IncludeClass::Fixture => FIXTURE_FENCE,
             IncludeClass::Target(_) | IncludeClass::Generated | IncludeClass::Unregistered => {
@@ -1170,4 +1176,186 @@ fn the_derivation_test_pins_every_generated_fixture() {
              stale entry names a module the crate no longer ships"
         );
     }
+}
+
+/// One audited fragment, as the build script publishes it.
+mod audited {
+    include!(concat!(env!("OUT_DIR"), "/audited_fragments.rs"));
+}
+
+/// The sections whose `sql` block quotes something other than the statement an
+/// audited fragment builds.
+///
+/// A section is named here only when it pairs an include directive with a `sql`
+/// block the audit cannot rebuild and assert, and the reason states what the
+/// block carries instead. Every other section carrying a `sql` block pairs it
+/// with an audited fragment, so a block added without an assertion fails the
+/// guard below until it is either asserted or declared.
+const ILLUSTRATIVE_SQL: &[(&str, &str, &str)] = &[
+    (
+        "core/aliasing.md",
+        "## The markers",
+        "the blocks quote a rendered relation reference and a rendered column reference, \
+         not a statement a fragment builds",
+    ),
+    (
+        "core/cte.md",
+        "## Clause anatomy",
+        "the block is the clause skeleton of the statement, which no builder method renders",
+    ),
+    (
+        "core/delete.md",
+        "## Clause anatomy",
+        "the block is the clause skeleton of the statement, which no builder method renders",
+    ),
+    (
+        "core/dialects/sqlite.md",
+        "## Synchronous Execution",
+        "the fragment is a whole function taking a connection handle, so the harness cannot \
+         rebuild it",
+    ),
+    (
+        "core/insert.md",
+        "## Clause anatomy",
+        "the block is the clause skeleton of the statement, which no builder method renders",
+    ),
+    (
+        "core/multi_schema.md",
+        "### Application Runtime Execution",
+        "the block is a server configuration statement, which the query builder does not build",
+    ),
+    (
+        "core/ordering.md",
+        "## Keyset pagination with tuples",
+        "the block quotes the row comparison the predicate renders, not the statement the \
+         fragment builds",
+    ),
+    (
+        "core/select.md",
+        "## Clause anatomy",
+        "the block is the clause skeleton of the statement, which no builder method renders",
+    ),
+    (
+        "core/subqueries.md",
+        "## Deferred rendering and parameter numbering",
+        "the block sketches the placeholder numbering across scopes instead of quoting a \
+         rendered statement",
+    ),
+    (
+        "core/update.md",
+        "## Clause anatomy",
+        "the block is the clause skeleton of the statement, which no builder method renders",
+    ),
+    (
+        "lifecycle/migrations.md",
+        "## The history table",
+        "the block is the DDL of the history table, which the migration engine issues",
+    ),
+    (
+        "lifecycle/migrations.md",
+        "### Scripts that cannot run inside a transaction",
+        "the block is a DDL script a migration carries, not a statement the query builder \
+         renders",
+    ),
+    (
+        "lifecycle/schema.md",
+        "## The stage directory",
+        "the blocks are the declarative DDL scripts of the stage, which the query builder \
+         does not render",
+    ),
+];
+
+/// Whether the audit registry rebuilds the fragment `path` names at `anchor`.
+fn is_audited(path: &str, anchor: &str) -> bool {
+    audited::AUDITED
+        .iter()
+        .any(|entry| entry.file == path && entry.anchor == anchor)
+}
+
+/// Whether the lines of a section open a `sql` fenced block.
+fn carries_sql_fence(lines: &[&str]) -> bool {
+    let mut in_fence = false;
+    for line in lines {
+        let Some(info) = line.trim_start().strip_prefix("```") else {
+            continue;
+        };
+        if in_fence {
+            in_fence = false;
+        } else if info.trim() == "sql" {
+            return true;
+        } else {
+            in_fence = true;
+        }
+    }
+    false
+}
+
+#[test]
+fn every_sql_block_pairs_with_an_audited_fragment() {
+    let book = book_source();
+    let paired: BTreeSet<(String, String)> = example_directives()
+        .into_iter()
+        .filter(|directive| is_audited(&directive.path, &directive.anchor))
+        .map(|directive| (directive.chapter, directive.section))
+        .collect();
+
+    let mut declared = BTreeSet::new();
+    for &(file, heading, reason) in ILLUSTRATIVE_SQL {
+        assert!(
+            !reason.trim().is_empty(),
+            "`{file}` declares the section `{heading}` as illustrative without a reason"
+        );
+        declared.insert((file.to_owned(), heading.to_owned()));
+    }
+
+    let mut chapters = Vec::new();
+    relative_chapter_files(&book, &book, &mut chapters);
+
+    let mut unpaired = Vec::new();
+    let mut seen = BTreeSet::new();
+    for chapter in chapters {
+        let path = book.join(&chapter);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
+        for section in sections(&text) {
+            if !carries_sql_fence(&section.body) {
+                continue;
+            }
+            let key = (chapter.clone(), section.heading.to_owned());
+            if paired.contains(&key) {
+                continue;
+            }
+            if declared.contains(&key) {
+                seen.insert(key);
+                continue;
+            }
+            unpaired.push(format!(
+                "{chapter}: the section `{}` carries a `sql` block no audited fragment renders",
+                section.heading
+            ));
+        }
+    }
+
+    let mut stale: Vec<String> = declared
+        .difference(&seen)
+        .map(|(file, heading)| {
+            format!("{file}: the declared section `{heading}` carries no `sql` block")
+        })
+        .collect();
+    stale.sort();
+    unpaired.sort();
+
+    assert!(
+        stale.is_empty(),
+        "illustrative sections declared for blocks that no longer exist: {stale:?}; a \
+         declaration is the reason a block is not asserted, so it is removed together with the \
+         block it describes"
+    );
+    assert!(
+        unpaired.is_empty(),
+        "`sql` blocks no audited fragment renders: {unpaired:?}; a section that quotes SQL \
+         beside an include directive quotes the statement that fragment builds, so the \
+         fragment is registered in the audit of `build.rs`; a block the library does not \
+         produce is declared in `ILLUSTRATIVE_SQL` with the reason it cannot be asserted"
+    );
 }
