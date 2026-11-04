@@ -35,6 +35,16 @@ table!(
     }
 );
 
+#[cfg(feature = "postgres")]
+table!(
+    /// The fixture table the live refusal scenario duplicates a row in.
+    RefusedUser => "rurqe_dml_refusal" {
+        RefusedUserId => "id": i64,
+        RefusedUserName => "name": String,
+        RefusedUserEmail => "email": String,
+    }
+);
+
 /// Decodes `values` into the row type of the anonymous selection `S`.
 fn decode<S>(_selection: &S, values: &[SqlVal]) -> Option<S::Row>
 where
@@ -612,4 +622,76 @@ fn an_assignment_copies_a_column_of_the_mutated_table() {
         "UPDATE \"users\" SET \"name\" = \"name\" WHERE (\"id\" > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(0)]);
+}
+
+/// The endpoint the live refusal scenario runs against, when the environment
+/// names one.
+///
+/// The scenario needs a server of its own, so the absence of the variable is
+/// the skip condition here exactly as it is in the driver suites: a workspace
+/// without a reachable PostgreSQL keeps the rendering tests of this file
+/// running instead of failing them.
+#[cfg(feature = "postgres")]
+fn live_database_url() -> Option<String> {
+    match std::env::var("RURQE_TEST_POSTGRES_URL") {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ => None,
+    }
+}
+
+/// A duplicate row is refused by the server, and the refusal is read through
+/// the typed chain rather than through the message it renders.
+#[cfg(feature = "postgres")]
+#[test]
+fn a_duplicate_insert_reports_its_sqlstate_and_constraint() {
+    let Some(url) = live_database_url() else {
+        return;
+    };
+
+    let client = postgres::Client::connect(&url, postgres::NoTls)
+        .expect("the test server accepts the connection");
+    let mut db = PgConnection::new(client);
+
+    // The fixture is created through the raw handle, which is the supported
+    // escape hatch for the DDL the typed builders do not model.
+    db.client_mut()
+        .batch_execute(
+            "DROP TABLE IF EXISTS rurqe_dml_refusal; \
+             CREATE TABLE rurqe_dml_refusal ( \
+                 id BIGINT NOT NULL PRIMARY KEY, \
+                 name TEXT NOT NULL, \
+                 email TEXT NOT NULL, \
+                 CONSTRAINT rurqe_dml_refusal_name_key UNIQUE (name) \
+             )",
+        )
+        .expect("the fixture is created");
+
+    let insert = insert_into::<Postgres, RefusedUser>().values((
+        RefusedUserId::set(1i64),
+        RefusedUserName::set("root"),
+        RefusedUserEmail::set("root@example.com"),
+    ));
+    db.execute(&insert).expect("the first row is written");
+
+    let failure = db
+        .execute(&insert)
+        .expect_err("the unique constraint refuses the duplicate row");
+    let error = failure
+        .as_backend()
+        .expect("a refusal the server reported is a backend failure");
+    let db_error = error
+        .as_db_error()
+        .expect("the driver recorded the description the server sent");
+
+    assert_eq!(db_error.code(), &SqlState::UNIQUE_VIOLATION);
+    assert_eq!(
+        db_error.constraint(),
+        Some("rurqe_dml_refusal_name_key"),
+        "the accessor names the constraint the refusal violated"
+    );
+    assert_eq!(
+        db_error.table(),
+        Some("rurqe_dml_refusal"),
+        "the accessor names the relation the refusal was raised on"
+    );
 }

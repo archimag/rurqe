@@ -994,6 +994,7 @@ dependencies = [
 name = "rurqe"
 version = "0.1.0"
 dependencies = [
+ "postgres",
  "rurqe-core",
  "rurqe-macros",
  "rurqe-migrate",

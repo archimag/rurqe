@@ -560,8 +560,10 @@ pub mod prelude {
     #[cfg(feature = "tokio-postgres")]
     pub use rurqe_postgres::{PgAsyncConnection, PgAsyncScope};
 
+    // The adapter failure and the refusal it describes travel together, so the
+    // driver's description of a refusal is named beside the error carrying it.
     #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
-    pub use rurqe_postgres::PgError;
+    pub use rurqe_postgres::{DbError, PgError, SqlState};
 
     #[cfg(feature = "sqlite")]
     pub use rurqe_sqlite::{

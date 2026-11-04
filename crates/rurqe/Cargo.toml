@@ -53,6 +53,11 @@ serde_json = ["rurqe-core/serde_json", "rurqe-postgres?/serde_json"]
 # The facade tests name `serde_json::Value` as a column type, which a feature
 # forwarding the family to the drivers cannot provide on its own.
 serde_json = "1"
+# The live refusal scenario of the DML suite opens a synchronous PostgreSQL
+# connection itself and wraps it in the adapter, so the driver the adapter is
+# built against is named directly; the scenario is gated on the feature that
+# compiles the adapter.
+postgres = "0.19"
 
 [lints]
 workspace = true

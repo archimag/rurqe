@@ -25,6 +25,7 @@ use rurqe_core::expr::SqlVal;
 use rurqe_core::query::BuiltQuery;
 
 use self::compat::value_fits;
+pub use self::driver::error::{DbError, SqlState};
 use self::driver::types::{FromSql, IsNull, Kind, ToSql, Type};
 use self::driver::{Error as DriverError, Row};
 use self::wire::{base_type, wire_of, Wire};
@@ -155,6 +156,36 @@ impl StdError for PgError {
             PgError::AbandonedTransaction { failure } => Some(failure),
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(error) => Some(error),
+        }
+    }
+}
+
+impl PgError {
+    /// Borrows the refusal the server reported, when the driver recorded one.
+    ///
+    /// A statement the server refused reaches the caller as [`PgError::Driver`],
+    /// which keeps the driver failure whole. The driver renders such a refusal as
+    /// a label that names no reason, while the SQLSTATE, the message, the detail,
+    /// and the constraint, the table, and the column the server named live in the
+    /// `DbError` the failure carries. This accessor borrows that value, so the
+    /// SQLSTATE class is inspected programmatically instead of being matched
+    /// against the rendered message.
+    ///
+    /// A failure that never reached the server reports `None`: an unsupported
+    /// column type, a value that does not decode, an unreadable catalog, a
+    /// poisoned connection, an abandoned checkout, and a pool refusal carry no
+    /// server description. The failure a poison record was written for stays
+    /// reachable through [`source`](std::error::Error::source).
+    pub fn as_db_error(&self) -> Option<&DbError> {
+        match self {
+            PgError::Driver(error) => error.as_db_error(),
+            PgError::UnsupportedType(_)
+            | PgError::InvalidValue { .. }
+            | PgError::Catalog(_)
+            | PgError::ConnectionPoisoned { .. }
+            | PgError::AbandonedTransaction { .. } => None,
+            #[cfg(feature = "deadpool-postgres")]
+            PgError::Pool(_) => None,
         }
     }
 }

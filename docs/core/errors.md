@@ -114,6 +114,27 @@ The enumeration implements `From<E>`, so `?` on a driver error inside a function
 | `AbandonedTransaction(rusqlite::Error)` | The checked-out connection could not be returned to an idle session, so it is not handed out. |
 
 Either pool type converts from the failures its own paths raise — `From<r2d2::Error>`, `From<rusqlite::Error>`, and `From<PgError>` — so a checkout failure and a block failure propagate with `?` into a function returning the pool error type.
+## Reading a server refusal
+
+A refusal the server reported stays inspectable after it crosses the adapter boundary. A statement the engine rejects arrives as `ExecutionError::Backend`, the PostgreSQL adapter keeps the driver failure whole in `PgError::Driver`, and the driver records what the server sent — the SQLSTATE, the message, the detail, and the constraint, the table, and the column the refusal names — as a `DbError`. `PgError::as_db_error()` borrows that value, so the SQLSTATE class is read programmatically while the rendered message stays the human-readable summary that carries no code of its own.
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:server_refusal}}
+```
+
+```sql
+INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3)
+```
+
+| Field | Accessor | Content |
+|---|---|---|
+| SQLSTATE | `code()` | the class of the refusal, compared against the constants of `SqlState` |
+| message | `message()` | the primary sentence the server sent |
+| detail | `detail()` | the explanation the server attached, absent when it sent none |
+| constraint | `constraint()` | the constraint the refusal names, absent when no constraint caused it |
+| table | `table()` | the relation the refusal names, absent when it names none |
+
+The accessor reports `None` for a failure that never reached the server: an unsupported column type, a value that does not decode, an unreadable catalog, a poisoned connection, an abandoned checkout, and a pool refusal carry no server description. A poison record keeps the failure it was written for reachable through `source()`, so the description of a refusal behind a poison is read from that cause.
 
 ## Migrations
 

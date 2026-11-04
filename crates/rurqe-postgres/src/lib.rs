@@ -30,4 +30,4 @@ pub use backend::pools::{PgPool, PgPoolError, PgPooledConnection};
 #[cfg(feature = "postgres")]
 pub use backend::sync_conn::PgConnection;
 #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
-pub use backend::types::PgError;
+pub use backend::types::{DbError, PgError, SqlState};

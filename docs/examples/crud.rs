@@ -174,6 +174,36 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: delete_where_opt_or_all
     println!("emptied {emptied} row(s)");
+
+    // ANCHOR: server_refusal
+    // A refusal the server described is read through the typed chain rather
+    // than through the message it renders: the terminal call reports the
+    // adapter failure as a backend error, and the adapter opens the description
+    // the server sent — its SQLSTATE, its constraint, and its table.
+    let refused = insert_into(User)
+        .values((
+            UserId::set(1i64),
+            UserName::set("root"),
+            UserEmail::set("root@example.com"),
+        ))
+        .execute(&pool)
+        .await;
+
+    match &refused {
+        Err(ExecutionError::Backend(error)) => match error.as_db_error() {
+            Some(db_error) if db_error.code() == &SqlState::UNIQUE_VIOLATION => println!(
+                "refused by constraint {} on table {}",
+                db_error.constraint().unwrap_or("(unnamed)"),
+                db_error.table().unwrap_or("(unnamed)"),
+            ),
+            Some(db_error) => println!("the server refused the row: {}", db_error.message()),
+            None => println!("the driver reported no server description: {error}"),
+        },
+        Err(other) => println!("the statement failed before the server described it: {other}"),
+        Ok(rows) => println!("wrote {rows} row(s)"),
+    }
+    // ANCHOR_END: server_refusal
+
     Ok(())
 }
 

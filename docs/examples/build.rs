@@ -147,14 +147,53 @@ const AUDIT_HEADER: &str = concat!(
 /// A selection reports the rows it read, a single-row selection reports the one
 /// row it read, and a mutation reports the rows it wrote; each of these executes
 /// the statement, so a fragment ending in one of them is rebuilt into the build
-/// terminal below. The list is the closed set of terminals this script
-/// recognises, so an ending it does not name is reported instead of emitted: the
-/// generated function holds no connection to execute the call against.
-const EXECUTION_TERMINALS: &[&str] = &[".fetch_all(&pool)", ".fetch_one(&pool)", ".execute(&pool)"];
+/// terminal below. The terminal is followed by one of two `await` forms: the
+/// propagation that ends the fragment, and the binding a fragment that inspects
+/// the outcome of its call carries. The list is the closed set of terminals this
+/// script recognises, so an ending it does not name is reported instead of
+/// emitted: the generated function holds no connection to execute the call
+/// against.
+const EXECUTION_TERMINALS: &[&str] = &[".fetch_all", ".fetch_one", ".fetch_optional", ".execute"];
 
 /// The `await` that follows the execution terminal of a fragment.
 const AWAIT_TERMINAL: &str = ".await?;";
 
+/// The `await` that follows the execution terminal of a fragment which binds
+/// the outcome of its call instead of propagating it.
+///
+/// Such a fragment executes its statement and reads what the call reported —
+/// the refusal of the server, which is what the chapter documenting it shows —
+/// so the awaited call carries no `?`: the value it produces is inspected
+/// rather than propagated.
+const AWAIT_INSPECTED: &str = ".await;";
+/// The tail of a call that follows its argument list.
+///
+/// The execution terminals are matched by the method name alone, while the call
+/// is handed the connection it runs against as an argument: `.fetch_all(&pool)`
+/// carries `(&pool)` between the name and the await that settles it. The list is
+/// scanned with matched depth, so a nested call among the arguments does not end
+/// it early, and a tail that opens no list is returned unchanged.
+fn after_call_arguments(tail: &str) -> Option<&str> {
+    if !tail.trim_start().starts_with('(') {
+        return Some(tail);
+    }
+
+    let mut depth = 0usize;
+    for (offset, character) in tail.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&tail[offset + character.len_utf8()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
 /// The calls that publish a finished statement as a relation of another
 /// statement instead of executing it.
 ///
@@ -173,6 +212,10 @@ enum Terminal {
     /// The region executes the statement it builds, so the execution terminal is
     /// rebuilt into the build terminal.
     Executed,
+    /// The region executes the statement it builds and inspects the outcome it
+    /// reported, so the execution terminal is rebuilt into the build terminal
+    /// and the inspection following it is dropped.
+    Inspected,
     /// The region publishes the statement it builds as a relation of another
     /// statement, so the publication is rebuilt into the build terminal.
     Published,
@@ -373,6 +416,13 @@ const FRAGMENTS: &[Fragment] = &[
         binding: "upserted",
         terminal: Terminal::Executed,
         chapters: &["core/insert.md"],
+    },
+    Fragment {
+        file: "crud.rs",
+        anchor: "server_refusal",
+        binding: "refused",
+        terminal: Terminal::Inspected,
+        chapters: &["core/errors.md"],
     },
     Fragment {
         file: "crud.rs",
@@ -642,6 +692,7 @@ fn module_name(file: &str) -> &str {
 fn statement_of(file: &str, fragment: &Fragment, region: &str) -> Result<String, String> {
     match fragment.terminal {
         Terminal::Executed => rewrite_execution(file, fragment.anchor, region),
+        Terminal::Inspected => rewrite_inspection(file, fragment.anchor, region),
         Terminal::Published => rewrite_publication(file, fragment.anchor, region),
         Terminal::Built => require_ending(file, fragment.anchor, region, BUILD_TERMINAL),
         Terminal::Assembled => require_ending(file, fragment.anchor, region, ")?;")
@@ -685,11 +736,17 @@ fn rewrite_execution(file: &str, anchor: &str, region: &str) -> Result<String, S
         ));
     };
     let tail = &statement[start + terminal.len()..];
-    let trimmed = tail.trim_start();
-    if !trimmed.starts_with(AWAIT_TERMINAL) {
+    let Some(rest) = after_call_arguments(tail) else {
+        return Err(format!(
+            "`{anchor}` of `{file}` carries `{}` after its execution terminal without closing \
+             the argument list of the call",
+            tail.trim()
+        ));
+    };
+    if !rest.trim_start().starts_with(AWAIT_TERMINAL) {
         return Err(format!(
             "`{anchor}` of `{file}` carries `{}` between its statement and its await",
-            tail.trim()
+            rest.trim()
         ));
     }
     let mut rewritten = String::with_capacity(start + BUILD_TERMINAL.len());
@@ -726,6 +783,45 @@ fn rewrite_publication(file: &str, anchor: &str, region: &str) -> Result<String,
         ));
     }
     let mut rewritten = String::with_capacity(statement.len());
+    rewritten.push_str(&statement[..start]);
+    rewritten.push_str(BUILD_TERMINAL);
+    Ok(rewritten)
+}
+
+/// Rewrites the awaited call a fragment inspects into the build terminal.
+///
+/// A fragment that inspects its outcome binds the awaited call and matches on
+/// the value it produced, so the chapter it belongs to documents how a refusal
+/// is read rather than the rows a statement wrote. The rebuilt function ends
+/// the same statement in `.build()?` and drops the inspection that follows the
+/// awaited call: the value the inspection reads is never produced here.
+fn rewrite_inspection(file: &str, anchor: &str, region: &str) -> Result<String, String> {
+    let statement = region.trim_end();
+    let Some((terminal, start)) = EXECUTION_TERMINALS
+        .iter()
+        .filter_map(|terminal| statement.rfind(*terminal).map(|start| (*terminal, start)))
+        .max_by_key(|&(_, start)| start)
+    else {
+        return Err(format!(
+            "`{anchor}` of `{file}` awaits none of {}",
+            EXECUTION_TERMINALS.join(" / ")
+        ));
+    };
+    let tail = &statement[start + terminal.len()..];
+    let Some(rest) = after_call_arguments(tail) else {
+        return Err(format!(
+            "`{anchor}` of `{file}` carries `{}` after its execution terminal without closing \
+             the argument list of the call",
+            tail.trim()
+        ));
+    };
+    if !rest.trim_start().starts_with(AWAIT_INSPECTED) {
+        return Err(format!(
+            "`{anchor}` of `{file}` carries `{}` between its statement and its inspected await",
+            rest.trim()
+        ));
+    }
+    let mut rewritten = String::with_capacity(start + BUILD_TERMINAL.len());
     rewritten.push_str(&statement[..start]);
     rewritten.push_str(BUILD_TERMINAL);
     Ok(rewritten)
