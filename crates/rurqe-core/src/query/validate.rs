@@ -27,6 +27,9 @@
 //! - `error` states the failure vocabulary the rules report through: the
 //!   `BuildError` catalogue with the diagnostic of every pre-flight rule, and the
 //!   per-row clause a misplaced call was written into.
+//! - `window` states the operand shapes a window expression can evaluate, which is
+//!   how the pass refuses an `OVER (...)` clause attached to a value rather than to
+//!   a function call.
 //!
 //! This facade keeps what the submodules share: the relation registry they report a
 //! collision through, and the entry points the rest of the crate names. The failure
@@ -37,6 +40,7 @@ mod equivalence;
 mod error;
 mod qualifiers;
 mod rules;
+mod window;
 
 use crate::schema::TableRef;
 

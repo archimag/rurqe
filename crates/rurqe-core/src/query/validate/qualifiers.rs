@@ -35,7 +35,7 @@ use std::borrow::Cow;
 use crate::expr::{ExprKind, RawSqlError, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
-use super::{effective_relation_name, BuildError};
+use super::{effective_relation_name, window::window_operand_shape, BuildError};
 
 /// The outer scope of a statement nothing encloses.
 pub(super) const ROOT_SCOPE: &[TableRef] = &[];
@@ -412,6 +412,14 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
                     validate_expr_tree(column, scope)?;
                 }
                 WindowExprKind::Expr(e) => {
+                    // An `OVER` clause attaches only to a function application, so
+                    // an operand of any other shape renders a statement no engine
+                    // parses. The shape is plain expression data, which the markers
+                    // of the window cannot observe, so it is rejected here before a
+                    // single character of the statement is rendered.
+                    if let Some(operand) = window_operand_shape(e) {
+                        return Err(BuildError::WindowOperandNotCall { operand });
+                    }
                     validate_expr_tree(e, scope)?;
                 }
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}

@@ -468,6 +468,29 @@ pub enum BuildError {
         /// The per-row clause the call was written into.
         clause: RowClause,
     },
+    /// A window expression is attached to an operand that is not a function call.
+    ///
+    /// An `OVER (...)` clause follows a function application: the engine evaluates
+    /// the function once per row of the window's partition, so the grammar admits an
+    /// aggregate call — `SUM("total") OVER (...)` — a scalar function call —
+    /// `FIRST_VALUE("user_id") OVER (...)` — and a raw fragment trusted to spell such
+    /// a call, and nothing else. A column reference, a bound value, a row value, a
+    /// subquery, an arithmetic or dialect operator, a `CAST`, a `CASE`, a further
+    /// window, or a nested collection names a value rather than a call, so appending
+    /// `OVER (...)` to one of them renders a statement the engine rejects with a
+    /// syntax error: PostgreSQL answers `"total" OVER (...)` with `syntax error at
+    /// or near "OVER"`.
+    ///
+    /// [`Expr::over`](crate::expr::Expr::over) is defined on every expression, and a
+    /// statement assembled from AST data describes the same shape, so the pair stays
+    /// reachable even though the phantom markers of
+    /// [`WindowExpr`](crate::query::WindowExpr) describe the operand only as far as
+    /// its aggregation behaviour. The operand is plain expression data, so the shape
+    /// is rejected here — before a single character of the statement is rendered.
+    WindowOperandNotCall {
+        /// The SQL construct the operand spells.
+        operand: &'static str,
+    },
     /// A raw SQL expression binds a number of parameters other than its
     /// fragments declare.
     ///

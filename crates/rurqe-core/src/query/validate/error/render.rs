@@ -290,6 +290,15 @@ impl fmt::Display for BuildError {
                     clause.as_str()
                 )
             }
+            BuildError::WindowOperandNotCall { operand } => {
+                write!(
+                    f,
+                    "window expression is applied to {operand}, which is not a function call; \
+                     an `OVER` clause attaches only to a function application, \
+                     so apply it to an aggregate such as `sum(...)`, to a scalar function such as \
+                     `coalesce(...)`, or to a raw fragment that spells the call"
+                )
+            }
             BuildError::RawSql(error) => {
                 write!(f, "invalid raw SQL expression: {error}")
             }
