@@ -514,7 +514,8 @@ impl OverrideIndex {
 /// Error raised while reading the project configuration.
 #[derive(Debug)]
 pub enum ConfigError {
-    /// The configuration file exists but could not be read.
+    /// The configuration file could not be read, or a candidate of the discovery walk
+    /// could not be classified.
     ///
     /// The operating-system failure is kept as the
     /// [`source`](std::error::Error::source) of the error rather than flattened
@@ -560,6 +561,17 @@ pub enum ConfigError {
     /// operator named explicitly is the mistake it is.
     NotFound {
         /// The path that does not exist.
+        path: String,
+    },
+    /// Something occupies the configuration path that is not a regular file.
+    ///
+    /// A directory, a socket, or a device at `<directory>/rurqe.toml` is not a
+    /// configuration a project can declare, so the discovery walk reports it instead
+    /// of passing over it: skipping such a candidate would continue to an ancestor's
+    /// configuration or to the engine-neutral defaults, which is exactly the silent
+    /// misconfiguration this crate refuses.
+    NotARegularFile {
+        /// The path that is occupied by something other than a regular file.
         path: String,
     },
 }
@@ -612,6 +624,11 @@ impl fmt::Display for ConfigError {
             ConfigError::NotFound { path } => {
                 write!(f, "configuration file `{path}` does not exist")
             }
+            ConfigError::NotARegularFile { path } => write!(
+                f,
+                "configuration path `{path}` exists but is not a regular file; remove or rename \
+                 the entry so the project keeps a readable `rurqe.toml` there"
+            ),
         }
     }
 }
@@ -619,12 +636,15 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     /// The operating-system failure behind a configuration that could not be read.
     ///
-    /// `Syntax` is a failure of the document's own content and `NotFound` is an
-    /// absence at the named path, so neither carries a cause beneath it.
+    /// `Syntax` is a failure of the document's own content, `NotFound` is an absence
+    /// at the named path, and `NotARegularFile` is the shape of the entry occupying it,
+    /// so none of them carries a cause beneath it.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ConfigError::Io { source, .. } => Some(source),
-            ConfigError::Syntax { .. } | ConfigError::NotFound { .. } => None,
+            ConfigError::Syntax { .. }
+            | ConfigError::NotFound { .. }
+            | ConfigError::NotARegularFile { .. } => None,
         }
     }
 }
@@ -644,14 +664,53 @@ pub fn config_path_in(directory: &Path) -> PathBuf {
 /// `rurqe.toml` that exists, so a crate of a workspace finds the configuration of
 /// the workspace root while a standalone crate finds its own. A procedural macro
 /// starts at `CARGO_MANIFEST_DIR` — the one directory the compiler hands it — and
-/// reaches the project holding the configuration through this walk. `None` means
-/// no ancestor declares one, and the caller then falls back to the conventional
-/// artifact layout beneath `start`.
-pub fn discover_config(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .map(config_path_in)
-        .find(|candidate| candidate.is_file())
+/// reaches the project holding the configuration through this walk.
+///
+/// Every candidate is classified through `std::fs::metadata` rather than through a
+/// presence predicate, because the two answer different questions: a predicate
+/// answers `false` for every failure alike, while the walk has to tell a candidate
+/// that is genuinely absent from one whose state cannot be determined and from one
+/// that exists but is not a configuration file.
+///
+/// - A candidate naming a regular file stops the walk and is answered.
+/// - A candidate naming anything else — a directory, a socket, a device — is refused
+///   with [`ConfigError::NotARegularFile`] instead of being skipped: a project holding
+///   something else at `rurqe.toml` is misconfigured, and skipping it would silently
+///   degrade the project to an ancestor's configuration or to the engine-neutral
+///   defaults, which is the silent misconfiguration this crate refuses.
+/// - A candidate the operating system reports as missing is genuinely absent, and the
+///   walk continues with the next ancestor. `std::fs::metadata` resolves a symbolic
+///   link before classifying it, so a link naming nothing is reported as a missing
+///   path and reads as absence as well.
+/// - Any other failure — a directory the process may not traverse, a symbolic-link
+///   loop, a stale network handle — is refused with [`ConfigError::Io`] carrying the
+///   operating-system error, because a candidate whose state cannot be determined is
+///   not an absent one.
+///
+/// `Ok(None)` therefore states that every candidate on the walk was absent, and the
+/// caller then falls back to the conventional artifact layout beneath `start`.
+pub fn discover_config(start: &Path) -> Result<Option<PathBuf>, ConfigError> {
+    for ancestor in start.ancestors() {
+        let candidate = config_path_in(ancestor);
+
+        match std::fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(Some(candidate)),
+            Ok(_) => {
+                return Err(ConfigError::NotARegularFile {
+                    path: candidate.display().to_string(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(ConfigError::Io {
+                    path: candidate.display().to_string(),
+                    source: error,
+                });
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// The configuration of the project at or above `start`, or the default when none exists.
@@ -669,6 +728,14 @@ pub fn discover_config(start: &Path) -> Option<PathBuf> {
 /// file is reported with the position of its offending declaration instead of being silently
 /// replaced by the defaults.
 ///
+/// The walk refuses what it cannot classify, and that refusal propagates: a candidate that
+/// exists but is not a regular file, and a candidate whose state cannot be determined, end
+/// this entry point with [`ConfigError::NotARegularFile`] or [`ConfigError::Io`] instead of
+/// degrading to the defaults. Only a walk every candidate of which is genuinely absent
+/// answers the default tier, so a project whose `rurqe.toml` is a directory, or which sits
+/// below a directory the process may not traverse, is a failure rather than a silent fall
+/// back.
+///
 /// The walk decides existence with one filesystem call and the read performs another, so a
 /// configuration the walk selected can be removed before it is read — a concurrent checkout,
 /// an editor save, a synchronisation job. An absence at read time is the walk's own absence
@@ -676,7 +743,7 @@ pub fn discover_config(start: &Path) -> Option<PathBuf> {
 /// nothing does, so the answer describes the state of the tree rather than the timing of the
 /// two calls. A file that exists and cannot be read, and a malformed one, stay errors.
 pub fn discover_or_default(start: &Path) -> Result<(CodegenConfig, PathBuf), ConfigError> {
-    let Some(path) = discover_config(start) else {
+    let Some(path) = discover_config(start)? else {
         return Ok((CodegenConfig::default(), start.to_path_buf()));
     };
 

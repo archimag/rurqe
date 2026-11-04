@@ -67,9 +67,10 @@
 //!
 //! # Rejections
 //!
-//! A directory argument, a path naming nothing, a configuration the strict parser
-//! rejects, and a configuration baking no script all stop the compilation with an
-//! error naming the path and the remedy.
+//! A directory argument, a path naming nothing, an ancestor candidate that exists but
+//! is not a regular file or whose state cannot be determined, a configuration the
+//! strict parser rejects, and a configuration baking no script all stop the compilation
+//! with an error naming the path and the remedy.
 
 use std::fs;
 use std::path::{Path, PathBuf};

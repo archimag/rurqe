@@ -720,13 +720,80 @@ fn malformed_entries_are_reported_with_their_line() {
 /// The scratch trees live in the host's temporary directory, and the directories above
 /// it belong to the host, so a test that pins the absence tier compares against this
 /// expectation unconditionally instead of asserting only when no ancestor declares a
-/// configuration: the expectation is `None` on a host that keeps none, and the host's
+/// configuration: the expectation is absence on a host that keeps none, and the host's
 /// own file otherwise.
-fn nearest_declared_config(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .map(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH))
-        .find(|candidate| candidate.is_file())
+///
+/// Each candidate is classified the way the walk classifies it, rather than through a
+/// presence predicate that answers every failure as absence: a host keeping something
+/// else at that path, or holding it beyond a directory it does not let the process
+/// search, is reported as the refusal the walk produces.
+fn nearest_declared_config(start: &Path) -> Result<Option<PathBuf>, ConfigError> {
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join(DEFAULT_CONFIG_PATH);
+
+        match std::fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(Some(candidate)),
+            Ok(_) => {
+                return Err(ConfigError::NotARegularFile {
+                    path: candidate.display().to_string(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(ConfigError::Io {
+                    path: candidate.display().to_string(),
+                    source: error,
+                });
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Asserts that `discovered` answers the tier the host above the scratch tree implies.
+///
+/// The two answers are compared through their rendering rather than by value, because the
+/// `Io` refusal carries the operating-system error a probe observed, and two probes of
+/// one path do not produce equal errors.
+fn assert_same_walk_tier(
+    discovered: Result<Option<PathBuf>, ConfigError>,
+    expected: Result<Option<PathBuf>, ConfigError>,
+) {
+    let answered = discovered.map_err(|error| error.to_string());
+    let implied = expected.map_err(|error| error.to_string());
+
+    assert_eq!(answered, implied, "the walk answers the tier the host implies");
+}
+
+/// Sets the permission bits of `directory` to `mode`.
+#[cfg(unix)]
+fn set_directory_mode(directory: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode))
+        .expect("the probe directory accepts the permission change");
+}
+
+/// Whether withdrawing the search permission of `directory` denies a `stat` beneath it.
+///
+/// The permission bits are the host's to enforce: a process running as root, and a file
+/// system that ignores them, observe the `stat` below a withdrawn directory as a success
+/// or as a plain absence. A test that relies on the denial probes it through this function
+/// first and stands down when the host enforces nothing, instead of asserting on a refusal
+/// the environment never performs.
+#[cfg(unix)]
+fn search_permission_is_enforced(directory: &Path) -> bool {
+    set_directory_mode(directory, 0o000);
+
+    let enforced = matches!(
+        std::fs::metadata(directory.join("probe")).map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::PermissionDenied)
+    );
+
+    set_directory_mode(directory, 0o755);
+
+    enforced
 }
 
 /// A scratch project directory that removes itself when the test ends.
@@ -1203,9 +1270,109 @@ fn discovery_answers_with_the_nearest_configuration_file() {
     std::fs::write(&nearest, "root = \"inner\"\n")
         .expect("the inner configuration is written");
 
-    let discovered = discover_config(&nested);
+    let discovered = discover_config(&nested).expect("every candidate on the walk is classified");
 
     assert_eq!(discovered, Some(nearest));
+}
+
+#[test]
+fn a_directory_at_the_nearest_candidate_stops_the_walk() {
+    let root = temporary_project("directory-candidate");
+    let nested = root.join("crates").join("app");
+    std::fs::create_dir_all(&nested).expect("the nested directories are created");
+    std::fs::write(root.join(DEFAULT_CONFIG_PATH), "root = \"outer\"\n")
+        .expect("the outer configuration is written");
+    let nearest = nested.join(DEFAULT_CONFIG_PATH);
+    std::fs::create_dir_all(&nearest).expect("the directory candidate is created");
+
+    // The nearest candidate exists, but as a directory: the walk reports it instead of
+    // skipping it and reaching the configuration the ancestor declares.
+    let err = discover_config(&nested).expect_err("a directory is not a configuration file");
+    let refused = nearest.display().to_string();
+
+    assert!(
+        matches!(&err, ConfigError::NotARegularFile { path } if path == &refused),
+        "the refusal names the candidate: {err}"
+    );
+    assert!(err.to_string().contains("not a regular file"), "{err}");
+
+    // The same refusal ends the fallible entry point instead of degrading to the
+    // defaults the absent tier answers with.
+    let err = discover_or_default(&nested).expect_err("the walk error propagates");
+
+    assert!(matches!(&err, ConfigError::NotARegularFile { .. }), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_candidate_beyond_an_untraversable_directory_reports_the_operating_system_failure() {
+    let project = temporary_project("untraversable");
+    let root: &Path = &project;
+    std::fs::write(root.join(DEFAULT_CONFIG_PATH), "root = \"outer\"\n")
+        .expect("the ancestor configuration is written");
+    let blocked = root.join("blocked");
+    let start = blocked.join("app");
+    std::fs::create_dir_all(&start).expect("the probe directories are created");
+
+    // Running as root, or on a file system that ignores the permission bits, the
+    // withdrawal denies nothing, so the test stands down instead of asserting on a
+    // refusal the host never performs.
+    if !search_permission_is_enforced(&blocked) {
+        let _ = std::fs::remove_dir_all(root);
+        return;
+    }
+
+    set_directory_mode(&blocked, 0o000);
+    let answer = discover_config(&start);
+    set_directory_mode(&blocked, 0o755);
+    let _ = std::fs::remove_dir_all(root);
+
+    let err = answer.expect_err("an unreadable candidate is not an absent one");
+    let refused = start.join(DEFAULT_CONFIG_PATH).display().to_string();
+
+    assert!(
+        matches!(&err, ConfigError::Io { path, .. } if path == &refused),
+        "the refusal names the candidate: {err}"
+    );
+    assert!(
+        err.to_string().contains("failed to read configuration"),
+        "the diagnostic keeps the wording of an unreadable configuration: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_at_a_candidate_reads_as_absence() {
+    let root = temporary_project("dangling");
+    let nested = root.join("crates").join("app");
+    std::fs::create_dir_all(&nested).expect("the nested directories are created");
+    std::fs::write(root.join(DEFAULT_CONFIG_PATH), "root = \"outer\"\n")
+        .expect("the ancestor configuration is written");
+    let candidate = nested.join(DEFAULT_CONFIG_PATH);
+    std::os::unix::fs::symlink(nested.join("missing.toml"), &candidate)
+        .expect("the dangling link is created");
+
+    assert!(
+        std::fs::metadata(&candidate).is_err(),
+        "the link names nothing, so the candidate is absent"
+    );
+
+    // The link is resolved before the candidate is classified, so a link naming nothing
+    // is reported as a missing path: the walk reads it as absence and continues to the
+    // configuration the ancestor declares.
+    let discovered = discover_config(&nested).expect("a dangling link is not a failure");
+
+    assert_eq!(
+        discovered,
+        Some(root.join(DEFAULT_CONFIG_PATH)),
+        "the walk continues to the configuration the ancestor declares"
+    );
+
+    let (configuration, directory) =
+        discover_or_default(&nested).expect("the walk answers or reports a failure");
+
+    assert_eq!(configuration.root(), "outer");
+    assert_eq!(directory, root.to_path_buf());
 }
 
 #[test]
@@ -1216,12 +1383,13 @@ fn a_directory_tree_without_a_configuration_file_yields_none() {
     std::fs::create_dir_all(&nested).expect("the nested directories are created");
 
     // The tree declares no configuration of its own, so the walk leaves it and answers
-    // with the nearest declaration above it: `None` on a host that keeps none, and the
+    // with the nearest declaration above it: absence on a host that keeps none, and the
     // host's own file otherwise. Comparing against the exact expectation keeps the tier
     // checked in both cases instead of skipping it when an ancestor declares one.
     let discovered = discover_config(&nested);
+    let expected = nearest_declared_config(&nested);
 
-    assert_eq!(discovered, nearest_declared_config(&nested), "the nearest declaration above");
+    assert_same_walk_tier(discovered, expected);
 }
 
 #[test]
@@ -1429,20 +1597,28 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
 
     // The tree declares no configuration, so the walk leaves it: the answer is the
     // defaults anchored at the caller's directory on a host that keeps none, and the
-    // host's own declaration otherwise. Both branches assert, so the test never passes
+    // host's own declaration otherwise. Every tier asserts, so the test never passes
     // without checking the tier it describes.
-    let (configuration, directory) =
-        discover_or_default(&nested).expect("the walk answers or reports a failure");
+    let answer = discover_or_default(&nested);
 
     match nearest_declared_config(&nested) {
-        None => {
+        Ok(None) => {
+            let (configuration, directory) =
+                answer.expect("a walk over absent candidates answers the defaults");
+
             assert_eq!(configuration, CodegenConfig::default());
             assert_eq!(directory, nested, "the default is anchored at the caller");
         }
-        Some(declared) => {
+        Ok(Some(declared)) => {
             let anchor = declared.parent().expect("a configuration file sits in a directory");
+            let (_, directory) = answer.expect("the answer comes from the host above");
 
             assert_eq!(directory.as_path(), anchor, "the answer comes from the host above");
+        }
+        Err(expected) => {
+            let error = answer.expect_err("the walk refuses the candidate the host keeps");
+
+            assert_eq!(error.to_string(), expected.to_string(), "the walk reports the host");
         }
     }
 }
@@ -1540,7 +1716,10 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
     std::fs::write(&path, "primary_schema = \"app\"\n").expect("the configuration is written");
 
     // The walk observes the file, and the read that follows finds it gone.
-    assert_eq!(discover_config(&member), Some(path.clone()));
+    assert_eq!(
+        discover_config(&member).expect("the candidate is a regular file"),
+        Some(path.clone())
+    );
     std::fs::remove_file(&path).expect("the configuration is removed");
 
     let answer = read_discovered(&path, &member);
@@ -1568,7 +1747,10 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
     )
     .expect("the configuration is written");
 
-    assert_eq!(discover_config(&member), Some(path.clone()));
+    assert_eq!(
+        discover_config(&member).expect("the candidate is a regular file"),
+        Some(path.clone())
+    );
     std::fs::remove_file(&path).expect("the configuration is removed");
 
     // The removed file is the walk's own absence tier: the read answers the defaults
@@ -1579,14 +1761,25 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
 
     // A tree that never declared one answers the same tuple whenever the host above the
     // scratch tree declares none either; when the host does declare one, the answer comes
-    // from that file. Both cases are asserted instead of skipping the comparison.
-    let absent = discover_or_default(&member).expect("the walk answers or reports a failure");
+    // from that file. Every tier is asserted instead of skipping the comparison.
     match nearest_declared_config(&member) {
-        None => assert_eq!(absent, vanished),
-        Some(declared) => {
+        Ok(None) => assert_eq!(
+            discover_or_default(&member)
+                .expect("a walk over absent candidates answers the defaults"),
+            vanished
+        ),
+        Ok(Some(declared)) => {
             let anchor = declared.parent().expect("a configuration file sits in a directory");
+            let (_, directory) =
+                discover_or_default(&member).expect("the answer comes from the host above");
 
-            assert_eq!(absent.1.as_path(), anchor, "the answer comes from the host above");
+            assert_eq!(directory.as_path(), anchor, "the answer comes from the host above");
+        }
+        Err(expected) => {
+            let error = discover_or_default(&member)
+                .expect_err("the walk refuses the candidate the host keeps");
+
+            assert_eq!(error.to_string(), expected.to_string(), "the walk reports the host");
         }
     }
 }

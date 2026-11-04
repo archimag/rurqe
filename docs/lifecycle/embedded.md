@@ -33,6 +33,15 @@ macro refuses a path that declares none instead of guessing at one.
 
 - A call without an argument climbs the ancestors of the manifest directory for a
   `rurqe.toml` and reads the artifacts that file declares.
+- A candidate on that walk that exists but is not a regular file, and a candidate
+  whose state cannot be determined — a directory the process may not traverse, a
+  symbolic-link loop — stop the compilation with an error naming the candidate. The
+  walk never skips such an entry in favour of an ancestor's configuration or of the
+  conventional layout: a project that keeps something else at `rurqe.toml` is
+  misconfigured, and compiling it against defaults would hide that. Only a candidate
+  the file system reports as missing is passed over, and a symbolic link naming
+  nothing reads as missing, because the link is resolved before the candidate is
+  classified.
 - Without a configuration on that walk, the conventional `<manifest>/rurqe`
   artifact layout applies.
 
