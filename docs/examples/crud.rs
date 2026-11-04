@@ -97,6 +97,37 @@ async fn main() -> Result<()> {
     // ANCHOR_END: update_returning
     println!("renamed {renamed:?}");
 
+    // ANCHOR: update_where_opt
+    let target: Option<i64> = Some(1i64);
+    let narrowed = update(User)
+        .set(UserName::set("admin"))
+        .where_opt(target.map(|value| UserId.eq(value)))
+        .allow_all()
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: update_where_opt
+    println!("narrowed {narrowed} row(s)");
+
+    // ANCHOR: update_where_if
+    let target: Option<i64> = None;
+    let confirmed = update(User)
+        .set(UserName::set("admin"))
+        .where_if(target.map(|value| UserId.eq(value)))
+        .allow_all()
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: update_where_if
+    println!("confirmed {confirmed} row(s)");
+
+    // ANCHOR: update_where_opt_or_all
+    let target: Option<i64> = None;
+    let widened = update(User)
+        .set(UserName::set("admin"))
+        .where_opt_or_all(target.map(|value| UserId.eq(value)))
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: update_where_opt_or_all
+    println!("widened {widened} row(s)");
     // ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
@@ -115,6 +146,34 @@ async fn main() -> Result<()> {
     // ANCHOR_END: delete_returning
     println!("removed rows: {removed:?}");
 
+    // ANCHOR: delete_where_opt
+    let target: Option<i64> = Some(1i64);
+    let matched = delete_from(User)
+        .where_opt(target.map(|value| UserId.eq(value)))
+        .allow_all()
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: delete_where_opt
+    println!("matched {matched} row(s)");
+
+    // ANCHOR: delete_where_if
+    let target: Option<i64> = None;
+    let swept = delete_from(User)
+        .where_if(target.map(|value| UserId.eq(value)))
+        .allow_all()
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: delete_where_if
+    println!("swept {swept} row(s)");
+
+    // ANCHOR: delete_where_opt_or_all
+    let target: Option<i64> = None;
+    let emptied = delete_from(User)
+        .where_opt_or_all(target.map(|value| UserId.eq(value)))
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: delete_where_opt_or_all
+    println!("emptied {emptied} row(s)");
     Ok(())
 }
 

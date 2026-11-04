@@ -29,7 +29,7 @@ The shortest executable statement assigns one column and restricts one row: `upd
 | `UPDATE "users"` | `update(User)` | names the table and records no assignment, so the statement is not executable |
 | `SET ...` | `.set(assignments)` | records the assignment set; at least one assignment is required before building |
 | `FROM "accounts"` | `.from_table(Account)` | adds a source relation whose columns become reachable from `SET`, the filter, and `RETURNING` |
-| `WHERE condition` | `.where_(pred)`, `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` | moves the statement out of the unfiltered state |
+| `WHERE condition` | `.where_(pred)`, `.where_if(...)`, `.where_opt(...)`, `.where_opt_or_all(...)` | records the predicate; `.where_` and `.where_opt_or_all` also move the statement out of the unfiltered state |
 | every row | `.allow_all()` | confirms a full-table mutation explicitly; without it the statement stays unfiltered |
 | `RETURNING ...` | `.returning(...)` | projects the rewritten rows instead of a row count |
 | — | `.build()` | renders the statement, which is only reachable once an assignment set and a filter are both present |
@@ -65,9 +65,37 @@ UPDATE "users" SET "name" = $1 FROM "accounts" WHERE ("users"."id" = "accounts".
 
 ### Filters assembled at runtime
 
-The runtime-filter inventory belongs to the WHERE chapter, *Predicates and `WHERE`*: that chapter names every spelling a filtering statement accepts and what each one records. What follows is only what those spellings mean on an `UPDATE`.
+A filter assembled from caller input arrives through a call that decides what happens when the input is absent. The call records the predicate without moving the statement out of the unfiltered state, so the explicit confirmation decides whether a statement built this way can execute at all.
 
-The conditional spellings record the predicate and leave the filtering typestate untouched, so an absent optional predicate adds no clause and leaves the statement exactly in the state it arrived with — an `UPDATE` that is still unfiltered after such a call cannot be built until the caller supplies the missing predicate. A full-table mutation is confirmed only by the spellings that grant it: `.where_opt_or_all(...)` through an absent predicate, and `.allow_all()` explicitly. Neither one records a condition.
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:update_where_opt}}
+```
+
+```sql
+UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
+```
+
+`.where_opt(...)` and `.where_if(...)` are one call: each records the predicate when the option is `Some` and adds no clause otherwise. Neither of them grants permission to build the statement, because the typestate a mutation arrives with is the typestate it leaves, so `.allow_all()` is the explicit confirmation that completes the statement — it records no condition of its own and leaves the recorded predicate in place. The option decides which statement is rendered: a present predicate becomes the `WHERE` clause above, while an absent one passes the confirmation through to a statement with no `WHERE` clause at all:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:update_where_if}}
+```
+
+```sql
+UPDATE "users" SET "name" = $1
+```
+
+`.where_opt_or_all(...)` is the spelling for the opposite intent: an absent predicate is itself the confirmation, so the statement is buildable without a separate `.allow_all()` call and rewrites every row:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:update_where_opt_or_all}}
+```
+
+```sql
+UPDATE "users" SET "name" = $1
+```
+
+The last two render the same statement, because both of them rewrite every row. What separates them is where the confirmation comes from: `.where_opt_or_all(...)` reads the absent value as the confirmation itself, while `.where_if(...)` records the predicate alone and leaves `.allow_all()` to the caller who means it.
 
 ### `RETURNING`
 

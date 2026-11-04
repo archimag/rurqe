@@ -42,7 +42,7 @@ The branches fold their markers: a `CASE` written over aggregates stays an aggre
 | `nullif(a, b)` | `NULLIF(a, b)` |
 | `greatest(...)` / `least(...)` | `GREATEST(...)` / `LEAST(...)` |
 
-Each operand is a column, an expression, or a literal of the matching type, and the functions fold aggregation markers exactly like `CASE` — `coalesce(sum(OrderTotal), 0.0)` is an aggregate. `GREATEST` / `LEAST` and the null-safe pair below are PostgreSQL-only here; the capability matrix on the `SELECT` page records where each is available.
+Each operand is a column, an expression, or a literal of the matching type, and the functions fold aggregation markers exactly like `CASE` — `coalesce(sum(OrderTotal), 0.0)` is an aggregate. `GREATEST` / `LEAST` and the null-safe pair below are PostgreSQL-only: no SQLite version accepts them, so the call does not exist on a SQLite target and the compiler refuses it instead of emitting SQL the engine would reject.
 
 ## Null-safe comparison
 

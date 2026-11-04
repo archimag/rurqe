@@ -26,7 +26,7 @@ The shortest executable statement restricts one row: `delete_from(User).where_(U
 |---|---|---|
 | `DELETE FROM "users"` | `delete_from(User)` | names the table and records no filter, so the statement is not executable |
 | `USING "accounts"` | `.using(...)`, `.using_table(Account)` | adds a source relation whose columns the filter may read |
-| `WHERE condition` | `.where_(pred)`, `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` | moves the statement out of the unfiltered state |
+| `WHERE condition` | `.where_(pred)`, `.where_if(...)`, `.where_opt(...)`, `.where_opt_or_all(...)` | records the predicate; `.where_` and `.where_opt_or_all` also move the statement out of the unfiltered state |
 | every row | `.allow_all()` | confirms a full-table deletion explicitly; without it the statement stays unfiltered |
 | `RETURNING ...` | `.returning(...)` | projects the removed rows instead of a row count |
 | — | `.build()` | renders the statement, which is only reachable once a filter is present |
@@ -59,7 +59,37 @@ DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
 
 ### Filters assembled at runtime
 
-The runtime-filter inventory belongs to the WHERE chapter, *Predicates and `WHERE`*. On a `DELETE` the mutation spellings behave exactly as they do on an `UPDATE`: an absent predicate adds no clause, and the statement keeps the type it arrived with unless the call itself grants the full-table mutation.
+A filter assembled from caller input arrives through a call that decides what happens when the input is absent. The call records the predicate without moving the statement out of the unfiltered state, so the explicit confirmation decides whether a statement built this way can execute at all.
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:delete_where_opt}}
+```
+
+```sql
+DELETE FROM "users" WHERE ("id" = $1)
+```
+
+`.where_opt(...)` and `.where_if(...)` are one call: each records the predicate when the option is `Some` and adds no clause otherwise. Neither of them grants permission to build the statement, because the typestate a mutation arrives with is the typestate it leaves, so `.allow_all()` is the explicit confirmation that completes the statement — it records no condition of its own and leaves the recorded predicate in place. The option decides which statement is rendered: a present predicate becomes the `WHERE` clause above, while an absent one passes the confirmation through to a statement with no `WHERE` clause at all:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:delete_where_if}}
+```
+
+```sql
+DELETE FROM "users"
+```
+
+`.where_opt_or_all(...)` is the spelling for the opposite intent: an absent predicate is itself the confirmation, so the statement is buildable without a separate `.allow_all()` call and removes every row:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:delete_where_opt_or_all}}
+```
+
+```sql
+DELETE FROM "users"
+```
+
+The last two render the same statement, because both of them remove every row. What separates them is where the confirmation comes from: `.where_opt_or_all(...)` reads the absent value as the confirmation itself, while `.where_if(...)` records the predicate alone and leaves `.allow_all()` to the caller who means it.
 ### `RETURNING`
 
 ```rust,no_run
