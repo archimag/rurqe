@@ -1,4 +1,4 @@
-//! Value expressions: arithmetic and `CASE WHEN`.
+//! Value expressions: arithmetic, `CASE WHEN`, and the null-handling functions.
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
@@ -43,6 +43,27 @@ async fn main() -> Result<()> {
     for row in billed {
         println!("{} {}", row.order_id, row.billed);
     }
+
+    // ANCHOR: scalar_functions
+    let priced = select_from(Order)
+        .select(cols!(
+            order_id: OrderId,
+            total: nullif(OrderTotal, 0.0),
+            highest: greatest(OrderTotal, [1.0, 2.0]),
+        ))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: scalar_functions
+    println!("{}", priced.len());
+
+    // ANCHOR: null_safe
+    let reclassified = select_from(Order)
+        .select(cols!(order_id: OrderId))
+        .where_(is_not_distinct_from(OrderTax, 0.0))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: null_safe
+    println!("{}", reclassified.len());
 
     Ok(())
 }

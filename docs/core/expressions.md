@@ -44,6 +44,12 @@ The branches fold their markers: a `CASE` written over aggregates stays an aggre
 
 Each operand is a column, an expression, or a literal of the matching type, and the functions fold aggregation markers exactly like `CASE` — `coalesce(sum(OrderTotal), 0.0)` is an aggregate. `GREATEST` / `LEAST` and the null-safe pair below are PostgreSQL-only: no SQLite version accepts them, so the call does not exist on a SQLite target and the compiler refuses it instead of emitting SQL the engine would reject.
 
+```rust,no_run
+{{#rustdoc_include ../examples/expressions.rs:scalar_functions}}
+```
+
+`nullif(OrderTotal, 0.0)` keeps the column type and renders the sentinel value as SQL `NULL`; `greatest(OrderTotal, [1.0, 2.0])` takes the remaining candidates from the array it is handed, so a literal candidate is passed the same way a column marker is.
+
 ## Null-safe comparison
 
 `=` and `<>` follow three-valued logic: once a NULL stands on either side, the comparison is unknown rather than true, so neither operator selects the row. SQL:1999 defines the pair that decides on absence instead of propagating it:
@@ -54,6 +60,12 @@ Each operand is a column, an expression, or a literal of the matching type, and 
 | `is_not_distinct_from(a, b)` | `a IS NOT DISTINCT FROM b` |
 
 `is_distinct_from` is true when the two values differ, and also when exactly one of them is absent; two absent values are not distinct from each other. `is_not_distinct_from` is its complement, so it reads two absent values as equal — the pair that behaves as an equality once a NULL takes part.
+
+```rust,no_run
+{{#rustdoc_include ../examples/expressions.rs:null_safe}}
+```
+
+The predicate selects the rows whose tax equals zero together with the rows whose tax is absent, which a plain `OrderTax.eq(0.0)` cannot do: that comparison evaluates to unknown as soon as the column is NULL, so neither row is returned.
 
 ## Correlated references (`outer`)
 
