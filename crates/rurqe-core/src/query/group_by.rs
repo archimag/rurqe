@@ -57,7 +57,15 @@ where
 {
 }
 
-/// Derives the row item produced by a projection in a `GROUP BY` query.
+/// Checks that a projection item may appear in a `GROUP BY` query.
+///
+/// The trait is a membership rule, not a type derivation: it states that a
+/// column is part of the `GROUP BY` clause, and that an aggregate, a constant
+/// expression, or a window expression is accepted beside the grouped columns.
+/// [`GroupedSelection`](crate::query::GroupedSelection) applies the rule to the
+/// tuple a selection is made of, while the row type of the selection is derived
+/// by [`SelectionFor`](crate::query::SelectionFor) alone, exactly as for an
+/// ungrouped statement.
 ///
 /// A plain column reaches the row only once it is part of the `GROUP BY` clause,
 /// while an aggregate collapses the rows of a group and stays projectable even
@@ -100,20 +108,16 @@ where
     label = "the projected column is neither part of the GROUP BY clause nor an aggregate",
     note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
 )]
-pub trait GroupedSelectTarget<GroupByCols, P = At<0>, D = ()>: SelectTarget {
-    /// The Rust type produced for this projection in a grouped query.
-    type Output;
-}
+pub trait GroupedSelectTarget<GroupByCols, P = At<0>, D = ()>: SelectTarget {}
 
 impl<GroupByCols, C, P, D> GroupedSelectTarget<GroupByCols, P, D> for C
 where
     C: Column,
     GroupByCols: ColumnInGroupBy<C, P>,
 {
-    type Output = C::RustType;
 }
 
-/// Derives the row item produced by an aggregate in a `GROUP BY` query.
+/// Accepts an aggregate as a projection of a `GROUP BY` query.
 ///
 /// An aggregate collapses the rows of a group into a single value, so it may
 /// reference a column the query does not group by.
@@ -125,10 +129,9 @@ where
     Marker: AggregateMarker + AggregateInDialect<D>,
     ExprD: DialectInScope<D>,
 {
-    type Output = T;
 }
 
-/// Derives the row item produced by a constant expression in a `GROUP BY` query.
+/// Accepts a constant expression as a projection of a `GROUP BY` query.
 ///
 /// An expression referencing no table — a literal, a raw SQL fragment such as
 /// `sql!(<i64> "COUNT(*)")`, or a comparison between them — is constant within a
@@ -226,10 +229,9 @@ where
     T: 'static + Send + Sync,
     ExprD: DialectInScope<D>,
 {
-    type Output = T;
 }
 
-/// Derives the row item produced by a window expression in a `GROUP BY` query.
+/// Accepts a window expression over an aggregating operand in a `GROUP BY` query.
 ///
 /// A window function is evaluated over the rows of a group once the rows are
 /// grouped, so the columns its specification partitions by and orders by have to
@@ -411,11 +413,9 @@ where
     Cols: WindowColsInGroupBy<GroupByCols, Positions>,
     WinD: DialectInScope<StmtD>,
 {
-    type Output = T;
 }
 
-/// Derives the row item produced by a window expression over a constant operand
-/// in a `GROUP BY` query.
+/// Accepts a window expression over a constant operand in a `GROUP BY` query.
 ///
 /// An expression referencing no table — a raw SQL fragment such as
 /// `sql!(<i64> "COUNT(*)")` that spells the call itself, or a function call
@@ -447,10 +447,15 @@ where
     Cols: WindowColsInGroupBy<GroupByCols, Positions>,
     WinD: DialectInScope<StmtD>,
 {
-    type Output = T;
 }
 
-/// Derives the row type of a selection projected from a grouped query.
+/// Checks that every projection item of a selection may appear in a grouped query.
+///
+/// The trait extends the membership rule of [`GroupedSelectTarget`] to the tuple
+/// a selection is made of and derives no row type of its own: the row of a
+/// grouped selection is the one [`SelectionFor`](crate::query::SelectionFor)
+/// derives in the scope of the statement, so it matches the row an ungrouped
+/// statement with the same selection produces, outer-join nullability included.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be selected in a GROUP BY query",
     label = "one of the projected columns is neither grouped nor an aggregate",
@@ -634,6 +639,53 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     /// same trait: it has to be projectable from the scope of the statement
     /// (`SelectionFor`), and every item it records has to name a grouped column, an
     /// aggregate, or a constant (`GroupedSelection`).
+    ///
+    /// The row type of the statement is the one the selection produces in the
+    /// query scope, exactly like an ungrouped statement: a column read through a
+    /// `LEFT JOIN` stays `Option<T>` in a grouped row as well, and the grouping
+    /// rule adds no second derivation of it.
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::{GroupedQuery, SelectQuery};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table!(
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// );
+    ///
+    /// rurqe_core::table!(
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// );
+    ///
+    /// fn main() {
+    ///     // `OrderTotal` is read from the nullable side of the join, so the
+    ///     // grouped row keeps it as `Option<f64>`.
+    ///     let _: GroupedQuery<MockDialect, _, (i64, Option<f64>), _> =
+    ///         SelectQuery::<MockDialect>::new()
+    ///             .from::<User>()
+    ///             .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+    ///             .group_by((UserId, OrderTotal))
+    ///             .select((UserId, OrderTotal));
+    /// }
+    /// ```
     pub fn select<S, Positions, GroupPositions>(
         self,
         selection: S,

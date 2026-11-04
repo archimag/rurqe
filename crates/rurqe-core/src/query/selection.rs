@@ -304,6 +304,12 @@ where
 }
 
 /// Derives the row type of the selection `Self` projected from the scope `Tables`.
+///
+/// The derivation is the single one of a projected row type: a grouped query
+/// names its row through this trait as well, so a column of an outer-joined
+/// relation keeps its nullable form in a grouped row, and the grouping rule of
+/// [`GroupedSelection`](crate::query::GroupedSelection) derives no row type of
+/// its own.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be selected from this query's scope",
     label = "one of the projected columns belongs to a table the query does not select from",
