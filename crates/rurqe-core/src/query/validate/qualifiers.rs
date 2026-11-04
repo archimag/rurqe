@@ -470,12 +470,14 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
 /// relation it reads through the node itself, so it resolves by that name against
 /// the same namespace: the statement addresses the relation — under its table name
 /// or under the alias the renderer substitutes for it — or an enclosing statement
-/// provides it for correlation. A name no relation in either scope carries renders
-/// a reference the engine cannot resolve: a statement addressing no relation at all
-/// writes the bare name of the reference, and one addressing other relations writes
-/// a qualifier none of them declares, which the engine answers with
-/// `missing FROM-clause entry for table "..."`. Such a reference is rejected beside
-/// the qualifier rule, as [`BuildError::UnresolvedColumn`].
+/// provides it for correlation under the name that statement renders it by, which
+/// is the alias an aliased occurrence carries rather than the table name behind it.
+/// A name no relation in either scope carries renders a reference the engine cannot
+/// resolve: a statement addressing no relation at all writes the bare name of the
+/// reference, and one addressing other relations writes a qualifier none of them
+/// declares, which the engine answers with `missing FROM-clause entry for table
+/// "..."`. Such a reference is rejected beside the qualifier rule, as
+/// [`BuildError::UnresolvedColumn`].
 ///
 /// The walk mirrors `validate_expr` over the composite nodes of the current
 /// statement and continues into the embedded statements through the section walk
@@ -530,11 +532,15 @@ fn walk_qualifiers(
         // statement addresses and the relations every statement enclosing it
         // provides. The renderer expands the reference to `"qualifier"."column"`
         // as soon as the statement addresses more than one relation, or one under
-        // an alias, and leaves it bare otherwise, so a name no relation in either
-        // scope carries names a table the engine cannot find: a statement that
-        // addresses no relation at all writes the bare name of the reference, and
-        // one addressing other relations writes a qualifier none of them declares.
-        // Both are rejected here.
+        // an alias, and leaves it bare otherwise, while a reference naming none of
+        // the statement's own relations is written verbatim. A name no relation in
+        // either scope carries therefore names a table the engine cannot find: a
+        // statement that addresses no relation at all writes the bare name of the
+        // reference, and one addressing other relations writes a qualifier none of
+        // them declares. An enclosing relation answers to the name its own
+        // statement renders it by alone, because an alias is substituted only
+        // against the relations of the statement being rendered. All of them are
+        // rejected here.
         ExprKind::Column { table, name } => {
             if resolves_plain_column(table, relations, outer_relations) {
                 Ok(())
@@ -734,9 +740,17 @@ fn resolves_qualifier(
 /// A plain column reference carries the name of the relation it reads instead of a
 /// rendered qualifier, so it resolves by that name against the relations the
 /// statement addresses itself and the relations every statement enclosing it
-/// provides for correlation. A relation answers to two such names: the table name
-/// it is declared under, which the renderer substitutes with the alias of an
-/// aliased occurrence, and the alias itself, which addresses the relation directly.
+/// provides for correlation. The two scopes answer to different spellings, because
+/// the renderer qualifies a reference against the first one alone: a relation of
+/// the statement itself answers to the table name it is declared under — which the
+/// renderer substitutes with the alias of an aliased occurrence — and to the alias
+/// itself, while an enclosing relation answers to the name the statement enclosing
+/// it renders it by alone, the alias the occurrence carries rather than the table
+/// name behind it. A correlated reference is qualified verbatim, so the base name
+/// of an aliased occurrence names a relation no rendered statement declares: the
+/// enclosing statement writes `FROM "users" AS "u"`, where PostgreSQL answers
+/// `"users"."id"` with `missing FROM-clause entry for table "users"`.
+///
 /// A name no relation in either scope carries leaves the reference unresolvable —
 /// the statement renders a qualifier it never declares, or a bare table name when
 /// it declares no relation at all — so the reference is rejected as
@@ -746,10 +760,17 @@ fn resolves_plain_column(
     relations: &[TableRef],
     outer_relations: &[TableRef],
 ) -> bool {
-    relations
+    // A relation of the statement itself answers to the name the renderer
+    // qualifies the reference against, while an enclosing relation answers to the
+    // name the statement enclosing it renders it by.
+    let own = relations
         .iter()
-        .chain(outer_relations)
-        .any(|relation| relation.name == table || effective_relation_name(relation) == table)
+        .any(|relation| relation.name == table || effective_relation_name(relation) == table);
+    let enclosing = outer_relations
+        .iter()
+        .any(|relation| effective_relation_name(relation) == table);
+
+    own || enclosing
 }
 
 /// Rejects a qualifier no relation of an embedded statement or of an enclosing

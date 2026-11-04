@@ -395,6 +395,123 @@ fn an_outer_relation_stays_reachable_from_a_nested_statement() {
     );
 }
 
+/// Builds a statement whose filter is a subquery over `recent` correlating a plain
+/// column reference to the statement enclosing it.
+///
+/// The reference names `reference_table` explicitly, while `aliased` selects how
+/// the enclosing statement addresses `orders`: under the `o` alias, or under the
+/// table name it is declared by. The pair decides whether the qualifier the nested
+/// statement renders is one the enclosing statement declares.
+fn correlated_plain_statement(reference_table: &'static str, aliased: bool) -> SelectAst {
+    let mut inner = SelectQuery::<MockDialect>::new()
+        .from::<RecentOrder>()
+        .select((RecentId,))
+        .to_ast();
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "recent",
+            name: "id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: reference_table,
+            name: "id",
+        }),
+    });
+
+    let mut outer = if aliased {
+        SelectQuery::<MockDialect>::new()
+            .from::<Aliased<Order, OrderAlias>>()
+            .select((AliasedCol::<OrderAlias, OrderId>::new(),))
+            .to_ast()
+    } else {
+        SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderId,))
+            .to_ast()
+    };
+    outer.filter = Some(ExprKind::Subquery {
+        op: SubqueryOp::Exists,
+        operand: None,
+        query: Subquery::new(inner),
+        negated: false,
+    });
+    outer
+}
+
+#[test]
+fn a_correlated_plain_reference_to_an_unaliased_enclosing_relation_is_accepted() {
+    // The enclosing statement renders `orders` under its own table name, so the
+    // qualifier the nested statement writes resolves verbatim.
+    assert_eq!(correlated_plain_statement("orders", false).validate(), Ok(()));
+}
+
+#[test]
+fn a_correlated_plain_reference_to_the_base_name_of_an_aliased_enclosing_relation_is_rejected() {
+    // The enclosing statement renders `FROM "orders" AS "o"`, so the `"orders"`
+    // the nested statement writes names a relation that statement never declares —
+    // what PostgreSQL answers with `missing FROM-clause entry for table "orders"`.
+    // The renderer qualifies a correlated reference verbatim and substitutes no
+    // alias across a statement boundary, so the reference is rejected before it
+    // renders.
+    assert_eq!(
+        correlated_plain_statement("orders", true).validate(),
+        Err(BuildError::UnresolvedColumn {
+            table: "orders",
+            column: "id",
+        })
+    );
+}
+
+#[test]
+fn a_correlated_plain_reference_naming_the_alias_of_an_enclosing_relation_is_accepted() {
+    // The enclosing statement renders the relation as `"orders" AS "o"`, and the
+    // reference carries exactly that name.
+    assert_eq!(correlated_plain_statement("o", true).validate(), Ok(()));
+}
+
+#[test]
+fn a_correlated_plain_reference_to_the_base_name_of_an_outer_relation_is_rejected() {
+    // The relation in scope belongs to a statement enclosing the validated one, and
+    // that statement renders it under the alias alone, so the base name the
+    // reference carries addresses no rendered relation.
+    let mut inner = empty_ast();
+    inner.projections.push(ExprKind::Column {
+        table: "users",
+        name: "id",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &scalar_subquery(inner),
+            &[],
+            &[TableRef::aliased("users", "u")],
+        ),
+        Err(BuildError::UnresolvedColumn {
+            table: "users",
+            column: "id",
+        })
+    );
+}
+
+#[test]
+fn a_correlated_plain_reference_naming_the_alias_of_an_outer_relation_is_accepted() {
+    let mut inner = empty_ast();
+    inner.projections.push(ExprKind::Column {
+        table: "u",
+        name: "id",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &scalar_subquery(inner),
+            &[],
+            &[TableRef::aliased("users", "u")],
+        ),
+        Ok(())
+    );
+}
+
 #[test]
 fn a_nested_statement_qualified_by_a_name_nothing_declares_is_rejected() {
     let mut inner = empty_ast();
