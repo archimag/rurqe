@@ -247,6 +247,47 @@ fn the_unambiguous_naming_forms_name_the_field() {
 }
 
 #[test]
+fn a_leading_alias_written_directly_before_a_punct_target_is_recognised() {
+    let item: ProjectionItem =
+        parse_str("wrapped:&users.id").expect("no separating space is required");
+
+    assert_eq!(
+        item.alias.as_ref().map(|a| a.to_string()),
+        Some("wrapped".into())
+    );
+    assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+    assert_eq!(item.field_ident().expect("named"), "wrapped");
+}
+
+#[test]
+fn a_leading_alias_written_directly_before_a_qualified_path_is_recognised() {
+    let item: ProjectionItem =
+        parse_str("raw:<UserId as Column>::RustType").expect("no separating space is required");
+
+    assert_eq!(
+        item.alias.as_ref().map(|a| a.to_string()),
+        Some("raw".into())
+    );
+    assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+    assert_eq!(item.field_ident().expect("named"), "raw");
+}
+
+#[test]
+fn a_module_path_after_an_identifier_still_addresses_the_marker() {
+    let item: ProjectionItem =
+        parse_str("AliasedCol::<Manager, UserId>").expect("a turbofished marker stays a marker");
+
+    assert_eq!(item.alias, None);
+    assert!(matches!(item.target, ProjectionTarget::Column(_)));
+    assert_eq!(item.field_ident().expect("named"), "manager_user_id");
+
+    let item: ProjectionItem = parse_str("users::ID").expect("a module path stays a marker");
+
+    assert_eq!(item.alias, None);
+    assert_eq!(item.field_ident().expect("named"), "id");
+}
+
+#[test]
 fn a_cast_alias_is_rejected_inside_a_projection_list() {
     for source in [
         "users::ID, count(orders.id) as i64",
