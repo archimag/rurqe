@@ -36,7 +36,7 @@ impl<D: Dialect, T: Table, Returning, ConflictState>
     /// `VALUES ("accounts"."id")`, which no engine accepts, so it is rejected at
     /// compile time:
     ///
-    /// compile_fail
+    /// ```compile_fail
     /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
     /// use rurqe_core::expr::Expr;
     /// # use rurqe_core::dialect::Dialect;
@@ -51,12 +51,12 @@ impl<D: Dialect, T: Table, Returning, ConflictState>
     /// // `VALUES` list cannot reference.
     /// let _ = InsertQuery::<MockDialect, User>::new()
     ///     .values(UserId::set_expr(Expr::column::<AccountId>()));
-    /// 
+    /// ```
     ///
     /// Spelling the same reference through `without_scope` names its table
     /// explicitly, and is rejected just the same:
     ///
-    /// compile_fail
+    /// ```compile_fail
     /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
     /// use rurqe_core::expr::Expr;
     /// # use rurqe_core::dialect::Dialect;
@@ -71,7 +71,7 @@ impl<D: Dialect, T: Table, Returning, ConflictState>
     /// // which the `VALUES` list still cannot declare.
     /// let _ = InsertQuery::<MockDialect, User>::new()
     ///     .values(UserId::set_expr(Expr::column::<AccountId>().without_scope()));
-    /// 
+    /// ```
     pub fn values<S>(mut self, set: S) -> InsertQuery<D, T, S, Returning, ConflictState>
     where
         S: AssignmentSet<T> + AssignmentScope,
