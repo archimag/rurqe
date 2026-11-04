@@ -545,9 +545,13 @@ fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
 /// rule to the unqualified shape of a reference as well, because a clause without
 /// relations leaves even a bare column name unresolvable.
 ///
-/// A statement embedded in the expression is left to the statement pass: it
-/// declares its relations itself, so its columns resolve against its own `FROM`
-/// scope.
+/// A statement embedded in the expression is left to the pass that resolves the
+/// references of the clause it is written in: it declares its relations itself, so
+/// its own columns resolve against its own `FROM` scope. The `VALUES` list of an
+/// `INSERT` declares no relation, which leaves a statement embedded in one of its
+/// values nothing to correlate to, so such a value is resolved with the closed
+/// namespace of `reject_unresolved_qualifiers` once the clause's own
+/// references are rejected here.
 ///
 /// A reference to the `EXCLUDED` pseudo-relation of an upsert is rejected as
 /// well: the relation exists only inside the `ON CONFLICT DO UPDATE` branch of

@@ -343,7 +343,13 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning, ConflictState>
     /// `RETURNING` projections are pre-flighted against the rendered target as
     /// well: a reference qualified through a name the target does not declare is
     /// reported as [`BuildError::UnresolvedQualifier`] before any SQL is
-    /// rendered. A row that records no assignment at all is rejected as
+    /// rendered. A value of a `VALUES` row addresses no relation at all, so a
+    /// reference it writes is reported as [`BuildError::ColumnWithoutRelation`],
+    /// while a statement it embeds is resolved against its own relations alone: a
+    /// reference reaching out of it is reported as [`BuildError::UnresolvedColumn`]
+    /// or [`BuildError::UnresolvedQualifier`].
+    ///
+    /// A row that records no assignment at all is rejected as
     /// [`BuildError::EmptyInsertRow`], so the statement can never render a
     /// `VALUES` list without a column list, and a row assigning another column
     /// than the first one at the same position is rejected as
@@ -457,15 +463,18 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning, ConflictState>
                         actual,
                     });
                 }
-                value.validate()?;
                 // The `VALUES` list addresses no relation at all: it renders the
                 // values of one row, so a reference to a stored column names a
                 // relation the statement never declares — and a bare column name
                 // reads a column the engine cannot resolve. The scope of the
                 // assignment keeps such an expression out of the builder, and the
-                // check catches a tree assembled past the type system.
+                // check catches a tree assembled past the type system. A statement
+                // the value embeds is resolved with the same closed namespace, so a
+                // correlation out of a row that reads no relation is rejected too.
+                value.validate()?;
                 if let AssignValue::Expr(expr) = value {
                     reject_columns_without_relations(expr)?;
+                    reject_unresolved_qualifiers(expr, &[], &[])?;
                 }
             }
         }

@@ -7,7 +7,9 @@
 //! the public AST surface, where the tier-1 typestate cannot reach.
 
 use super::super::{Order, OrderId, OrderTotal, RecentId, RecentTotal};
-use super::{count_star, relation_statement, scalar_subquery, sum_of, UpsertDialect};
+use super::{
+    count_star, exists_subquery, relation_statement, scalar_subquery, sum_of, UpsertDialect,
+};
 use crate::expr::{BinaryOp, Expr, ExprKind, JoinAst, JoinKind, SelectAst, SqlVal, WindowExprKind};
 use crate::query::*;
 use crate::schema::TableRef;
@@ -79,6 +81,116 @@ fn an_insert_value_nesting_the_excluded_relation_is_rejected() {
         built,
         Err(BuildError::ExcludedWithoutConflict { column: "id" })
     );
+}
+
+#[test]
+fn an_insert_value_embedding_a_correlated_subquery_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The `VALUES` list declares no relation, so a statement embedded in one of its
+    // values reads only the relations it declares itself. The nested statement
+    // declares `recent` while it filters on `orders`, which names the table the
+    // statement writes — a relation the row cannot read, and a qualifier no engine
+    // finds there.
+    let mut inner = relation_statement("recent", "id");
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "recent",
+            name: "id",
+        }),
+    });
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedColumn {
+            table: "orders",
+            column: "id",
+        })
+    );
+}
+
+#[test]
+fn an_insert_value_embedding_a_subquery_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // A reference built through a table alias renders its qualifier verbatim, so the
+    // nested statement has to declare it: the `VALUES` row brings no relation the
+    // alias could belong to.
+    let mut inner = relation_statement("recent", "id");
+    inner.projections = vec![ExprKind::QualifiedColumn {
+        table: "o",
+        column: "id",
+    }];
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .build();
+
+    assert_eq!(built, Err(BuildError::UnresolvedQualifier { name: "o" }));
+}
+
+#[test]
+fn an_insert_value_embedding_a_subquery_whose_nested_statement_correlates_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The rule descends through the statements a value embeds: an `EXISTS` predicate
+    // written inside the scalar subquery reaches no further namespace either.
+    let mut deepest = relation_statement("recent", "id");
+    deepest.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "accounts",
+            name: "id",
+        }),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+    });
+
+    let mut middle = relation_statement("recent", "id");
+    middle.filter = Some(exists_subquery(deepest));
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(
+            middle,
+        ))))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedColumn {
+            table: "accounts",
+            column: "id",
+        })
+    );
+}
+
+#[test]
+fn an_insert_value_embedding_a_self_contained_subquery_is_accepted() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The nested statement declares the relation its aggregate reads, so the row
+    // computes one value per inserted row without reaching out of its own scope.
+    let mut inner = relation_statement("recent", "total");
+    inner.projections = vec![sum_of("recent", "total")];
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .build()
+        .expect("the nested statement aggregates its own relation");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"orders\" (\"id\") VALUES ((SELECT SUM(\"total\") FROM \"recent\"))"
+    );
+    assert!(built.params.is_empty());
 }
 
 #[test]
