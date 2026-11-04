@@ -215,3 +215,43 @@ fn a_window_over_an_aggregate_is_accepted_beside_an_aggregate_trunk() {
 
     assert_eq!(ast.validate(), Ok(()));
 }
+
+#[test]
+fn a_grouped_statement_rejects_a_window_partitioned_by_an_ungrouped_column() {
+    // The partition of a window is read from the rows the statement produced, so
+    // every column it names has to survive the grouping exactly like a projected
+    // one: the grouping dropped the per-row value of `total`, which leaves the
+    // window without the value it would partition by.
+    let mut ast = orders_statement(vec![
+        orders_user_id(),
+        window_over(
+            count_star(),
+            vec![ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }],
+        ),
+    ]);
+    ast.group_by = vec![orders_user_id()];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_statement_accepts_a_window_over_a_constant_operand() {
+    // An operand referencing no table is constant within a group, so the window
+    // reads one value per group from it and the statement stays valid.
+    let mut ast = orders_statement(vec![
+        orders_user_id(),
+        window_over(ExprKind::Value(SqlVal::I64(1)), vec![orders_user_id()]),
+    ]);
+    ast.group_by = vec![orders_user_id()];
+
+    assert_eq!(ast.validate(), Ok(()));
+}
