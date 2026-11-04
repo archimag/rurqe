@@ -1,5 +1,27 @@
 //! The `select_from` entry point and the invariants its callers rely on.
 //!
+//! A named projection renders the field it declares as the output column of the
+//! statement, while the column reference inside the projection keeps the bare
+//! name as long as the statement addresses a single relation:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table!(
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! );
+//!
+//! let built = select_from::<TestDialect, User>()
+//!     .select(cols!(UserId))
+//!     .build()
+//!     .expect("valid query");
+//!
+//! assert_eq!(built.sql, "SELECT \"id\" AS \"user_id\" FROM \"users\"");
+//! ```
+//!
 //! A single-column query is a scalar operand, so it compares with a column of
 //! its type without any explicit conversion:
 //!
@@ -14,10 +36,10 @@
 //!     }
 //! );
 //!
-//! let average = select_from::<Postgres<Pg16>, Order>()
+//! let average = select_from::<TestDialect, Order>()
 //!     .select((Expr::avg::<OrderTotal>(),));
 //!
-//! let built = select_from::<Postgres<Pg16>, Order>()
+//! let built = select_from::<TestDialect, Order>()
 //!     .select((OrderId,))
 //!     .where_(Expr::column::<OrderTotal>().gt(average))
 //!     .build()
@@ -44,10 +66,10 @@
 //! );
 //!
 //! // Fails to compile: the nested query projects two columns, not a single value.
-//! let _ = select_from::<Postgres<Pg16>, Order>()
+//! let _ = select_from::<TestDialect, Order>()
 //!     .select((OrderId,))
 //!     .where_(Expr::column::<OrderTotal>().gt(
-//!         select_from::<Postgres<Pg16>, Order>().select((OrderTotal, OrderId)),
+//!         select_from::<TestDialect, Order>().select((OrderTotal, OrderId)),
 //!     ));
 //! ```
 //!
@@ -72,7 +94,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>().select((UserId, OrderTotal));
+//! let _ = select_from::<TestDialect, User>().select((UserId, OrderTotal));
 //! ```
 //!
 //! Grouping and ordering follow the same rule:
@@ -95,7 +117,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of a table in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .group_by(OrderTotal)
 //!     .select((UserId,));
 //! ```
@@ -112,7 +134,7 @@
 //! );
 //!
 //! // Fails to compile: `group_by` must be established before `select`.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId,))
 //!     .group_by(UserId);
 //! ```
@@ -135,7 +157,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of a table in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId,))
 //!     .order_by_desc(OrderTotal);
 //! ```
@@ -159,7 +181,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId,))
 //!     .where_(OrderTotal.gt(1.0));
 //! ```
@@ -182,7 +204,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderId` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId,))
 //!     .where_(Expr::column::<UserId>().eq(Expr::column::<OrderId>()));
 //! ```
@@ -201,7 +223,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
-//! let _ = select_from::<Postgres, Order>()
+//! let _ = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
 //!     .select((OrderUserId, Expr::column::<OrderTotal>()));
 //! ```
@@ -224,7 +246,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId, row_number().over(Window::partition_by(OrderUserId))));
 //! ```
 //!
@@ -246,7 +268,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .select((UserId, lag(OrderTotal).over(Window::empty())));
 //! ```
 //!
@@ -275,7 +297,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .inner_join(Profile, Expr::column::<ProfileUserId>().eq(Expr::column::<OrderUserId>()));
 //! ```
 //!
@@ -298,7 +320,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-//! let _ = select_from::<Postgres, User>()
+//! let _ = select_from::<TestDialect, User>()
 //!     .group_by(UserId)
 //!     .select((UserId,))
 //!     .having(Expr::column::<OrderTotal>().gt(1.0));
@@ -319,7 +341,7 @@
 //! );
 //!
 //! // Fails to compile: the query records no projection yet.
-//! let _ = select_from::<Postgres, User>().build();
+//! let _ = select_from::<TestDialect, User>().build();
 //! ```
 //!
 //! A query may lock the rows it selects, keeping them from concurrent writers
@@ -335,7 +357,7 @@
 //!     }
 //! );
 //!
-//! let built = select_from::<Postgres, Job>()
+//! let built = select_from::<TestDialect, Job>()
 //!     .select((JobId,))
 //!     .for_update()
 //!     .skip_locked()
@@ -345,8 +367,9 @@
 //! assert_eq!(built.sql, "SELECT \"id\" FROM \"jobs\" FOR UPDATE SKIP LOCKED");
 //! ```
 //!
-//! Row-level locking is a dialect capability, so a query pinned to SQLite —
-//! which locks the whole database instead — cannot request it:
+//! Row-level locking is a dialect capability, so a dialect that declares none
+//! cannot request it — an engine that locks the whole database instead of its
+//! rows has no per-row equivalent:
 //!
 //! ```compile_fail
 //! use rurqe::prelude::*;
@@ -358,8 +381,24 @@
 //!     }
 //! );
 //!
-//! // Fails to compile: SQLite has no `FOR UPDATE` clause.
-//! let _ = select_from::<Sqlite, Job>()
+//! /// A dialect that declares no capability beyond the rendering contract.
+//! struct PlainDialect;
+//!
+//! impl Dialect for PlainDialect {
+//!     fn push_quoted_identifier(out: &mut String, ident: &str) {
+//!         out.push('"');
+//!         out.push_str(ident);
+//!         out.push('"');
+//!     }
+//!
+//!     fn push_placeholder(out: &mut String, index: usize) {
+//!         out.push('$');
+//!         out.push_str(&index.to_string());
+//!     }
+//! }
+//!
+//! // Fails to compile: the dialect declares no `FOR UPDATE` capability.
+//! let _ = select_from::<PlainDialect, Job>()
 //!     .select((JobId,))
 //!     .for_update();
 //! ```
@@ -378,9 +417,52 @@
 //! );
 //!
 //! // Fails to compile: the query does not request a lock yet.
-//! let _ = select_from::<Postgres<Pg16>, Job>()
+//! let _ = select_from::<TestDialect, Job>()
 //!     .select((JobId,))
 //!     .nowait();
+//! ```
+//!
+//! Deduplicating a statement and locking it exclude each other, which is why
+//! `distinct_on` and `for_update` reject one another in both orders:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table!(
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! );
+//!
+//! fn main() {
+//!     // Fails to compile: a statement that deduplicated its rows cannot lock
+//!     // them afterwards.
+//!     let _ = select_from::<TestDialect, User>()
+//!         .select((UserId,))
+//!         .distinct_on(UserId)
+//!         .for_update();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table!(
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! );
+//!
+//! fn main() {
+//!     // Fails to compile: a statement that already locked its rows cannot
+//!     // start deduplicating them.
+//!     let _ = select_from::<TestDialect, User>()
+//!         .select((UserId,))
+//!         .for_update()
+//!         .distinct_on(UserId);
+//! }
 //! ```
 //!
 //! A `HAVING` predicate reads one value per group, so it is written over the rows
@@ -402,7 +484,7 @@
 //!
 //! // Fails to compile: the predicate compares an aggregate with a bare column, so
 //! // it computes one value per row instead of one value per group.
-//! let _ = select_from::<Postgres<Pg16>, Order>()
+//! let _ = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
 //!     .select((OrderUserId, count_all()))
 //!     .having(sum(OrderTotal).gt(Expr::column::<OrderTotal>()));
@@ -424,7 +506,7 @@
 //!
 //! // Fails to compile: the comparison computes one value per row, so it is neither
 //! // grouped nor an aggregate.
-//! let _ = select_from::<Postgres<Pg16>, Order>()
+//! let _ = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
 //!     .select((OrderUserId, sum(OrderTotal).gt(Expr::column::<OrderTotal>())));
 //! ```
@@ -443,7 +525,7 @@
 //!     }
 //! );
 //!
-//! let built = select_from::<Postgres<Pg16>, Order>()
+//! let built = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
 //!     .select((OrderUserId, count_all()))
 //!     .having(sum(OrderTotal).gt(0.0f64))
@@ -494,6 +576,24 @@
 //!     .filter_where(Expr::column::<OrderTotal>().gt(0.0f64));
 //! ```
 //!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table!(
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! );
+//!
+//! fn main() {
+//!     // Fails to compile: the sum is combined with a constant, so the
+//!     // expression no longer ends with the aggregate call and takes no
+//!     // `FILTER` clause.
+//!     let _ = (sum(OrderTotal) + 1.0f64).filter_where(OrderTotal.gt(0.0f64));
+//! }
+//! ```
+//!
 //! The call itself accepts both clauses, and they render where SQL puts them:
 //!
 //! ```
@@ -506,13 +606,13 @@
 //!     }
 //! );
 //!
-//! let distinct = select_from::<Postgres<Pg16>, Order>()
+//! let distinct = select_from::<TestDialect, Order>()
 //!     .select((sum_distinct(OrderTotal),))
 //!     .build()
 //!     .expect("valid query");
 //! assert_eq!(distinct.sql, "SELECT SUM(DISTINCT \"total\") FROM \"orders\"");
 //!
-//! let filtered = select_from::<Postgres<Pg16>, Order>()
+//! let filtered = select_from::<TestDialect, Order>()
 //!     .select((Expr::<i64>::count::<OrderTotal>()
 //!         .filter_where(Expr::column::<OrderTotal>().gt(0.0f64)),))
 //!     .build()

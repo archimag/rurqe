@@ -1,5 +1,45 @@
 //! The `insert_into`, `update`, and `delete_from` entry points.
 //!
+//! The three entry points render the statement they assemble, one placeholder
+//! per bound value in clause order:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table!(
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!         UserName => "name": String,
+//!     }
+//! );
+//!
+//! let inserted = insert_into::<TestDialect, User>()
+//!     .values((UserId::set(1i64), UserName::set("root")))
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(
+//!     inserted.sql,
+//!     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+//! );
+//!
+//! let updated = update::<TestDialect, User>()
+//!     .set(UserName::set("root"))
+//!     .where_(Expr::column::<UserId>().eq(1i64))
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(
+//!     updated.sql,
+//!     "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+//! );
+//!
+//! let deleted = delete_from::<TestDialect, User>()
+//!     .where_(Expr::column::<UserId>().eq(1i64))
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+//! ```
+//!
 //! An upsert may read the row the statement tried to insert through the
 //! `EXCLUDED` pseudo-relation, so the update copies the proposed value instead of
 //! binding it a second time:
@@ -15,7 +55,7 @@
 //!     }
 //! );
 //!
-//! let built = insert_into::<Postgres<Pg16>, User>()
+//! let built = insert_into::<TestDialect, User>()
 //!     .values((UserId::set(1i64), UserName::set("root")))
 //!     .on_conflict((UserId,))
 //!     .do_update((UserName::set_expr(excluded(UserName)),))
@@ -48,7 +88,7 @@
 //! );
 //!
 //! // Fails to compile: `EXCLUDED."name"` reads a string, not an `i64`.
-//! let _ = insert_into::<Postgres<Pg16>, User>()
+//! let _ = insert_into::<TestDialect, User>()
 //!     .values((UserId::set(1i64),))
 //!     .on_conflict((UserId,))
 //!     .do_update((UserId::set_expr(excluded(UserName)),));
@@ -69,7 +109,7 @@
 //! );
 //!
 //! // Fails to compile: the statement records no row source.
-//! let _ = insert_into::<Postgres, User>().build();
+//! let _ = insert_into::<TestDialect, User>().build();
 //! ```
 //!
 //! A row source known to be empty cannot reach the builder either:
@@ -87,7 +127,7 @@
 //! );
 //!
 //! // Fails to compile: `values_many` yields a `Result`, which has no `build`.
-//! let _ = insert_into::<Postgres, User>()
+//! let _ = insert_into::<TestDialect, User>()
 //!     .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>())
 //!     .build();
 //! ```
@@ -113,7 +153,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, not to `User`.
-//! let _ = update::<Postgres, User>().set(OrderTotal::set(1.0));
+//! let _ = update::<TestDialect, User>().set(OrderTotal::set(1.0));
 //! ```
 //!
 //! `RETURNING` projections are tied to the mutated table as well:
@@ -136,7 +176,7 @@
 //! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of `User`.
-//! let _ = update::<Postgres, User>()
+//! let _ = update::<TestDialect, User>()
 //!     .set(UserId::set(1i64))
 //!     .allow_all()
 //!     .returning((OrderTotal,));
@@ -158,7 +198,7 @@
 //! );
 //!
 //! // Fails to compile: the statement is still unfiltered.
-//! let _ = update::<Postgres, User>()
+//! let _ = update::<TestDialect, User>()
 //!     .set(UserName::set("root"))
 //!     .build();
 //! ```
@@ -181,7 +221,7 @@
 //!
 //! // Fails to compile: an absent optional filter grants no permission to rewrite
 //! // every row.
-//! let _ = update::<Postgres, User>()
+//! let _ = update::<TestDialect, User>()
 //!     .set(UserName::set("root"))
 //!     .where_opt(None::<Expr<bool, User>>)
 //!     .build();
@@ -199,7 +239,7 @@
 //!
 //! // Fails to compile: an absent optional filter grants no permission to empty
 //! // every row.
-//! let _ = delete_from::<Postgres, User>()
+//! let _ = delete_from::<TestDialect, User>()
 //!     .where_opt(None::<Expr<bool, User>>)
 //!     .build();
 //! ```
@@ -219,7 +259,7 @@
 //!     }
 //! );
 //!
-//! let confirmed = update::<Postgres, User>()
+//! let confirmed = update::<TestDialect, User>()
 //!     .set(UserName::set("root"))
 //!     .where_if(None::<Expr<bool, User>>)
 //!     .allow_all()
@@ -227,7 +267,7 @@
 //!     .expect("valid query");
 //! assert_eq!(confirmed.sql, "UPDATE \"users\" SET \"name\" = $1");
 //!
-//! let granted = delete_from::<Postgres, User>()
+//! let granted = delete_from::<TestDialect, User>()
 //!     .where_opt_or_all(None::<Expr<bool, User>>)
 //!     .build()
 //!     .expect("valid query");
@@ -249,7 +289,7 @@
 //! );
 //!
 //! // Fails to compile: the statement is still unfiltered.
-//! let _ = delete_from::<Postgres, User>().build();
+//! let _ = delete_from::<TestDialect, User>().build();
 //! ```
 //!
 //! A projection built with `select!` reaches a mutation as a selection of the
@@ -277,7 +317,7 @@
 //!
 //! // Fails to compile: `OrderTotal` is not a column of `User`, so the selection
 //! // is no `TableSelection<User>`.
-//! let _ = update::<Postgres, User>()
+//! let _ = update::<TestDialect, User>()
 //!     .set(UserId::set(1i64))
 //!     .allow_all()
 //!     .returning(select!(UserId, OrderTotal));
@@ -297,7 +337,7 @@
 //! );
 //!
 //! // Fails to compile: a computed projection is not a column of `User`.
-//! let _ = update::<Postgres, User>()
+//! let _ = update::<TestDialect, User>()
 //!     .set(UserId::set(1i64))
 //!     .allow_all()
 //!     .returning(select!(UserId, doubled: Expr::count_all()));
@@ -319,7 +359,7 @@
 //!
 //! // Fails to compile: `SUM("total")` collapses the rows of a group, so it is no
 //! // per-row value the `SET` clause could assign.
-//! let _ = update::<Postgres, Order>()
+//! let _ = update::<TestDialect, Order>()
 //!     .set(OrderTotal::set_expr(sum(OrderTotal)))
 //!     .allow_all();
 //! ```
@@ -337,7 +377,7 @@
 //!     }
 //! );
 //!
-//! let built = update::<Postgres<Pg16>, Order>()
+//! let built = update::<TestDialect, Order>()
 //!     .set(OrderTotal::set_expr(Expr::column::<OrderTotal>() + 1.0f64))
 //!     .allow_all()
 //!     .build()
@@ -364,7 +404,7 @@
 //!
 //! // Fails to compile: `"total"` is a stored column rather than an aggregate
 //! // call, so there is no call for the `DISTINCT` modifier to restrict.
-//! let _ = update::<Postgres, Order>()
+//! let _ = update::<TestDialect, Order>()
 //!     .set(OrderTotal::set_expr(Expr::column::<OrderTotal>().distinct()))
 //!     .allow_all();
 //! ```

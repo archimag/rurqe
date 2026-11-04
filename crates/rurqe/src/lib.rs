@@ -25,6 +25,10 @@
 //! cargo build -p rurqe --no-default-features --features tokio-postgres
 //! ```
 
+use rurqe_core::dialect::{
+    SupportsAggregateFilter, SupportsDistinctOn, SupportsOnConflict, SupportsReturning,
+    SupportsRowLocking, SupportsWindowFunctions,
+};
 use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
 use rurqe_core::query::NoProjection;
 use rurqe_core::{Dialect, SelectQuery, Table};
@@ -362,27 +366,10 @@ crate::pin_dialect_version! {
 
 /// Starts a `SELECT` statement over the table `T` for the dialect `D`.
 ///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// );
-///
-/// let built = select_from::<Postgres, User>()
-///     .select(cols!(UserId))
-///     .build()
-///     .expect("valid query");
-///
-/// // The named selection exposes the field it declares as the output column of
-/// // the projection, while the column reference inside the expression keeps the
-/// // bare name as long as the statement addresses a single relation; it is
-/// // qualified only once the statement spans several relations.
-/// assert_eq!(built.sql, "SELECT \"id\" AS \"user_id\" FROM \"users\"");
-/// ```
+/// A named projection renders the field it declares as the output column of the
+/// statement, while the column reference inside the projection keeps the bare
+/// name as long as the statement addresses a single relation; it is qualified
+/// only once the statement spans several relations.
 ///
 /// The query records no projection until `select` is called, and only a
 /// projected query is renderable, so building it right after the table is
@@ -396,30 +383,11 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 
 /// Starts an `INSERT` statement over the table `T` for the dialect `D`.
 ///
-/// Rows are supplied through `values` or `values_many`, and every assigned value
 /// is checked against its column's Rust type at the call site.
 ///
-/// ```
-/// use rurqe::prelude::*;
 ///
-/// table!(
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// );
-///
-/// let built = insert_into::<Postgres, User>()
-///     .values((UserId::set(1i64), UserName::set("root")))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
-/// );
-/// ```
+/// The statement renders the assigned columns and one placeholder per assigned
+/// value, in the order the assignments were written.
 ///
 /// The statement becomes renderable only once it records a row source, a row
 /// source known to be empty yields a `Result` instead of the query, and an
@@ -436,28 +404,8 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 /// unavailable: either call `where_` to restrict the affected rows or
 /// `allow_all` to confirm a full-table mutation explicitly.
 ///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// );
-///
-/// let built = update::<Postgres, User>()
-///     .set(UserName::set("root"))
-///     .where_(Expr::column::<UserId>().eq(1i64))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
-/// );
-/// ```
+/// The statement renders one assignment per assigned column, followed by the
+/// filter that restricts the affected rows.
 ///
 /// Assignments and `RETURNING` projections are statically tied to the mutated
 /// table; the compile-fail catalogue of these typestate rules lives in the
@@ -472,51 +420,17 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 /// unavailable: either call `where_` to restrict the affected rows or
 /// `allow_all` to confirm a full-table deletion explicitly.
 ///
-/// ```
-/// use rurqe::prelude::*;
 ///
-/// table!(
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// );
-///
-/// let built = delete_from::<Postgres, User>()
-///     .where_(Expr::column::<UserId>().eq(1i64))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
-/// ```
+/// The statement renders the filter that restricts the deleted rows.
 pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> {
     DeleteQuery::new()
 }
 
 /// Common imports for declaring schemas, building queries, and decoding rows.
 ///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// );
-///
-/// let built = SelectQuery::<Postgres>::new()
-///     .from::<User>()
-///     .select((UserId,))
-///     .where_(Expr::column::<UserId>().eq(7i64))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "SELECT \"id\" FROM \"users\" WHERE (\"id\" = $1)"
-/// );
-/// ```
+/// The prelude names the four entry points of the crate together with the
+/// dialect surface they are parameterized over, so a table declaration, a
+/// query, and the row decoder of a projection all resolve from one import.
 ///
 /// The prelude also brings the row value traits into scope, so a tuple of
 /// columns compares as one composite value — the shape a keyset cursor is
@@ -532,66 +446,14 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// reach, so the rejected arrangements are compile errors rather than
 /// diagnostics from a running database. PostgreSQL accepts neither a statement
 /// that deduplicates its rows and locks them at the same time, which is why
-/// `distinct_on` and `for_update` exclude each other in both orders:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// );
-///
-/// fn main() {
-///     // Fails to compile: a statement that deduplicated its rows cannot lock
-///     // them afterwards.
-///     let _ = select_from::<Postgres, User>()
-///         .select((UserId,))
-///         .distinct_on(UserId)
-///         .for_update();
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// );
-///
-/// fn main() {
-///     // Fails to compile: a statement that already locked its rows cannot
-///     // start deduplicating them.
-///     let _ = select_from::<Postgres, User>()
-///         .select((UserId,))
-///         .for_update()
-///         .distinct_on(UserId);
-/// }
-/// ```
+/// `distinct_on` and `for_update` exclude each other in both orders. The
+/// catalogue of the private `docs` module pins both orders as doc-tests, so a
+/// weakened exclusion fails `cargo test --doc` instead of reaching a database.
 ///
 /// The `DISTINCT` and `FILTER (WHERE ...)` clauses belong to the aggregate call
 /// itself, so the aggregate helpers accept them while a value combined from the
-/// call does not:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table!(
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// );
-///
-/// fn main() {
-///     // Fails to compile: the sum is combined with a constant, so the
-///     // expression no longer ends with the aggregate call and takes no
-///     // `FILTER` clause.
-///     let _ = (sum(OrderTotal) + 1.0f64).filter_where(OrderTotal.gt(0.0f64));
-/// }
-/// ```
+/// call does not. The rejection is pinned by a doc-test of the private `docs`
+/// module, which runs with `cargo test --doc`.
 pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
@@ -722,4 +584,53 @@ pub mod prelude {
         MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper, SchemaCatalog,
         Sleeper, ThreadSleeper,
     };
+    /// The dialect the doc-test catalogue pins its statements to.
+    ///
+    /// A doc-test is compiled as a crate of its own against the library the
+    /// compiler built, where an engine adapter exists only under the feature
+    /// that owns its driver and an item declared under `cfg(doctest)` does not
+    /// exist at all. The catalogue therefore pins its statements to this
+    /// dialect, which every build compiles and whose rendering is the shape the
+    /// assertions spell. The item stays hidden from the documentation, because
+    /// no application names it.
+    #[doc(hidden)]
+    pub use crate::TestDialect;
 }
+
+/// The dialect the doc-test catalogue pins its statements to.
+///
+/// It quotes identifiers in double quotes and numbers its parameters as `$N`,
+/// which is the rendering every assertion of the catalogue spells, and it
+/// declares the capabilities the documented statements request. A rejection the
+/// catalogue demonstrates is therefore the invariant under test rather than a
+/// capability this dialect happens to lack.
+///
+/// The type is compiled into every build of the facade and hidden from its
+/// documentation, because a doc-test is compiled against the library the
+/// compiler built rather than against the documentation rustdoc collects: an
+/// item declared under `cfg(doctest)` is missing exactly in the examples that
+/// name it, which is what made the catalogue fail in a build without an engine
+/// adapter. The catalogue reaches the type through the [`prelude`], whose glob
+/// import every doc-test opens with.
+#[doc(hidden)]
+pub struct TestDialect;
+
+impl Dialect for TestDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        out.push('$');
+        out.push_str(&index.to_string());
+    }
+}
+
+impl SupportsAggregateFilter for TestDialect {}
+impl SupportsDistinctOn for TestDialect {}
+impl SupportsOnConflict for TestDialect {}
+impl SupportsReturning for TestDialect {}
+impl SupportsRowLocking for TestDialect {}
+impl SupportsWindowFunctions for TestDialect {}

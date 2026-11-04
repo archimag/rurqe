@@ -14,7 +14,7 @@
 //!     }
 //! );
 //!
-//! let built = select_from::<Postgres<Pg16>, Order>()
+//! let built = select_from::<TestDialect, Order>()
 //!     .select((OrderId,))
 //!     .where_((OrderUserId, OrderId).lt((2i64, 40i64)))
 //!     .order_by_desc(OrderUserId)
@@ -46,7 +46,7 @@
 //! );
 //!
 //! // Fails to compile: a two-column row is not comparable with three values.
-//! let _ = select_from::<Postgres<Pg16>, Order>()
+//! let _ = select_from::<TestDialect, Order>()
 //!     .select((OrderId,))
 //!     .where_((OrderUserId, OrderId).eq((1i64, 2i64, 3i64)));
 //! ```
