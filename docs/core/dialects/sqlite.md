@@ -143,17 +143,19 @@ The document holds one object per child row, keyed by the field names of the nes
 
 ## Embedded and In-Memory Databases
 
-The adapter runs over a synchronous connection, and a private in-memory database is what a test suite or a local deployment opens:
+The adapter runs over a synchronous connection, and the database it reaches is either a file or a private in-memory image. A file-backed deployment wraps a connection opened on a file path through `SqliteConnection::new`, while a test suite or a local deployment opens a private in-memory image instead, whose contents disappear together with the connection. One statement surface serves both forms.
+
+The adapter also dereferences to the underlying driver connection, which is how a statement the typed builder does not model is issued directly. A raw statement behaves exactly as the driver defines it and takes no part in the bookkeeping of the typed transaction around it.
+
+## Synchronous Execution
+
+SQLite has no asynchronous adapter: every terminal call returns its result directly, and the chain that assembles the statement is identical to the asynchronous one. A connection is opened before the first statement runs, and a private in-memory image is what a test suite or a local deployment opens:
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/sync_execution.rs:open_in_memory}}
 ```
 
-The contents of that database disappear together with the connection. A file-backed deployment wraps a connection opened on a file path instead, and the adapter accepts it through `SqliteConnection::new`, so one statement surface serves both forms. The adapter also dereferences to the underlying driver connection, which is how a statement the typed builder does not model is issued directly. A raw statement behaves exactly as the driver defines it and takes no part in the bookkeeping of the typed transaction around it.
-
-## Synchronous Execution
-
-SQLite has no asynchronous adapter: every terminal call returns its result directly, and the chain that assembles the statement is identical to the asynchronous one:
+The statement then executes over that connection through a blocking terminal call:
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/sync_execution.rs:load_user}}

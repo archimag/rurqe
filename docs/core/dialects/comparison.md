@@ -10,11 +10,7 @@ This chapter compares the two engines where a choice between them is made: the d
 - **Runtime.** PostgreSQL ships a blocking adapter and an asynchronous one, so one statement executes on a worker thread or on an asynchronous executor. SQLite ships a blocking adapter only, because an embedded statement completes inside the calling process.
 - **Lifecycle.** A PostgreSQL database is a long-lived deployment target that exists before the application connects and outlives it. A SQLite database is created on demand as a file, or as a private in-memory image that disappears together with the connection.
 
-An in-memory database is what a test suite or a local deployment opens:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/sync_execution.rs:open_in_memory}}
-```
+The lifecycle difference belongs to the deployment rather than to a statement: a file-backed database hands the adapter a connection opened on a path, and a test suite or a local deployment opens a private in-memory image instead. The same builder chain executes against either one, because the connection is chosen at the terminal call.
 
 ## Concurrency and Locking
 
