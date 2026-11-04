@@ -20,12 +20,20 @@
 //!
 //! One value of the module is data rather than shape: `SCHEMA_HASH` is the
 //! digest of the catalog, so a checked-in text cannot carry it without the test
-//! rewriting its own fixture. The fixture spells the digest as
+//! rewriting its own fixture. A fixture spells the digest as
 //! `SCHEMA_HASH_PLACEHOLDER`, which the derivation substitutes with the digest
 //! the catalog reports before the two texts are compared; every other byte of
 //! the line that declares the constant is under the equality, and a fixture
 //! carrying a real digest instead of the placeholder compares just as exactly.
+//!
+//! The walkthroughs quote the same kind of sample. `docs/quickstart.md` and
+//! `docs/guided_tour.md` show the module the generator writes for the catalog
+//! they declare — a `users` table of three columns — and that sample is a
+//! fixture of this crate as well: `generated/quickstart_module.rs` is rendered
+//! from its own catalog, compared here byte for byte, and compiled by the same
+//! test, so neither chapter can drift from the generator either.
 
+use generated::quickstart_module as quickstart;
 use generated::schema_module::{auth, Users, UsersEmail, UsersMood, UsersRecord};
 use rurqe::migrate::{ColumnDef, EnumDef, SchemaCatalog, TableDef, TypeKind};
 use rurqe::prelude::{Column, FromRow, SqlVal, Table};
@@ -35,18 +43,26 @@ use rurqe_examples::anchors::{self, AnchorLine};
 /// The fixture the codegen chapter quotes, anchor markers included.
 const FIXTURE: &str = include_str!("../generated/schema_module.rs");
 
+/// The fixture the walkthroughs quote, anchor markers included.
+const QUICKSTART_FIXTURE: &str = include_str!("../generated/quickstart_module.rs");
+
 /// The token the fixture spells in place of the catalog digest.
 const SCHEMA_HASH_PLACEHOLDER: &str = "<SCHEMA_HASH>";
 
-/// The wrapper the build script writes around the fixture, included as a module.
+/// The wrappers the build script writes around the fixtures, included as
+/// modules.
 ///
-/// The fixture is a module body rather than a programme of its own: inner doc
+/// A fixture is a module body rather than a programme of its own: inner doc
 /// comments, an inner attribute, the tables and records of one catalog, and the
 /// nested module of a secondary schema. A body like that compiles only as the
-/// body of a module, so the build script copies it into a `mod` declaration
-/// under `OUT_DIR` and this declaration includes that wrapper.
+/// body of a module, so the build script copies each fixture into a `mod`
+/// declaration under `OUT_DIR`, and this declaration includes those wrappers.
+/// Every wrapper names the module of the fixture it carries, so the two samples
+/// the book shows meet as `generated::schema_module` and
+/// `generated::quickstart_module`.
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated_schema_module.rs"));
+    include!(concat!(env!("OUT_DIR"), "/generated_quickstart_module.rs"));
 }
 
 /// The catalog the fixture documents.
@@ -172,4 +188,65 @@ fn the_fixture_compiles_as_the_module_it_documents() {
     assert_eq!(record.email, "app@example.com");
     assert_eq!(record.id, 7);
     assert_eq!(record.mood, None);
+}
+
+/// The catalog the walkthroughs' sample documents.
+///
+/// The Quickstart declares one relation — a `users` table of three columns:
+/// the identifier, the name, and the email — so the module rendered from this
+/// catalog is the module both walkthroughs show.
+fn walkthrough_catalog() -> SchemaCatalog {
+    SchemaCatalog::new(vec![TableDef::new(
+        "users",
+        vec![
+            ColumnDef::new("email", TypeKind::Text, false),
+            ColumnDef::new("id", TypeKind::Int64, false),
+            ColumnDef::new("name", TypeKind::Text, false),
+        ],
+        vec!["id".to_owned()],
+    )])
+}
+
+#[test]
+fn the_walkthrough_fixture_is_the_module_the_generator_emits() {
+    assert_eq!(
+        declared_anchors(QUICKSTART_FIXTURE),
+        vec!["schema"],
+        "the walkthrough fixture carries the `schema` region the two chapters include; a region \
+         added, renamed, or dropped changes what they can show"
+    );
+
+    let catalog = walkthrough_catalog();
+    let rendered = generate_schema_rs(&catalog, &CodegenOptions::default())
+        .expect("the walkthrough catalog renders into a module");
+    let expected = without_markers(QUICKSTART_FIXTURE)
+        .replace(SCHEMA_HASH_PLACEHOLDER, &catalog.schema_hash());
+
+    assert_eq!(
+        expected, rendered,
+        "the fixture `generated/quickstart_module.rs` is the module `generate_schema_rs` emits \
+         for the catalog the walkthroughs declare; the two texts diverge, so the chapters quote a \
+         shape the generator no longer writes. Regenerate the fixture from the rendered module, \
+         keep the `schema` anchor marker where it delimits the module, and spell the digest \
+         `{SCHEMA_HASH_PLACEHOLDER}`"
+    );
+}
+
+#[test]
+fn the_walkthrough_fixture_compiles_as_the_module_it_documents() {
+    assert_eq!(quickstart::Users::NAME, "users");
+    assert_eq!(quickstart::UsersEmail::NAME, "email");
+    assert_eq!(quickstart::UsersId::NAME, "id");
+    assert_eq!(quickstart::UsersName::NAME, "name");
+
+    let record = quickstart::UsersRecord::try_from_row(&[
+        SqlVal::Text("app@example.com".to_owned()),
+        SqlVal::I64(7),
+        SqlVal::Text("app".to_owned()),
+    ])
+    .expect("the documented row decodes into the record the fixture declares");
+
+    assert_eq!(record.email, "app@example.com");
+    assert_eq!(record.id, 7);
+    assert_eq!(record.name, "app");
 }

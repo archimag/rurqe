@@ -7,10 +7,10 @@ This tour follows one application from the declaration of its schema to its tran
 The tour starts at the model. A table is a zero-sized marker type, and each of its columns is a marker that carries the Rust type of the column. The markers are values, so a query names a relation or a column directly and the chain carries no generic annotation.
 
 ```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:schema}}
+{{#rustdoc_include examples/generated/quickstart_module.rs:schema}}
 ```
 
-The module above has the shape the generator writes: the digest of the catalog it was generated from, one marker per table, and one marker per column. An application imports that module and addresses the markers it declares; the example files of this tour declare the tables they read in the same form, because an example target is a single file. A hand-written `table!` declaration stays available where no database is reachable while the crate is built, and the markers of both forms are addressed identically.
+The module above is the one the generator writes for the catalog this tour declares: the digest of that catalog, one marker per table, one marker per column, and the row record beside them. The digest is a value the catalog computes, so the sample spells it as `<SCHEMA_HASH>`, the placeholder the regeneration substitutes. An application imports that module and addresses the markers it declares; the example files of this tour declare the tables they read in the same form, because an example target is a single file. A hand-written `table!` declaration stays available where no database is reachable while the crate is built, and the markers of both forms are addressed identically.
 
 ## Reading rows
 

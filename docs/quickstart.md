@@ -51,16 +51,16 @@ cargo rurqe codegen --database-url postgres://app@localhost:5432/app
 
 The command introspects the declared schemas and writes two artifacts from one catalog:
 
-* the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a relation the database actually has;
+* the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, and one row record per table implementing the row-decoding contract, so a query addresses a relation the database actually has;
 * the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalised catalog the lifecycle compares against.
 
-The module embeds the digest of the catalog as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the module declares the table, its columns, and the digest it was generated from:
+The module embeds the digest of the catalog as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the generator emits the module below; the book regenerates the sample from that catalog and compiles it, so the header, the names, and the row decoder shown are the ones the generator writes:
 
 ```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:schema}}
+{{#rustdoc_include examples/generated/quickstart_module.rs:schema}}
 ```
 
-A project ships that file as `src/schema.rs` and declares `mod schema;` in its crate root, then imports the markers it queries. The example below keeps the module beside the code that addresses it, because an example target is a single file. The generator also emits a row record per table beside the markers, which a query that names its own projection does not need.
+The digest is a value the catalog computes, so the sample spells it as `<SCHEMA_HASH>`, the placeholder the regeneration substitutes. A project ships the module as `src/schema.rs` and declares `mod schema;` in its crate root, then imports the markers it queries. The example files of this book declare the tables they read themselves, because an example target is a single file, and the markers they declare are the ones the generated module carries.
 
 The database is named by `--database-url`, or by the `DATABASE_URL` environment variable when the flag is absent, so a project that exports the variable regenerates both artifacts with the bare `cargo rurqe codegen`. Both engines are addressed the same way: a `postgres://` or `postgresql://` URL and a libpq keyword string address PostgreSQL, while a `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3` addresses SQLite.
 
