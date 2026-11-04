@@ -400,3 +400,54 @@ fn dialect_neutral_nodes_render_under_every_dialect() {
     assert_in_scope::<OtherDialect, ()>();
     assert_in_scope::<MockDialect, MockDialect>();
 }
+
+#[test]
+fn a_with_clause_precedes_the_combination_of_a_set_operation() {
+    // The `WITH` clause belongs to the statement as a whole, so it is rendered
+    // ahead of the combination instead of being scoped to the left operand:
+    // every operand of the set operation reads the declared relation.
+    let mut ast = select(vec![UserId::expr_kind()]);
+    ast.ctes = vec![CteAst {
+        name: "active_users",
+        query: select(vec![UserId::expr_kind()]),
+    }];
+    ast.set_operations = vec![SetOpAst {
+        kind: SetOpKind::Union,
+        query: select(vec![UserId::expr_kind()]),
+    }];
+
+    let (sql, params) = render_statement(&ast);
+
+    assert_eq!(
+        sql,
+        "WITH \"active_users\" AS (SELECT \"id\" FROM \"users\") \
+         SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\""
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn the_left_operand_keeps_its_own_tail_inside_its_parentheses() {
+    // The ordering and pagination written before the first operation belong to
+    // the left query alone, so they keep it parenthesised — while the `WITH`
+    // clause stays ahead of the whole combination.
+    let mut ast = select(vec![UserId::expr_kind()]);
+    ast.ctes = vec![CteAst {
+        name: "active_users",
+        query: select(vec![UserId::expr_kind()]),
+    }];
+    ast.limit = Some(1);
+    ast.set_operations = vec![SetOpAst {
+        kind: SetOpKind::UnionAll,
+        query: select(vec![UserId::expr_kind()]),
+    }];
+
+    let (sql, params) = render_statement(&ast);
+
+    assert_eq!(
+        sql,
+        "WITH \"active_users\" AS (SELECT \"id\" FROM \"users\") \
+         (SELECT \"id\" FROM \"users\" LIMIT 1) UNION ALL SELECT \"id\" FROM \"users\""
+    );
+    assert!(params.is_empty());
+}

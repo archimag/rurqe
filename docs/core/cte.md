@@ -76,6 +76,8 @@ FROM "users" INNER JOIN "user_totals" ON ("user_totals"."owner_id" = "users"."id
 
 Every other clause keeps working unchanged: a filter, an ordering, a second join, or a pagination added to the statement sees the columns of the relation under the names the marker declares.
 
+The clause belongs to the statement as a whole, so a relation it declares stays visible to every operand once the statement is combined with `UNION`, `INTERSECT`, or `EXCEPT`.
+
 | The marker declares | The statement reads |
 |---|---|
 | `UserTotals => "user_totals"` | the relation name used by `.with(...)` and by the join |

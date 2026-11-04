@@ -120,12 +120,21 @@ impl<'a> StatementRef<'a> {
     }
 
     /// Renders every clause of the statement up to the locking clause.
+    ///
+    /// The `WITH` clause is rendered ahead of the statement it belongs to, so a
+    /// statement combined with a set operation keeps it in front of the whole
+    /// combination: a `WITH` prefix scopes over the entire statement, which is
+    /// what makes the declared relations readable from every operand. Only the
+    /// ordering and pagination of the left query stay attached to it, which is
+    /// what the parentheses around that operand are for.
     fn render_statement<D: Dialect>(
         &self,
         sql: &mut String,
         params: &mut Vec<SqlVal>,
     ) -> Result<(), RawSqlError> {
         let relations = self.relations();
+
+        self.render_ctes::<D>(sql, params)?;
 
         if self.set_operations.is_empty() {
             self.render_select::<D>(sql, params, &relations)?;
@@ -140,7 +149,7 @@ impl<'a> StatementRef<'a> {
             return Ok(());
         }
 
-        let wrap_left = !self.ctes.is_empty() || self.has_own_tail();
+        let wrap_left = self.has_own_tail();
         if wrap_left {
             sql.push('(');
         }
@@ -182,6 +191,12 @@ impl<'a> StatementRef<'a> {
     }
 
     /// Whether rendering the statement as a set-operation operand needs parentheses.
+    ///
+    /// An operand carrying its own `WITH` clause is parenthesised so the clause
+    /// stays inside the operand instead of scoping over the combination the
+    /// operand takes part in, and an operand carrying an ordering, a pagination,
+    /// or nested set operations is parenthesised so those clauses stay attached
+    /// to it.
     pub fn requires_operand_parentheses(&self) -> bool {
         !self.ctes.is_empty() || self.has_own_tail() || !self.set_operations.is_empty()
     }
@@ -216,26 +231,48 @@ impl<'a> StatementRef<'a> {
         relations
     }
 
-    /// Renders the `WITH ... SELECT ... HAVING ...` part of the statement.
+    /// Renders the `WITH` clause of the statement, if it declares one.
+    ///
+    /// The clause is rendered once, ahead of the statement it belongs to: a
+    /// `WITH` prefix scopes over the whole statement, so every operand of a set
+    /// operation reads the relations it declares. The body of each entry is
+    /// rendered through the same view, so a nested statement binds its parameters
+    /// in declaration order as well.
+    fn render_ctes<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), RawSqlError> {
+        if self.ctes.is_empty() {
+            return Ok(());
+        }
+
+        sql.push_str("WITH ");
+        for (index, cte) in self.ctes.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            D::push_quoted_identifier(sql, cte.name);
+            sql.push_str(" AS (");
+            StatementRef::from(&cte.query).render::<D>(sql, params)?;
+            sql.push(')');
+        }
+        sql.push(' ');
+
+        Ok(())
+    }
+
+    /// Renders the `SELECT ... HAVING ...` clauses of the statement.
+    ///
+    /// The `WITH` clause is not part of them: `render_ctes` renders it ahead of
+    /// the statement, so a statement combined with a set operation keeps it in
+    /// front of the whole combination.
     fn render_select<D: Dialect>(
         &self,
         sql: &mut String,
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
     ) -> Result<(), RawSqlError> {
-        if !self.ctes.is_empty() {
-            sql.push_str("WITH ");
-            for (index, cte) in self.ctes.iter().enumerate() {
-                if index > 0 {
-                    sql.push_str(", ");
-                }
-                D::push_quoted_identifier(sql, cte.name);
-                sql.push_str(" AS (");
-                StatementRef::from(&cte.query).render::<D>(sql, params)?;
-                sql.push(')');
-            }
-            sql.push(' ');
-        }
 
         sql.push_str("SELECT ");
         self.render_projections::<D>(sql, params, relations)?;
@@ -332,12 +369,17 @@ impl<'a> StatementRef<'a> {
 impl SelectAst {
     /// Renders the statement into `sql`, binding every literal into `params`.
     ///
-    /// A statement chained with set operations renders its own clauses first,
-    /// then the operation keywords, and finally the ordering and pagination of
-    /// the compound result. An operand carrying its own `WITH` clause, ordering,
-    /// pagination, or nested set operations is parenthesised, so its clauses stay
-    /// attached to it instead of binding to the compound statement. A statement
-    /// requesting a row-level lock renders it after every other clause.
+    /// A statement chained with set operations renders its `WITH` clause first,
+    /// then its own clauses, then the operation keywords, and finally the
+    /// ordering and pagination of the compound result. The `WITH` clause belongs
+    /// to the statement as a whole, so it renders ahead of the combination and
+    /// every operand reads the relations it declares; the ordering and pagination
+    /// written before the first operation stay attached to the left query, which
+    /// is parenthesised for them. An operand carrying its own `WITH` clause,
+    /// ordering, pagination, or nested set operations is parenthesised as well, so
+    /// its clauses stay attached to it instead of binding to the compound
+    /// statement. A statement requesting a row-level lock renders it after every
+    /// other clause.
     ///
     /// The statement is validated by the pre-flight pass before a single character
     /// reaches `sql`, so a statement assembled by hand is rejected exactly like one

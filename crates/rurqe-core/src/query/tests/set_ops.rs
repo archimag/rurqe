@@ -282,3 +282,34 @@ fn a_compound_ordering_can_fix_where_nulls_sort() {
          ORDER BY \"total\" DESC NULLS LAST"
     );
 }
+
+#[test]
+fn a_cte_declared_before_a_set_operation_precedes_the_combined_statement() {
+    // The `WITH` clause renders ahead of the whole combination, so it precedes
+    // the left operand instead of being scoped to it, while the ordering of the
+    // combined rows still closes the statement.
+    let recent = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+    let built = SelectQuery::<MockDialect>::new()
+        .with(cte_named("recent_orders", recent))
+        .from::<User>()
+        .select((UserId,))
+        .union(
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .select((UserId,)),
+        )
+        .order_by_output_asc(UserId)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "WITH \"recent_orders\" AS (SELECT \"id\" FROM \"orders\" WHERE (\"total\" > $1)) \
+         SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\" ORDER BY \"id\" ASC"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(100.0)]);
+}

@@ -150,3 +150,34 @@ fn duplicate_cte_detection_reports_the_first_repetition_in_declaration_order() {
         })
     );
 }
+
+#[test]
+fn a_cte_of_a_compound_statement_scopes_over_every_operand() {
+    // The `WITH` clause belongs to the statement as a whole, so it renders ahead
+    // of the combination and stays outside the parentheses of the left operand:
+    // every operand of the union reads the declared relation, exactly as it does
+    // without the set operation.
+    let active = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+        .where_(Expr::column::<UserId>().gt(10i64));
+    let other = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+        .where_(Expr::column::<UserId>().lt(5i64));
+
+    let built = SelectQuery::<MockDialect>::new()
+        .with(cte_named("active_users", active))
+        .from::<User>()
+        .select((UserId,))
+        .union(other)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "WITH \"active_users\" AS (SELECT \"id\" FROM \"users\" WHERE (\"id\" > $1)) \
+         SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\" WHERE (\"id\" < $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(10), SqlVal::I64(5)]);
+}

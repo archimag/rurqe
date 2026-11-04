@@ -203,6 +203,13 @@ impl StatementRef<'_> {
     /// the references of a statement through the entries of its `WITH` clause
     /// first, so a CTE shadowing a stored table keeps the statement
     /// well-formed — only the declared CTE names are compared with each other.
+    ///
+    /// The clause belongs to the statement as a whole rather than to its left
+    /// operand: it renders ahead of a set operation, so a name it declares is
+    /// visible to every operand the statement is combined with. The scan covers
+    /// the whole compound statement, while the names an operand declares in a
+    /// `WITH` clause of its own stay inside the parentheses that scope them and
+    /// are validated with that operand.
     fn validate_cte_names(&self) -> Result<(), BuildError> {
         // The declaration order is the order the entries are scanned in, so
         // recording each name in a set reports the first name that repeats while

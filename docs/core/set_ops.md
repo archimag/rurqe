@@ -29,6 +29,7 @@ The two statements must share the dialect and the output row type — the signat
 - The projection is fixed by the first list: `.select(...)` is unreachable on the combined statement.
 - A combined statement can neither keep the row-level lock of an operand nor accept a new one.
 - `limit` / `offset` apply to the combined rows.
+- A `WITH` clause declared before the combination belongs to the statement as a whole: it renders ahead of the combination, so every operand reads the relations it declares.
 
 ## Compound ORDER BY
 
