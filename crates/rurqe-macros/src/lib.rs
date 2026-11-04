@@ -119,7 +119,7 @@ pub fn dto(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// let pred = sql!("strftime('%Y-%m', date) = ?", "2024-01");
-/// let explicit = sql!(<bool> "data @> '{\"active\": true}'::jsonb");
+/// let jsonb = sql!(<bool> "data @> '{{\"active\": true}}'::jsonb");
 /// let count = sql!(<i64> "COUNT(*)");
 /// ```
 #[proc_macro]

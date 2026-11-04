@@ -154,3 +154,33 @@ fn sql_macro_unescapes_braces_around_parameters() {
         }
     );
 }
+
+#[test]
+fn documented_invocations_match_their_rendered_shape() {
+    let strftime: Expr<bool> = sql!("strftime('%Y-%m', date) = ?", "2024-01");
+    assert_eq!(
+        strftime.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["strftime('%Y-%m', date) = ".into(), "".into()].into(),
+            params: vec![SqlVal::Text("2024-01".into())],
+        }
+    );
+
+    let jsonb: Expr<bool> = sql!(<bool> "data @> '{{\"active\": true}}'::jsonb");
+    assert_eq!(
+        jsonb.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["data @> '{\"active\": true}'::jsonb".into()].into(),
+            params: vec![],
+        }
+    );
+
+    let count: Expr<i64> = sql!(<i64> "COUNT(*)");
+    assert_eq!(
+        count.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["COUNT(*)".into()].into(),
+            params: vec![],
+        }
+    );
+}
