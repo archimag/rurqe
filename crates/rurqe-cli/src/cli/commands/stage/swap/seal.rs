@@ -51,7 +51,8 @@ pub(crate) fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
 /// The staged boundary is assembled and flushed by the caller, so no external work
 /// happens here: a failure before the first rename leaves the committed pair
 /// exactly as it was. The previous marker and boundary are parked under `scope` —
-/// the identity the writer holding the section installed when it entered it — the
+/// the writer scope the held section reports, the one identity the staged
+/// siblings and the parked copies of this process are both named after — the
 /// staged boundary is renamed into place, and the marker is written last as the
 /// commit point. Only once the marker is durable are the parked artifacts
 /// discarded. A process killed before the commit point leaves the previous pair

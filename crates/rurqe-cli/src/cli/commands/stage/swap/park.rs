@@ -67,9 +67,14 @@ pub(super) fn parked_sibling(artifact: &Path, scope: WriterId) -> PathBuf {
 /// Discovery replaces the fixed `.previous` name a commit used to park at: every
 /// copy names the writer that parked it, so the copies of a writer that no longer
 /// provably lives can be told apart from the ones a live writer left, and no
-/// writer has to guess the name an interrupted commit used. The copies are ordered
-/// by their writer scope, so the newest parking comes last and a repair that has to
-/// choose among several of them restores the most recent previous state.
+/// writer has to guess the name an interrupted commit used. The copies are
+/// ordered by their writer scope, so a directory yields the same listing on every
+/// run and a repair that has to choose among several copies chooses the same one
+/// every time. The order is not a recency order: a writer scope is the
+/// per-process scope, drawn once for the lifetime of the process, so a copy
+/// parked later by one writer sorts where its earlier copy sits — and with at
+/// most one recoverable copy in flight (I2) several copies only ever mean the
+/// debris of several writers that are already gone.
 pub(super) fn parked_copies(artifact: &Path) -> Result<Vec<(PathBuf, WriterId)>, CliError> {
     let directory = artifact_directory(artifact);
     let prefix = parked_prefix(artifact);

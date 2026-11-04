@@ -96,8 +96,9 @@ pub(crate) fn verify_stage(
     // describes. The section is taken above, so a commit still in flight refuses
     // the acquisition here instead of having its pair repaired underneath it,
     // and the repair itself is authorised by the scope that acquisition recorded:
-    // a stale record from a crashed writer — a recycled pid included — is refused
-    // instead of being read as this caller's own.
+    // the per-process writer scope, the same one a staged sibling of this process
+    // carries, so a stale record from a crashed writer — a recycled pid included —
+    // is refused instead of being read as this caller's own.
     //
     // The repair has already renamed artifacts into place by the time any read
     // below can fail, so every one of them folds its report into the failure it

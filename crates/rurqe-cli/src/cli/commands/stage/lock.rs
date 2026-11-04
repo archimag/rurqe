@@ -20,10 +20,10 @@
 //!
 //! The lock entry carries no content: nothing ever writes into it, and the
 //! kernel arbitrates the section on the identity of the file alone. The owner
-//! record of the writer — its pid, a nonce taken with the section that keeps a
-//! recycled pid from being read as the writer of a record an earlier process
-//! left behind, and the instant it entered the section — lives in a sibling of
-//! the entry (`checkpoint.lock` is accompanied by `checkpoint.lock.record`).
+//! record of the writer — its pid, the per-process nonce of the writer scope it
+//! shares with the staged siblings that very process creates, and the instant it
+//! entered the section — lives in a sibling of the entry (`checkpoint.lock` is
+//! accompanied by `checkpoint.lock.record`).
 //! The record is published once the section is held and removed when the guard
 //! drops, so a released section leaves no identity behind that a recycled pid
 //! could inherit; a writer that died holding the section leaves its record
@@ -80,7 +80,8 @@ use crate::cli::error::{CliCause, HeldSection, SectionHolder};
 use crate::cli::CliError;
 
 use super::super::{
-    artifact_directory, marker_stem, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE,
+    artifact_directory, current_writer, marker_stem, sweep_stale_temporaries, write_file,
+    STALE_TEMPORARY_AGE,
 };
 
 /// The suffix appended to the marker's stem to name its lock entry.
@@ -205,11 +206,15 @@ impl CheckpointLock {
     /// The identity of the writer holding this section.
     ///
     /// The parked copies a commit installs carry this scope, so the name a commit
-    /// parks under is the identity recorded when it entered the section rather
-    /// than one re-read from the record afterwards: a record another writer
-    /// rewrote can never make a commit park under an identity that is not its
-    /// own, and a copy it parked stays attributable to the scope that created
+    /// parks under is the scope the guard derived when it entered the section
+    /// rather than one re-read from the record afterwards: a record another
+    /// writer rewrote can never make a commit park under an identity that is not
+    /// its own, and a copy it parked stays attributable to the scope that created
     /// it.
+    ///
+    /// The scope is the one `current_writer` reports, the single source both
+    /// writer-scope protocols draw from, so a parked copy and a staged sibling of
+    /// this process are named after one identity.
     pub(crate) fn writer(&self) -> WriterId {
         WriterId {
             pid: self.record.pid,
@@ -244,7 +249,9 @@ impl Drop for CheckpointLock {
 struct OwnerRecord {
     /// The process id of the writer holding the section.
     pid: u32,
-    /// A value taken with the section, keeping a recycled pid from being read as
+    /// The per-process nonce of the writer scope, drawn once for the lifetime of
+    /// the process: the very value the staged siblings of that process carry, so
+    /// a name and a record describe one writer, and a recycled pid never reads as
     /// the writer of a record an earlier process left behind.
     nonce: u128,
     /// The nanoseconds since the UNIX epoch at which the writer entered the
@@ -256,12 +263,18 @@ struct OwnerRecord {
 
 impl OwnerRecord {
     /// The record of the current writer entering the section.
+    ///
+    /// The identity is taken from `current_writer`, the single source of the
+    /// writer scope, so a held section records the very pair the staged siblings
+    /// of this process carry in their names. Only the heartbeat is read here,
+    /// because it records when this writer entered its section rather than who it
+    /// is.
     fn current() -> Self {
-        let now = now_nanos();
+        let writer = current_writer();
         Self {
-            pid: std::process::id(),
-            nonce: now,
-            heartbeat: now,
+            pid: writer.pid,
+            nonce: writer.nonce,
+            heartbeat: now_nanos(),
         }
     }
 
@@ -308,7 +321,16 @@ impl OwnerRecord {
     }
 }
 
-/// The identity of the writer a lock record names.
+/// The identity of the writer a name or a lock record carries.
+///
+/// One type names the writer for both protocols that write a scope into an
+/// artifact name: the staged siblings a commit assembles
+/// (`.<basename>.<pid>.<nonce>.<sequence>.tmp`), the parked copies it installs
+/// (`.<basename>.<pid>.<nonce>.previous`), and the owner record of a held
+/// checkpoint section. The scope is drawn from one source, `current_writer`, so
+/// the two grammars cannot attribute one writer's artifacts to another: a parked
+/// copy and an in-flight staging path of one process carry one identity, and the
+/// identity of a live writer may be compared against either of them.
 ///
 /// The identity is the scope every parked artifact of that writer carries, so
 /// a copy can be attributed to its creator without trusting the copy itself.
@@ -318,8 +340,9 @@ impl OwnerRecord {
 pub(crate) struct WriterId {
     /// The process id of the writer.
     pub(crate) pid: u32,
-    /// The value taken when the writer entered the section, keeping a recycled
-    /// process id from being read as the writer of an earlier record.
+    /// The per-process nonce of the writer scope, drawn once for the lifetime of
+    /// the process, keeping a recycled process id from being read as the writer
+    /// of an earlier record.
     pub(crate) nonce: u128,
 }
 
@@ -895,6 +918,36 @@ mod tests {
         assert!(lock.exists(), "the entry is never removed");
         CheckpointLock::acquire_within(&checkpoint, Duration::from_millis(20))
             .expect("the released section is free again");
+    }
+
+    /// The scope a held section reports is the very scope this process stamps on
+    /// the names it writes, so one identity serves both writer-scope protocols.
+    #[test]
+    fn a_held_section_reports_the_scope_of_the_process() {
+        let scratch = Scratch::new("shared-scope");
+        let checkpoint = scratch.checkpoint();
+        let record_path = record_path_of(&lock_path_of(&checkpoint));
+
+        let section = CheckpointLock::acquire(&checkpoint).expect("a fresh section");
+        let scope = section.writer();
+        let owner = OwnerRecord::parse(&std::fs::read_to_string(&record_path).expect("the record"))
+            .expect("the owner record of the current writer");
+
+        // A parked copy and a staged sibling of this process are named after one
+        // pair, so a copy attributed through the scope of the section is
+        // attributed to the writer that staged and parked it.
+        assert_eq!(scope, current_writer(), "the section reports the process scope");
+        assert_eq!(owner.pid, scope.pid, "the record names the process of the writer");
+        assert_eq!(owner.nonce, scope.nonce, "the record carries the process nonce");
+
+        // The scope is derived once for the lifetime of the process, so a second
+        // section of the same process reports the very same identity: a copy
+        // parked before the first release stays attributable afterwards.
+        drop(section);
+        let reopened = CheckpointLock::acquire(&checkpoint).expect("the section is free again");
+        assert_eq!(reopened.writer(), scope, "the scope survives re-acquisition");
+
+        drop(reopened);
     }
 
     #[test]

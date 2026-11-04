@@ -17,14 +17,16 @@ use super::seal::{boundary_dir, flush_boundary_parent};
 /// Refuses to repair the pair while the entry records a writer other than `scope`.
 ///
 /// `scope` is the identity of the section its caller reports — the scope
-/// `CheckpointLock::writer` returns for a guard the caller holds — and the entry
+/// `CheckpointLock::writer` returns for a guard the caller holds, the per-process
+/// writer scope the staged siblings of that process carry as well — and the entry
 /// echoes that same scope back while the section is held, because the acquisition
 /// itself wrote the record and nothing but a holder ever rewrites it. A record
 /// naming any other writer therefore marks a caller repairing outside the section
 /// that owns the artifacts, where the parked pair may still be the only recoverable
 /// copy of that section's state. The pid alone cannot carry that decision — a
 /// crashed writer's pid can recycle into the current process, and its stale record
-/// would then be read as `ours` — so the whole scope, pid and nonce, has to agree.
+/// would then be read as `ours` — so the whole scope, pid and per-process nonce,
+/// has to agree.
 /// The repair refuses, names the recorded writer beside the scope the caller
 /// reported, and mutates nothing.
 fn refuse_foreign_record(checkpoint_path: &Path, scope: WriterId) -> Result<(), CliError> {

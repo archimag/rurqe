@@ -245,7 +245,8 @@ pub(crate) fn commit_stage(
     // written last as the commit point.
     write_file(lock_path, &lock).map_err(fail)?;
     // The parked pair this commit writes carries the scope of the section it
-    // holds, so a copy it leaves behind stays attributable to this writer.
+    // holds — the per-process writer scope its staged siblings carry as well —
+    // so a copy it leaves behind stays attributable to this writer alone.
     let swap_notices =
         seal_commit(&staged, checkpoint_path, &marker, section.writer()).map_err(fail)?;
 

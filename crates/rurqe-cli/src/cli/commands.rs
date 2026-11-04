@@ -438,12 +438,22 @@ fn staged_owner(name: &str, prefix: &str) -> Option<WriterId> {
     Some(WriterId { pid, nonce })
 }
 
-/// The writer scope this process stages its siblings under.
+/// The writer scope this process stamps on the names it writes.
 ///
 /// The scope is the process id together with the per-process nonce, so a name
-/// this process stages never shares a path with the staging of another process
-/// that happens to carry the same id.
-fn current_writer() -> WriterId {
+/// this process writes never shares a path with the staging or the parking of
+/// another process that happens to carry the same id.
+///
+/// The function is the single source of that scope. The staged siblings
+/// `temporary_sibling` produces and the parked copies a commit installs carry it
+/// in their names, and the owner record an acquisition of the checkpoint section
+/// publishes carries it as well, so both protocols that name a writer name it
+/// with one pair. The scope is derived once for the whole process and never per
+/// call, which is what makes the comparisons the protocols perform sound: the
+/// staged-sibling gates decide whether a name belongs to this process by
+/// comparing against this very value, and such a comparison only holds for a
+/// scope that stays the same from the first call to the last.
+pub(super) fn current_writer() -> WriterId {
     WriterId {
         pid: std::process::id(),
         nonce: u128::from(process_nonce()),
