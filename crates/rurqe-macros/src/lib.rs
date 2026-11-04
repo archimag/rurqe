@@ -248,7 +248,18 @@ pub fn sql_type(input: TokenStream) -> TokenStream {
 ///
 /// Every file reaches the collection through `include_str!` over its absolute
 /// path, so it is an input of the compilation: editing an artifact recompiles the
-/// binary that carries it.
+/// binary that carries it. The resolved configuration file is included the same
+/// way, so editing the layout declaration — `root`, `[migrations] dir`, or
+/// `[stage] dir` — recompiles the calling binary instead of leaving it with the
+/// artifacts of a layout no longer declared.
+///
+/// The membership of an artifact directory and a configuration created where the
+/// discovery walk found none are registered by nothing the expansion can emit on
+/// stable Rust: an inclusion names a path that existed when the macro ran, and
+/// tracking a path without including it is a nightly-only mechanism. A build
+/// script of the calling crate closes both gaps by printing
+/// `cargo:rerun-if-changed` over the directories the project configuration
+/// resolves.
 ///
 /// # Rejections
 ///

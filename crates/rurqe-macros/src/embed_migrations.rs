@@ -44,10 +44,42 @@
 //! apply cannot initialise a database.
 //!
 //! Every file is included from its absolute path, which is what registers it as an
-//! input of the compilation: editing an artifact recompiles the binary that
-//! carries it. Tracking a path without including it is a nightly-only mechanism,
-//! and the workspace compiles on stable Rust, so the inclusion is the tracking
-//! mechanism.
+//! input of the compilation, and the resolved configuration file is included the
+//! same way: editing `root`, `[migrations] dir`, or `[stage] dir` recompiles the
+//! binary that baked the layout the edit changes.
+//!
+//! # Compile inputs
+//!
+//! An inclusion the expansion emits names the text of a file that existed when the
+//! macro ran: the four artifact classes above, and the `rurqe.toml` the call named
+//! or the discovery walk selected. A path quoted by the expansion is therefore an
+//! input of the build, and editing it recompiles the calling binary.
+//!
+//! Two input classes stay outside that mechanism, and neither is a gap stable Rust
+//! lets the expansion close:
+//!
+//! * the membership of an artifact directory — a `*.sql` script added to
+//!   `migrations_dir` or `stage_dir` after a bake, and a script removed from one,
+//!   changes a listing no inclusion names, because the expansion could only have
+//!   included a path that already existed;
+//! * a configuration created where the discovery walk found none — the walk
+//!   selects a file that exists at expansion time, so a file appearing later was
+//!   absent when the conventional layout was resolved.
+//!
+//! Tracking a path without including it is a nightly-only mechanism, and the
+//! workspace compiles on stable Rust, so the inclusion is the tracking mechanism
+//! and neither class above has an expansion-side remedy. The supported remedy is a
+//! build script of the calling crate printing `cargo:rerun-if-changed` over the
+//! artifact directories the project configuration resolves: Cargo rescans a
+//! directory it was pointed at, so a script added or removed there recompiles the
+//! binary and the new listing is baked.
+//!
+//! ```text
+//! fn main() {
+//!     println!("cargo:rerun-if-changed=rurqe/migrations");
+//!     println!("cargo:rerun-if-changed=rurqe/schema");
+//! }
+//! ```
 //!
 //! # Ordering
 //!
@@ -116,6 +148,13 @@ struct Artifacts {
     stage: Vec<Script>,
     /// The `schema.lock` snapshot, when it exists.
     schema_lock: Option<PathBuf>,
+    /// The configuration file the artifact layout was resolved through.
+    ///
+    /// The expansion includes its text, so the file is an input of the compilation:
+    /// editing the layout declaration recompiles the calling binary instead of
+    /// leaving it with the artifacts of a layout no longer declared. `None` is the
+    /// conventional layout, which reads no document at all.
+    configuration: Option<PathBuf>,
 }
 
 /// The single optional argument of the macro: the configuration it names.
@@ -195,9 +234,9 @@ fn resolve(literal: &LitStr, manifest: &Path) -> PathBuf {
 /// `None` selects the discovery walk from `manifest`, while `Some(path)` is the
 /// argument already resolved against it.
 fn resolve_artifacts(argument: Option<&Path>, manifest: &Path) -> Result<Artifacts, String> {
-    let (configuration, directory, _file) = configuration(argument, manifest)?;
+    let (configuration, directory, file) = configuration(argument, manifest)?;
 
-    plan(&configuration, &directory)
+    plan(&configuration, &directory, file)
 }
 
 /// Resolves the configuration the expansion reads, the directory it anchors, and the file it
@@ -271,7 +310,15 @@ fn configuration_of(path: &Path) -> Result<(ProjectConfig, PathBuf), String> {
 /// The scripts of both sets are ordered by file name alone, which is the bake
 /// order the module documents: the run order is derived from the names by the
 /// migration crate at startup, so a version suffix is never compared as text here.
-fn plan(configuration: &ProjectConfig, directory: &Path) -> Result<Artifacts, String> {
+///
+/// `file` is the configuration document the layout was read from. It is carried
+/// into the plan so the expansion can register it as a compile input; the
+/// conventional layout reads no document, so it contributes no input of its own.
+fn plan(
+    configuration: &ProjectConfig,
+    directory: &Path,
+    file: Option<PathBuf>,
+) -> Result<Artifacts, String> {
     let tail_directory = configuration.migrations_dir(directory);
     let stage_directory = configuration.stage_dir(directory);
 
@@ -280,6 +327,7 @@ fn plan(configuration: &ProjectConfig, directory: &Path) -> Result<Artifacts, St
         checkpoint: optional_file(&configuration.checkpoint_path(directory))?,
         stage: scan(&stage_directory)?,
         schema_lock: optional_file(&configuration.schema_lock_path(directory))?,
+        configuration: file,
     };
 
     if artifacts.tail.is_empty() && artifacts.stage.is_empty() {
@@ -418,18 +466,28 @@ fn read_failure(directory: &Path, error: &std::io::Error) -> String {
 }
 
 /// Renders the construction of the collection from `artifacts`.
+///
+/// The construction sits inside a parenthesized block expression, so the expansion
+/// remains a single expression even when the inclusion of the configuration file
+/// precedes it: the wrapper parses everywhere the bare call does — as an argument,
+/// on the right of a `let`, under a postfix operator, in a match scrutinee, and as
+/// a lone statement.
 fn render(artifacts: &Artifacts) -> TokenStream {
     let tail = pairs(&artifacts.tail);
     let stage = pairs(&artifacts.stage);
     let checkpoint = optional_text(artifacts.checkpoint.as_deref());
     let schema_lock = optional_text(artifacts.schema_lock.as_deref());
+    let configuration = configuration_input(artifacts.configuration.as_deref());
 
     quote! {
-        ::rurqe::migrate::EmbeddedMigrations::from_artifacts(::rurqe::migrate::EmbeddedArtifacts {
-            tail: &[#tail],
-            checkpoint: #checkpoint,
-            stage: &[#stage],
-            schema_lock: #schema_lock,
+        ({
+            #configuration
+            ::rurqe::migrate::EmbeddedMigrations::from_artifacts(::rurqe::migrate::EmbeddedArtifacts {
+                tail: &[#tail],
+                checkpoint: #checkpoint,
+                stage: &[#stage],
+                schema_lock: #schema_lock,
+            })
         })
     }
 }
@@ -459,6 +517,25 @@ fn optional_text(path: Option<&Path>) -> TokenStream {
             quote! { ::core::option::Option::Some(::core::include_str!(#path)) }
         }
         None => quote! { ::core::option::Option::None },
+    }
+}
+
+/// Renders the inclusion that registers the resolved configuration as a compile input.
+///
+/// The text is bound to an anonymous constant, so the inclusion needs no name and
+/// no reader: it exists for what emitting it does to the build, which is the
+/// registration of the path it names. A collection that baked no configuration
+/// contributes nothing.
+fn configuration_input(path: Option<&Path>) -> TokenStream {
+    match path {
+        Some(path) => {
+            let path = LitStr::new(&path.to_string_lossy(), Span::call_site());
+
+            quote! {
+                const _: &str = ::core::include_str!(#path);
+            }
+        }
+        None => TokenStream::new(),
     }
 }
 

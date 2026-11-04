@@ -14,6 +14,10 @@
 //! The rejecting forms — a directory argument, an absent path, a configuration
 //! baking no script — cannot live in a compiled test binary, so their exact
 //! diagnostics are asserted by the unit tests of the expansion.
+//!
+//! The positions a call is written in are covered as well: the expansion is one
+//! parenthesized expression, so a test drives it as the scrutinee of a `match` and
+//! another leaves it standing alone as a statement.
 
 use rurqe::migrate::{Checkpoint, EmbeddedMigrations, SchemaCatalog};
 use rurqe_macros::embed_migrations;
@@ -86,4 +90,24 @@ fn every_artifact_the_configuration_declares_is_baked() {
     let snapshot = include_str!("fixtures/guarded/rurqe/schema.lock");
     let catalog = SchemaCatalog::from_lock(snapshot).expect("the fixture snapshot is valid");
     assert_eq!(embedded.schema_hash(), Some(catalog.checksum()));
+}
+
+/// The expansion is one expression, so a call parses where a plain expression
+/// parses — here, as the scrutinee of a `match`.
+#[test]
+fn a_call_parses_as_a_match_scrutinee() {
+    let count = match embed_migrations!("rurqe.toml") {
+        Ok(embedded) => embedded.len(),
+        Err(error) => panic!("the fixture configuration declares valid scripts: {error}"),
+    };
+
+    assert_eq!(count, BAKED.len());
+}
+
+/// The expansion also stands alone as a statement, which the parenthesized block
+/// expression preserves: the position is the claim, so the value is discarded.
+#[test]
+#[allow(unused_must_use)]
+fn a_call_stands_alone_as_a_statement() {
+    embed_migrations!("rurqe.toml");
 }

@@ -49,10 +49,43 @@ instead of guessing at one.
 
 The expansion itself parses nothing. Every artifact is baked as raw text through
 `include_str!` from its absolute path, which registers it as an input of the
-compilation: editing an artifact recompiles the binary that carries it. The text
-then reaches `EmbeddedMigrations::from_artifacts`, which parses it at startup with
-the very parsers the rest of the migration crate uses, so a malformed artifact is
-rejected before any connection is opened.
+compilation: editing an artifact recompiles the binary that carries it. The
+resolved configuration file is included the same way, so a binary is rebuilt when
+the document that declares its layout changes: editing `root`, the migration
+directory, or the stage directory of `rurqe.toml` recompiles the calling crate
+instead of leaving it with the artifacts of a layout that no longer exists. The
+text then reaches `EmbeddedMigrations::from_artifacts`, which parses it at startup
+with the very parsers the rest of the migration crate uses, so a malformed
+artifact is rejected before any connection is opened.
+
+Two input classes stay outside what an expansion can register on stable Rust:
+
+- the membership of an artifact directory. A `*.sql` script written into the
+  migration or stage directory after a bake, and a script removed from one,
+  changes a listing that no inclusion names, because an inclusion the expansion
+  emits names a path that existed when the macro ran;
+- a `rurqe.toml` created where the discovery walk found none. The walk selects a
+  file that exists at expansion time, so a configuration appearing later was
+  absent when the conventional layout was baked.
+
+Tracking a path without including it is a nightly-only mechanism, so neither class
+has an expansion-side remedy. The supported remedy for both is a build script of
+the calling crate, which asks Cargo to rescan the directories the project
+configuration resolves:
+
+```text
+// build.rs
+fn main() {
+    println!("cargo:rerun-if-changed=rurqe/migrations");
+    println!("cargo:rerun-if-changed=rurqe/schema");
+}
+```
+
+A project that relocated its artifacts names the relocated directories, and the
+directory that would receive a configuration the walk did not find is named the
+same way. With such a script in place, a script added to an artifact directory
+recompiles the binary, and the baked collection carries the new listing instead of
+the one the previous build saw.
 
 A combination the baked artifacts contradict is refused there as well, whether
 or not either text is malformed on its own. One disagreement is decidable from

@@ -89,7 +89,7 @@ fn only_top_level_scripts_are_baked_in_lexicographic_order() {
     write(&root.join("migrations/notes.txt"), "not a script");
     write(&root.join("rurqe/schema.lock"), "version = 5\n");
 
-    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root)
+    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect("the directory holds scripts");
     let baked = names(&artifacts.tail);
     let marker = artifacts.checkpoint.clone();
@@ -109,7 +109,7 @@ fn a_stage_without_a_tail_is_enough_to_bake() {
     write(&root.join("schema/2_users.sql"), "CREATE TABLE users (id INTEGER);");
     write(&root.join("schema/10_orders.sql"), "CREATE TABLE orders (id INTEGER);");
 
-    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root)
+    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect("a declarative stage alone is enough");
     let tail = names(&artifacts.tail);
     let stage = names(&artifacts.stage);
@@ -124,7 +124,7 @@ fn a_configuration_baking_no_script_is_rejected() {
     let root = temporary_directory("empty");
     write(&root.join("migrations/checkpoint.toml"), "anything");
 
-    let error = plan(&fixture_configuration("migrations", "schema"), &root)
+    let error = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect_err("no script bakes nothing");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -142,7 +142,7 @@ fn a_script_name_that_is_not_text_is_rejected() {
     let name = std::ffi::OsString::from_vec(b"V1__in\xFFt.sql".to_vec());
     write(&directory.join(&name), "SELECT 1;");
 
-    let error = plan(&fixture_configuration("migrations", "schema"), &root)
+    let error = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect_err("a name that is not text cannot identify a baked script");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -202,7 +202,7 @@ fn discovery_climbs_from_the_calling_crate_to_the_configuration() {
 
     let (configuration, directory, file) =
         configuration(None, &member).expect("the configuration is discovered");
-    let artifacts = plan(&configuration, &directory).expect("the tail holds a script");
+    let artifacts = plan(&configuration, &directory, None).expect("the tail holds a script");
     let baked = names(&artifacts.tail);
     let _ = std::fs::remove_dir_all(&root);
 
@@ -246,7 +246,7 @@ fn the_conventional_artifact_directory_applies_without_a_configuration() {
     let discovered =
         configuration(None, &member).expect("the conventional layout applies");
     let (configuration, directory, file) = discovered;
-    let artifacts = plan(&configuration, &directory).expect("the directory holds a script");
+    let artifacts = plan(&configuration, &directory, None).expect("the directory holds a script");
     let baked = names(&artifacts.tail);
     let _ = std::fs::remove_dir_all(&root);
 
@@ -266,13 +266,36 @@ fn a_configuration_argument_resolves_against_its_own_directory() {
 
     let (configuration, directory, configuration_file) =
         configuration(Some(&file), &member).expect("the configuration anchors its artifacts");
-    let artifacts = plan(&configuration, &directory).expect("the tail holds a script");
+    let artifacts = plan(&configuration, &directory, None).expect("the tail holds a script");
     let baked = names(&artifacts.tail);
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(baked, ["V3__init.sql"]);
     assert_eq!(directory, project);
     assert_eq!(configuration_file, Some(file));
+}
+
+#[test]
+fn the_configuration_the_bake_read_is_registered_as_a_compile_input() {
+    let root = temporary_directory("configuration-input");
+    let project = root.join("project");
+    write(&project.join("rurqe.toml"), "root = \"artifacts\"\n");
+    write(&project.join("artifacts/migrations/V1__init.sql"), "SELECT 1;");
+    let member = project.join("crates/application");
+    std::fs::create_dir_all(&member).expect("create the member directory");
+
+    let artifacts = resolve_artifacts(None, &member)
+        .expect("the walk selects the configuration above the crate");
+    let baked = names(&artifacts.tail);
+    let registered = artifacts.configuration;
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(baked, ["V1__init.sql"]);
+    assert_eq!(
+        registered,
+        Some(project.join("rurqe.toml")),
+        "the document the walk selected is an input of the compilation"
+    );
 }
 
 #[test]
@@ -288,6 +311,7 @@ fn every_artifact_is_included_from_its_absolute_path() {
             path: PathBuf::from("/s/users.sql"),
         }],
         schema_lock: Some(PathBuf::from("/m/schema.lock")),
+        configuration: Some(PathBuf::from("/m/rurqe.toml")),
     };
 
     let rendered: String = render(&artifacts).to_string().split_whitespace().collect();
@@ -297,6 +321,11 @@ fn every_artifact_is_included_from_its_absolute_path() {
     assert!(rendered.contains(r#"include_str!("/m/checkpoint.toml")"#));
     assert!(rendered.contains(r#"include_str!("/s/users.sql")"#));
     assert!(rendered.contains(r#"include_str!("/m/schema.lock")"#));
+    assert!(rendered.contains(r#"include_str!("/m/rurqe.toml")"#));
+    assert!(
+        rendered.starts_with("({") && rendered.ends_with("})"),
+        "the construction sits inside a parenthesized block expression: {rendered}"
+    );
     assert!(rendered.contains("tail:&["));
     assert!(rendered.contains("stage:&["));
 }
@@ -308,6 +337,7 @@ fn an_absent_artifact_renders_as_none() {
             name: "V1__init.sql".to_owned(),
             path: PathBuf::from("/m/V1__init.sql"),
         }],
+        configuration: None,
         ..Artifacts::default()
     };
 
@@ -315,6 +345,9 @@ fn an_absent_artifact_renders_as_none() {
 
     assert_eq!(rendered.matches("Option::None").count(), 2);
     assert!(rendered.contains("stage:&["));
+    // The only inclusion is the baked script: a configuration the bake never read
+    // contributes no input of its own.
+    assert_eq!(rendered.matches("include_str!").count(), 1);
 }
 
 #[test]
@@ -341,7 +374,7 @@ fn the_bake_order_is_lexicographic_while_the_run_order_is_versioned() {
         "CREATE TABLE orders (id INTEGER);",
     );
 
-    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root)
+    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect("both artifact directories hold scripts");
     let baked_tail = names(&artifacts.tail);
     let baked_stage = names(&artifacts.stage);
@@ -399,7 +432,7 @@ fn a_checkpoint_path_that_is_a_directory_is_rejected() {
     std::fs::create_dir_all(root.join("migrations/checkpoint.toml"))
         .expect("create the entry occupying the marker path");
 
-    let error = plan(&fixture_configuration("migrations", "schema"), &root)
+    let error = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect_err("a directory cannot be baked as the boundary marker");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -414,7 +447,7 @@ fn a_schema_lock_path_that_is_a_directory_is_rejected() {
     std::fs::create_dir_all(root.join("rurqe/schema.lock"))
         .expect("create the entry occupying the snapshot path");
 
-    let error = plan(&fixture_configuration("migrations", "schema"), &root)
+    let error = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect_err("a directory cannot be baked as the catalog snapshot");
     let _ = std::fs::remove_dir_all(&root);
 
@@ -445,7 +478,7 @@ fn a_checkpoint_path_that_cannot_be_inspected_is_rejected() {
     std::fs::set_permissions(&guard, std::fs::Permissions::from_mode(0o000))
         .expect("remove the traversal permission of the guard directory");
 
-    let error = plan(&configuration, &root)
+    let error = plan(&configuration, &root, None)
         .expect_err("a marker the process cannot inspect cannot be baked");
 
     std::fs::set_permissions(&guard, std::fs::Permissions::from_mode(0o755))
