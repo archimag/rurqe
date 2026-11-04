@@ -195,7 +195,7 @@ fn drift_verification_catches_divergence_with_actionable_error() {
     assert!(msg.contains(
         "Table `products`: column `sku` exists in database but is missing from snapshot."
     ));
-    assert!(msg.contains("Hint: Run `cargo db-codegen` to update code and snapshot."));
+    assert!(msg.contains("Hint: Run `cargo rurqe codegen` to update code and snapshot."));
 }
 
 #[test]
@@ -778,7 +778,7 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
     );
     assert!(message.contains("phone"), "unexpected error: {message}");
     assert!(
-        message.contains("cargo db-codegen"),
+        message.contains("cargo rurqe codegen"),
         "unexpected error: {message}"
     );
 }

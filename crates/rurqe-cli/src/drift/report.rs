@@ -23,7 +23,7 @@ impl fmt::Display for DriftReport {
         self.diff.write_details(f, DiffWording::SNAPSHOT)?;
         writeln!(
             f,
-            "\nHint: Run `cargo db-codegen` to update code and snapshot."
+            "\nHint: Run `cargo rurqe codegen` to update code and snapshot."
         )
     }
 }
@@ -69,7 +69,7 @@ impl fmt::Display for DriftError {
                 diff.write_details(f, DiffWording::SNAPSHOT)?;
                 write!(
                     f,
-                    "\nHint: Run `cargo db-codegen` to update code and snapshot."
+                    "\nHint: Run `cargo rurqe codegen` to update code and snapshot."
                 )
             }
             DriftError::MissingSchemaHash { diff } => {
@@ -81,7 +81,7 @@ impl fmt::Display for DriftError {
                 diff.write_details(f, DiffWording::SNAPSHOT)?;
                 write!(
                     f,
-                    "\nHint: Run `cargo db-codegen` to regenerate the schema code and snapshot."
+                    "\nHint: Run `cargo rurqe codegen` to regenerate the schema code and snapshot."
                 )
             }
             DriftError::InvalidLock(message) => {

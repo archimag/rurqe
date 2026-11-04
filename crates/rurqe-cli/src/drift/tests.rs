@@ -123,7 +123,7 @@ fn drift_detected_when_column_added_in_database() {
             let msg = report.to_string();
             assert!(msg.contains("Schema drift detected!"));
             assert!(msg.contains("phone_number"));
-            assert!(msg.contains("cargo db-codegen"));
+            assert!(msg.contains("cargo rurqe codegen"));
         }
         other => panic!("expected Drift, got {other:?}"),
     }

@@ -13,14 +13,15 @@ pub(crate) fn help_text() -> &'static str {
     r#"RURQE Developer CLI
 
 USAGE:
-    cargo db-migrate up [--database-url <url>] [--schema <name>] [--config <path>]
-    cargo db-migrate [status|repair] [--database-url <url>] [--schema <name>] [--config <path>]
-    cargo db-migrate clean [--yes|-y|--force] [--database-url <url>] [--schema <name>]
-                           [--config <path>]
-    cargo db-baseline --version <version> [--description <desc>] [--config <path>]
-    cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
-                     [--config <path>]
-    cargo db-verify [--schema-path <path>] [--lock-path <path>] [--schema <name>] [--config <path>]
+    cargo rurqe migrate up [--database-url <url>] [--schema <name>] [--config <path>]
+    cargo rurqe migrate [status|repair] [--database-url <url>] [--schema <name>] [--config <path>]
+    cargo rurqe migrate clean [--yes|-y|--force] [--database-url <url>] [--schema <name>]
+                              [--config <path>]
+    cargo rurqe baseline --version <version> [--description <desc>] [--config <path>]
+    cargo rurqe codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
+                        [--config <path>]
+    cargo rurqe verify [--schema-path <path>] [--lock-path <path>] [--schema <name>]
+                       [--config <path>]
     cargo rurqe stage init|verify|commit|cleanup [options]
     cargo rurqe prune --before <version> [options]
 
@@ -42,13 +43,15 @@ COMMANDS:
 
 STAGE OPTIONS:
     stage init       --version <version> [--stage-dir <dir>] [--description <desc>]
-                     [--config <path>]
+                     [--database-url <url>] [--schema <name>] [--config <path>]
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
-                     [--checkpoint-path <path>] [--scratch-url <url>] [--schema <name>]
-                     [--config <path>]
+                     [--checkpoint-path <path>] [--scratch-url <url>] [--database-url <url>]
+                     [--schema <name>] [--config <path>]
     stage commit     --version <version> [--stage-dir <dir>] [--lock-path <path>]
-                     [--checkpoint-path <path>] [--scratch-url <url>] [--config <path>]
-    stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force] [--config <path>]
+                     [--checkpoint-path <path>] [--scratch-url <url>] [--database-url <url>]
+                     [--schema <name>] [--config <path>]
+    stage cleanup    [--scratch-url <url>] [--database-url <url>] [--older-than <secs>]
+                     [--yes|--force] [--config <path>]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run] [--config <path>]
 
 CONFIGURATION:

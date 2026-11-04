@@ -291,7 +291,7 @@ pub(crate) fn run_cli_with_config(
             // The snapshot is published before the generated module, because the
             // order decides which partial state a failure leaves behind: a module
             // still embedding the previous `SCHEMA_HASH` beside the current snapshot
-            // surfaces as the actionable mismatch whose hint names `cargo db-codegen`,
+            // surfaces as the actionable mismatch whose hint names `cargo rurqe codegen`,
             // while the opposite order would leave a stale snapshot that the next
             // `verify` reports as structural drift of the database.
             write_file(&lock_path, &catalog.to_lock()).map_err(with_notice)?;
