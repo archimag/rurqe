@@ -977,7 +977,15 @@ The following capabilities represent valuable, high-utility SQL features that re
 13. **Tier-1 Static Scope Resolution for Correlated Subqueries (`ExternalScope` / `ResolveScope`):**
     - A correlated subquery reads a column of the statement that embeds it. That reference is currently written as an explicitly unscoped expression: it names no relation of its own, so the builder cannot distinguish a legitimate correlation from a column whose table the enclosing statement never introduced.
     - The item moves the correlation into the type system. `ExternalScope` records the relations an expression borrows from its enclosing statement, `ResolveScope` discharges that obligation against the enclosing statement's `TableScope` at the moment the subquery is embedded, and `ExecutableQuery` refuses to build a statement whose external obligations stay unresolved.
-    - The result is the Tier 1 half of the guarantee for correlated subqueries: a reference to a relation the enclosing statement does not introduce is rejected at the embedding call site by the compiler, while the escape hatch stays available for the exotic correlations the typed API does not model.
+   - The result is the Tier 1 half of the guarantee for correlated subqueries: a reference to a relation the enclosing statement does not introduce is rejected at the embedding call site by the compiler, while the escape hatch stays available for the exotic correlations the typed API does not model.
+14. **Whole-Record Projection for `SELECT`:**
+   - A generated record (`UsersRecord`) as a first-class projection target for `SELECT`, not only for `RETURNING` (`TableSelection`).
+   - A `SELECT` fixes its row type by its projection list, so reading a complete row today requires enumerating every column through `cols!`; the item extends codegen to emit, per record, a selection of all its columns typed through `SelectionFor`, so a query projects the record value directly and decodes it through its `FromRow` implementation without restating the column list.
+   - A column added to a table re-runs codegen, so the emitted record selection tracks it within the same commit.
+15. **Temporal Expression Builders (`now()` and Interval Arithmetic):**
+   - `now()` as a typed expression builder and interval arithmetic over timestamp expressions (`"created_at" > now() - '30 days'::interval`) for period analytics (30-day / 3-month / 1-year windows).
+   - PostgreSQL carries `now()` and `INTERVAL` natively, so the builders land on its dialect extension traits (the `PgExpressions` family); SQLite has no `now()` function, so its period predicates stay on the `sql!` escape hatch the book documents.
+   - Covers the expression surface only; the temporal wire types (`SqlVal::NaiveTime`, structured `INTERVAL` codecs) remain item 6.
 
 ---
 ## Architectural Exclusions & Anti-Patterns [Won't Do / YAGNI]
