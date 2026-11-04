@@ -384,7 +384,6 @@ fn single_field(name: &Ident, data: &DataStruct) -> syn::Result<SingleField> {
 }
 
 /// Collects the unit variants of a derived enum together with their labels.
-/// Collects the unit variants of a derived enum together with their labels.
 ///
 /// Two variants sharing one label would make the textual representation
 /// non-injective: `Display` renders both of them to the same text, and `FromStr`
@@ -847,7 +846,6 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    //! The derive input contract and the names it publishes: a repeated enum
     //! The derive input contract and the names it publishes: a repeated enum
     //! label, a generic type, a newtype without a storage option, and an enum
     //! without variants are rejected, and a raw identifier is published under

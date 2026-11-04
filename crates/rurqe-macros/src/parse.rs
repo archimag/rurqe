@@ -57,6 +57,7 @@ pub fn field_key(field: &Ident) -> String {
     }
     name
 }
+
 /// The SQL projection an item selects from.
 ///
 /// A projection is either a schema column marker path (`UserId`, `users::EMAIL`,
@@ -347,6 +348,7 @@ fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
 
     Ok(Ident::new_raw(bare, alias.span()))
 }
+
 /// The Rust primitive type names, which name a type wherever they are spelled.
 const PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "bool", "char", "f32", "f64", "i128", "i16", "i32", "i64", "i8", "isize", "str", "u128",
