@@ -119,17 +119,30 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
-        // Both uniqueness checks read the migration list alone, so they run
-        // before the run touches the backend: a malformed run is rejected
-        // without taking the run lock and without creating the metadata table.
-        Self::validate_script_uniqueness(migrations)?;
-        self.validate_version_uniqueness(migrations)?;
-        Self::validate_metadata_widths(migrations)?;
+        self.validate_scripts(migrations)?;
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
-        self.validate_history(&history, migrations)?;
-        self.validate_catalog_hash(&mut guard, &history)?;
+        self.migrate_guarded(&mut guard, migrations, &history)
+    }
+
+    /// Applies the pending tail under a run lock the caller already holds.
+    ///
+    /// `history` is the snapshot `guard` read, so the history validation, the
+    /// catalog-hash check, and the apply loop all observe one history under one
+    /// lock: a concurrent lifecycle operation can neither advance the schema
+    /// between the classification and the commit of the tail nor rewrite the
+    /// rows the classification read. `migrations` has already passed
+    /// [`validate_scripts`](Self::validate_scripts), and `guard` is the lock the
+    /// caller holds for the span it owns.
+    pub(crate) fn migrate_guarded<B: MigrationBackend>(
+        &self,
+        guard: &mut LockGuard<'_, B>,
+        migrations: &[Migration],
+        history: &[SchemaHistoryEntry],
+    ) -> Result<MigrationReport, Error> {
+        self.validate_history(history, migrations)?;
+        self.validate_catalog_hash(guard, history)?;
         tracing::debug!(history_entries = history.len(), "validated schema history");
 
         let sorted = Self::ordered_migrations(migrations);
@@ -140,7 +153,7 @@ impl Migrator {
             .max();
 
         let mut latest_entries_by_script: BTreeMap<&str, &SchemaHistoryEntry> = BTreeMap::new();
-        for entry in &history {
+        for entry in history {
             if entry.success {
                 match latest_entries_by_script.get(entry.script.as_str()) {
                     Some(existing) if existing.installed_rank >= entry.installed_rank => {}
@@ -184,7 +197,7 @@ impl Migrator {
             if should_run {
                 current_rank += 1;
                 tracing::info!(script = %migration.script, "applying migration");
-                let elapsed_ms = apply_migration(&mut guard, migration, current_rank)?;
+                let elapsed_ms = apply_migration(guard, migration, current_rank)?;
 
                 report.applied_scripts.push(migration.script.clone());
                 report.applied_count += 1;
@@ -463,6 +476,21 @@ impl Migrator {
     ) -> Result<Vec<String>, Error> {
         guard_blocking_entry("Migrator::clean_manifest")?;
         backend.clean_manifest()
+    }
+    /// Runs every pure check over the script list of a run.
+    ///
+    /// The three checks read the migration list alone, so they run before the
+    /// run touches the backend: a malformed run is rejected without taking the
+    /// run lock and without creating the metadata table. Their order is the
+    /// order of the diagnostics — a duplicated script name, then a duplicated
+    /// version, then a metadata value wider than its column — so a list that
+    /// breaks several rules keeps the diagnostic it reported before.
+    pub(crate) fn validate_scripts(&self, migrations: &[Migration]) -> Result<(), Error> {
+        Self::validate_script_uniqueness(migrations)?;
+        self.validate_version_uniqueness(migrations)?;
+        Self::validate_metadata_widths(migrations)?;
+
+        Ok(())
     }
 
     fn validate_version_uniqueness(&self, migrations: &[Migration]) -> Result<(), Error> {

@@ -88,7 +88,23 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
     let mut guard = LockGuard::acquire(backend)?;
     guard.ensure_schema_history_table()?;
     let history = guard.read_history()?;
+    cold_start_guarded(&mut guard, stage, marker, &history)
+}
 
+/// Classifies `history` and initialises the database under the run lock it was read under.
+///
+/// `history` is the snapshot `guard` read, so the classification, the DDL, and
+/// the marker recording all observe one history under one lock: a concurrent
+/// lifecycle operation can neither initialise the database between the
+/// classification and the DDL nor rewrite the rows the classification read.
+/// `cold_start_core` is that caller; a run that already holds the lock for its
+/// own span reaches this function directly.
+pub(crate) fn cold_start_guarded<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    stage: &DeclarativeStage,
+    marker: &StageMarker,
+    history: &[SchemaHistoryEntry],
+) -> Result<ColdStartReport, Error> {
     let recorded = history
         .iter()
         .filter(|entry| entry.success && entry.script == super::STAGE_SCRIPT)
@@ -172,7 +188,7 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
         .any(|script| !script.is_transactional());
     let in_progress_rank = if in_progress {
         let entry = marker.entry(1, current_timestamp(), marker.checksum(), false);
-        record_marker(&mut guard, &entry)?;
+        record_marker(guard, &entry)?;
         Some(entry.installed_rank)
     } else {
         None
@@ -186,10 +202,10 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
     // keeps the digest the caller supplied.
     let entry = match in_progress_rank {
         Some(installed_rank) => {
-            apply_stage(&mut guard, stage, installed_rank)?;
-            record_applied_marker(&mut guard, marker, installed_rank)?
+            apply_stage(guard, stage, installed_rank)?;
+            record_applied_marker(guard, marker, installed_rank)?
         }
-        None => apply_stage_atomically(&mut guard, stage, marker)?,
+        None => apply_stage_atomically(guard, stage, marker)?,
     };
 
     let elapsed_ms = start_time.elapsed().as_millis() as i64;
