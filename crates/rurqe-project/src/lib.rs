@@ -78,7 +78,7 @@ use std::path::{Path, PathBuf};
 mod discover;
 mod parse;
 
-pub use discover::{config_path_in, discover_config, discover_or_default};
+pub use discover::{config_path_in, discover_config, discover_or_default, Discovered};
 
 #[cfg(test)]
 mod tests;

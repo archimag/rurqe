@@ -1424,10 +1424,11 @@ fn a_dangling_symlink_at_a_candidate_reads_as_absence() {
         "the walk continues to the configuration the ancestor declares"
     );
 
-    let (configuration, directory) =
-        discover_or_default(&nested).expect("the walk answers or reports a failure");
+    let discovered = discover_or_default(&nested).expect("the walk answers or reports a failure");
+    let Discovered { config: configuration, file, directory } = discovered;
 
     assert_eq!(configuration.root(), "outer");
+    assert_eq!(file, Some(root.join(DEFAULT_CONFIG_PATH)));
     assert_eq!(directory, root.to_path_buf());
 }
 
@@ -1630,15 +1631,15 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
     )
     .expect("the configuration is written");
 
-    let discovered = discover_or_default(&member);
-
-    let (configuration, directory) = discovered.expect("the configuration is discovered");
+    let discovered = discover_or_default(&member).expect("the configuration is discovered");
+    let Discovered { config: configuration, file, directory } = discovered;
 
     assert_eq!(configuration.primary_schema(), Some("app"));
     assert_eq!(
         configuration.type_override(None, "users", "id"),
         Some("uuid::Uuid")
     );
+    assert_eq!(file, Some(root.join(DEFAULT_CONFIG_PATH)));
     assert_eq!(
         directory, root.to_path_buf(),
         "the configuration is anchored at its directory"
@@ -1657,9 +1658,11 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
 
     let chain = [nested.as_path(), root];
     let answer = discover_or_default_in(&nested, chain);
-    let (configuration, directory) = answer.expect("no configuration is declared");
+    let discovered = answer.expect("no configuration is declared");
+    let Discovered { config: configuration, file, directory } = discovered;
 
     assert_eq!(configuration, ProjectConfig::default());
+    assert_eq!(file, None);
     assert_eq!(directory, nested, "the default is anchored at the caller");
 }
 
@@ -1763,8 +1766,10 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
     std::fs::remove_file(&path).expect("the configuration is removed");
 
     let answer = read_discovered(&path, &member);
-    let (configuration, directory) = answer.expect("an absent file is the walk's own tier");
+    let discovered = answer.expect("an absent file is the walk's own tier");
+    let Discovered { config: configuration, file, directory } = discovered;
     assert_eq!(configuration, ProjectConfig::default());
+    assert_eq!(file, None);
     assert_eq!(
         directory, member,
         "the default is anchored at the directory the walk started from"
@@ -1797,9 +1802,11 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
     // anchored at the caller's directory, exactly as a tree that declares none does.
     let vanished =
         read_discovered(&path, &member).expect("an absent file is the walk's own tier");
-    assert_eq!(vanished, (ProjectConfig::default(), member.clone()));
+    assert_eq!(vanished.config, ProjectConfig::default());
+    assert_eq!(vanished.file, None);
+    assert_eq!(vanished.directory, member);
 
-    // The same chain the walk climbed answers the same tuple, so a configuration that
+    // The same chain the walk climbed answers the same record, so a configuration that
     // vanished between the two filesystem calls and a tree that never declared one are
     // one outcome rather than two that happen to agree.
     let chain = [member.as_path(), root];

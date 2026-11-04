@@ -19,6 +19,29 @@ pub fn config_path_in(directory: &Path) -> PathBuf {
     directory.join(DEFAULT_CONFIG_PATH)
 }
 
+/// One resolved project configuration: the document it was read from, the configuration that
+/// document declares, and the directory every declared path of it resolves against.
+///
+/// The three answers belong to one record because one resolution decides them and a caller
+/// consumes them together: the walk selects a candidate, the read confirms it, and the
+/// directory is the one holding the file that was actually read. A caller that has to name the
+/// input it consumed — an expansion registering a build input — reads the document from here
+/// instead of repeating the walk to reach a path the resolution already knew.
+///
+/// `file` is `Some` exactly for a configuration read from a `rurqe.toml`, and `None` when the
+/// engine-neutral defaults applied: no candidate existed on the walk, or the selected file
+/// vanished before it was read. Under the defaults `directory` is the directory the resolution
+/// started from, so the conventional artifact layout still applies beneath it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Discovered {
+    /// The configuration the project resolves to.
+    pub config: ProjectConfig,
+    /// The `rurqe.toml` the configuration was read from, absent under the defaults.
+    pub file: Option<PathBuf>,
+    /// The directory every declared path of the configuration resolves against.
+    pub directory: PathBuf,
+}
+
 /// The nearest configuration file at or above `start`.
 ///
 /// The walk climbs from `start` through its ancestors and answers with the first
@@ -97,10 +120,11 @@ where
 /// a known path: a project that declares no configuration is an ordinary project, so a walk
 /// that finds nothing answers with the engine-neutral defaults instead of an error. The walk
 /// is the one [`discover_config`] performs — the nearest `rurqe.toml` at or above `start` —
-/// and the directory answered beside the configuration is the one holding that file, which is
-/// what every declared path of the document resolves against. Without a configuration the
-/// answer is the default anchored at `start` itself, so the conventional artifact layout
-/// applies beneath the caller's own directory.
+/// and the answer is a [`Discovered`] carrying that configuration, the document it was read
+/// from, and the directory holding it, which is what every declared path of the document
+/// resolves against. Under the defaults the answer names no document and its directory is
+/// `start` itself, so the conventional artifact layout applies beneath the caller's own
+/// directory.
 ///
 /// A configuration the walk does find is read through [`ProjectConfig::load`], so a malformed
 /// file is reported with the position of its offending declaration instead of being silently
@@ -120,7 +144,7 @@ where
 /// tier and answers with the defaults anchored at `start`, exactly as a walk that found
 /// nothing does, so the answer describes the state of the tree rather than the timing of the
 /// two calls. A file that exists and cannot be read, and a malformed one, stay errors.
-pub fn discover_or_default(start: &Path) -> Result<(ProjectConfig, PathBuf), ConfigError> {
+pub fn discover_or_default(start: &Path) -> Result<Discovered, ConfigError> {
     discover_or_default_in(start, start.ancestors())
 }
 
@@ -129,18 +153,22 @@ pub fn discover_or_default(start: &Path) -> Result<(ProjectConfig, PathBuf), Con
 /// [`discover_or_default`] hands this function the whole chain its starting directory
 /// produces, while a test of the default tier hands over exactly the directories it
 /// created. The tier is then asserted against that chain — the engine-neutral defaults
-/// anchored at `start` — instead of against whatever configuration the host above the
-/// scratch tree happens to keep.
+/// anchored at `start`, naming no document — instead of against whatever configuration the
+/// host above the scratch tree happens to keep.
 pub(crate) fn discover_or_default_in<I, P>(
     start: &Path,
     ancestors: I,
-) -> Result<(ProjectConfig, PathBuf), ConfigError>
+) -> Result<Discovered, ConfigError>
 where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
     let Some(path) = discover_config_in(ancestors)? else {
-        return Ok((ProjectConfig::default(), start.to_path_buf()));
+        return Ok(Discovered {
+            config: ProjectConfig::default(),
+            file: None,
+            directory: start.to_path_buf(),
+        });
     };
 
     read_discovered(&path, start)
@@ -153,18 +181,20 @@ where
 /// removed before it is read. [`ProjectConfig::load`] reports that removal as
 /// [`ConfigError::NotFound`] — the operator-facing refusal of an explicitly named path —
 /// while a discovered path answers with the defaults anchored at `start`: the walk's own
-/// absence tier, because the tree holds no readable declaration either way. Every other
-/// failure passes through unchanged, so a file that exists and cannot be read stays
-/// [`ConfigError::Io`] and a malformed one stays [`ConfigError::Syntax`] carrying the
-/// position of its offending declaration and the file it was read from.
-pub(crate) fn read_discovered(
-    path: &Path,
-    start: &Path,
-) -> Result<(ProjectConfig, PathBuf), ConfigError> {
+/// absence tier, because the tree holds no readable declaration either way, and the record
+/// names no document because none was read. Every other failure passes through unchanged, so
+/// a file that exists and cannot be read stays [`ConfigError::Io`] and a malformed one stays
+/// [`ConfigError::Syntax`] carrying the position of its offending declaration and the file it
+/// was read from.
+pub(crate) fn read_discovered(path: &Path, start: &Path) -> Result<Discovered, ConfigError> {
     let configuration = match ProjectConfig::load(path) {
         Ok(configuration) => configuration,
         Err(ConfigError::NotFound { .. }) => {
-            return Ok((ProjectConfig::default(), start.to_path_buf()));
+            return Ok(Discovered {
+                config: ProjectConfig::default(),
+                file: None,
+                directory: start.to_path_buf(),
+            });
         }
         Err(error) => return Err(error),
     };
@@ -175,5 +205,9 @@ pub(crate) fn read_discovered(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    Ok((configuration, directory))
+    Ok(Discovered {
+        config: configuration,
+        file: Some(path.to_path_buf()),
+        directory,
+    })
 }

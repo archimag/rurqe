@@ -200,7 +200,7 @@ fn discovery_climbs_from_the_calling_crate_to_the_configuration() {
     let member = project.join("crates/application");
     std::fs::create_dir_all(&member).expect("create the member directory");
 
-    let (configuration, directory) =
+    let (configuration, directory, file) =
         configuration(None, &member).expect("the configuration is discovered");
     let artifacts = plan(&configuration, &directory).expect("the tail holds a script");
     let baked = names(&artifacts.tail);
@@ -208,6 +208,7 @@ fn discovery_climbs_from_the_calling_crate_to_the_configuration() {
 
     assert_eq!(baked, ["V1__init.sql"]);
     assert_eq!(directory, project);
+    assert_eq!(file, Some(project.join("rurqe.toml")));
 }
 
 #[test]
@@ -244,12 +245,13 @@ fn the_conventional_artifact_directory_applies_without_a_configuration() {
 
     let discovered =
         configuration(None, &member).expect("the conventional layout applies");
-    let (configuration, directory) = discovered;
+    let (configuration, directory, file) = discovered;
     let artifacts = plan(&configuration, &directory).expect("the directory holds a script");
     let baked = names(&artifacts.tail);
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(baked, ["V1__init.sql"]);
+    assert_eq!(file, None);
 }
 
 #[test]
@@ -262,7 +264,7 @@ fn a_configuration_argument_resolves_against_its_own_directory() {
     std::fs::create_dir_all(&member).expect("create the member directory");
     let file = project.join("rurqe.toml");
 
-    let (configuration, directory) =
+    let (configuration, directory, configuration_file) =
         configuration(Some(&file), &member).expect("the configuration anchors its artifacts");
     let artifacts = plan(&configuration, &directory).expect("the tail holds a script");
     let baked = names(&artifacts.tail);
@@ -270,6 +272,7 @@ fn a_configuration_argument_resolves_against_its_own_directory() {
 
     assert_eq!(baked, ["V3__init.sql"]);
     assert_eq!(directory, project);
+    assert_eq!(configuration_file, Some(file));
 }
 
 #[test]

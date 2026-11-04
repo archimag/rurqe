@@ -195,12 +195,13 @@ fn resolve(literal: &LitStr, manifest: &Path) -> PathBuf {
 /// `None` selects the discovery walk from `manifest`, while `Some(path)` is the
 /// argument already resolved against it.
 fn resolve_artifacts(argument: Option<&Path>, manifest: &Path) -> Result<Artifacts, String> {
-    let (configuration, directory) = configuration(argument, manifest)?;
+    let (configuration, directory, _file) = configuration(argument, manifest)?;
 
     plan(&configuration, &directory)
 }
 
-/// Resolves the configuration the expansion reads and the directory it anchors.
+/// Resolves the configuration the expansion reads, the directory it anchors, and the file it
+/// was read from.
 ///
 /// `argument` is the path of the single argument, already resolved against
 /// `manifest`, and `None` selects the discovery walk the configuration crate
@@ -209,12 +210,20 @@ fn resolve_artifacts(argument: Option<&Path>, manifest: &Path) -> Result<Artifac
 /// `manifest` itself otherwise. The returned directory is the one every artifact
 /// path of the configuration resolves against: the directory holding the
 /// configuration file, or `manifest` itself when the conventional layout applies.
+///
+/// The returned file is the document the answer was read from: the validated argument when one
+/// is named, and the candidate the walk selected on the discovery path. It is `None` only
+/// under the conventional layout, which reads no document at all. Naming it is what lets the
+/// expansion treat the configuration as an input of the build instead of a fact it consumed
+/// once and never mentioned again.
 fn configuration(
     argument: Option<&Path>,
     manifest: &Path,
-) -> Result<(ProjectConfig, PathBuf), String> {
+) -> Result<(ProjectConfig, PathBuf, Option<PathBuf>), String> {
     let Some(path) = argument else {
-        return discover_or_default(manifest).map_err(|error| error.to_string());
+        let discovered = discover_or_default(manifest).map_err(|error| error.to_string())?;
+
+        return Ok((discovered.config, discovered.directory, discovered.file));
     };
 
     if path.is_dir() {
@@ -235,7 +244,9 @@ fn configuration(
         ));
     }
 
-    configuration_of(path)
+    let (configuration, directory) = configuration_of(path)?;
+
+    Ok((configuration, directory, Some(path.to_path_buf())))
 }
 
 /// Reads the configuration at `path` and anchors its artifacts at its directory.
