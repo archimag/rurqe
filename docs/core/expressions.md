@@ -1,6 +1,6 @@
 # Expressions
 
-Everything that produces a value in SQL is an expression: a column, a literal, a comparison, an arithmetic operation, a function call. An expression is a typed value: it decodes to one Rust type, and it records which tables it reads, so an expression cannot name a table the statement does not introduce.
+Everything that produces a value in SQL is an expression: a column, a literal, a comparison, an arithmetic operation, a function call. An expression is a typed value: it decodes to one Rust type, and it records which tables it reads, so an expression cannot name a table the statement does not introduce. A correlated reference is the single exception, and it is marked as one rather than written as a bare column.
 
 A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, null-safe comparison, and the correlated reference an enclosing statement resolves.
 
@@ -30,7 +30,7 @@ Arithmetic folds aggregation markers like the scalar functions below: `sum(Order
 {{#rustdoc_include ../examples/expressions.rs:case}}
 ```
 
-The type argument of `Expr::<f64>::case()` is the type every branch produces; a `when` whose value does not match is refused at the call site. `.when(...)` repeats — each call appends a branch — and `.else_(...)` closes the chain with the fallback. A `CASE` without a single `when` does not compile: there is nothing to close.
+The type argument of `Expr::<f64>::case()` is the type every branch produces; a `when` whose value does not match is refused at the call site. `.when(...)` repeats — each call appends a branch — and `.else_(...)` closes the chain with the fallback. The fallback is optional: a `CASE` finished without it yields SQL NULL for a row no branch matched, while the expression keeps the type its branches produce, so `.else_` is written wherever the projected value has to be present. A `CASE` without a single `when` does not compile: there is nothing to close.
 
 The branches fold their markers: a `CASE` written over aggregates stays an aggregate and projects from a grouped query, while a branch reading a bare column makes the whole expression per-row.
 
@@ -46,14 +46,14 @@ Each operand is a column, an expression, or a literal of the matching type, and 
 
 ## Null-safe comparison
 
-`=` is never true against an absent value and `<>` is true for any absent one — neither behaves as an equality once a NULL takes part. SQL:1999 defines the pair that does:
+`=` and `<>` follow three-valued logic: once a NULL stands on either side, the comparison is unknown rather than true, so neither operator selects the row. SQL:1999 defines the pair that decides on absence instead of propagating it:
 
 | Function | SQL |
 |---|---|
 | `is_distinct_from(a, b)` | `a IS DISTINCT FROM b` |
 | `is_not_distinct_from(a, b)` | `a IS NOT DISTINCT FROM b` |
 
-`is_distinct_from` keeps the rows whose value differs or is absent; `is_not_distinct_from` is its complement and reads two absent values as equal.
+`is_distinct_from` is true when the two values differ, and also when exactly one of them is absent; two absent values are not distinct from each other. `is_not_distinct_from` is its complement, so it reads two absent values as equal — the pair that behaves as an equality once a NULL takes part.
 
 ## Correlated references (`outer`)
 
