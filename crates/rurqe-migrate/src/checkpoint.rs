@@ -1,39 +1,36 @@
-//! Checkpoint markers anchoring the active migration tail.
+//! The `checkpoint.toml` marker that anchors a pruned migration history.
 //!
-//! A project exercising the Stage + Tail paradigm keeps one declarative stage
-//! (`schema/`) plus a short tail of migrations. Once every deployed environment
-//! has progressed past a version, the migrations below it are pruned; the
-//! `checkpoint.toml` marker then records the boundary
-//! ([`Checkpoint::pruned_up_to_version`]) together with the SHA-256 digest of the
-//! stage it was cut at ([`Checkpoint::schema_hash`]).
+//! A project that prunes the migrations its history already folded in carries a
+//! marker recording how far the history was cut and the digest of the catalog
+//! the boundary was cut at. [`Checkpoint`] is that marker: it renders the
+//! document `stage commit` publishes, parses the document back, and decides
+//! from a recorded history whether a target still sits at or above the boundary.
 //!
-//! The marker guards against silently corrupting an older database: a target
-//! whose newest recorded version sits below the boundary cannot be advanced by
-//! the pruned tail, so [`Checkpoint::validate_history`] rejects it with an
-//! actionable diagnostic instead of executing a partial script sequence.
+//! The document holds two keys beneath its `[checkpoint]` table:
 //!
 //! ```toml
 //! [checkpoint]
-//! pruned_up_to_version = "3.2"
+//! pruned_up_to_version = "5.0"
 //! schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 //! ```
 //!
-//! ```
-//! use rurqe_migrate::Checkpoint;
+//! `pruned_up_to_version` names the version below which the scripts were folded
+//! into the boundary snapshot, and `schema_hash` is the SHA-256 digest of the
+//! catalog the boundary was cut at. The document is read strictly: an unknown
+//! section, a misspelled or a repeated key, a version that does not parse, and
+//! a hash that is not a full digest are each refused with the location of the
+//! offending declaration.
 //!
-//! let marker = concat!(
-//!     "[checkpoint]\n",
-//!     "pruned_up_to_version = \"3.2\"\n",
-//!     "schema_hash = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n",
-//! );
-//!
-//! let checkpoint = Checkpoint::parse(marker).expect("a valid marker");
-//! assert_eq!(checkpoint.pruned_up_to_version().to_string(), "3.2");
-//! ```
+//! Only genuine absence reads as "no boundary". [`Checkpoint::load`] answers
+//! `Ok(None)` for a path that names nothing and reports every other failure,
+//! because a marker the process cannot read keeps the pruning guard unknown
+//! instead of pretending the history was never pruned.
 
+use core::ops::Range;
 use std::path::Path;
 
 use serde::Deserialize;
+use toml::Spanned;
 
 use crate::checksum::Checksum;
 use crate::error::Error;
@@ -41,32 +38,28 @@ use crate::history::SchemaHistoryEntry;
 use crate::stage::STAGE_SCRIPT;
 use crate::version::MigrationVersion;
 
-/// The default name of the marker file.
+/// File name of the checkpoint marker, conventionally inside the migration directory.
 pub const CHECKPOINT_FILE: &str = "checkpoint.toml";
 
-/// The configuration section holding the checkpoint fields.
-const CHECKPOINT_SECTION: &str = "checkpoint";
-
-/// The key declaring the boundary the history was pruned at.
-const VERSION_KEY: &str = "pruned_up_to_version";
-
-/// The key declaring the stage hash of the pruned history.
-const HASH_KEY: &str = "schema_hash";
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CheckpointFile {
-    checkpoint: CheckpointSection,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CheckpointSection {
-    pruned_up_to_version: String,
-    schema_hash: String,
-}
-
-/// A marker anchoring the active migration tail to a pruned base stage.
+/// The boundary a pruned migration history was cut at.
+///
+/// The boundary names the version below which every script was folded into the
+/// boundary snapshot, together with the digest of the catalog the boundary was
+/// cut at. [`Migrator`](crate::runner::Migrator) attaches one with
+/// `with_checkpoint` and rejects a target that stopped below it.
+///
+/// ```
+/// use rurqe_migrate::Checkpoint;
+///
+/// let marker = r#"[checkpoint]
+/// pruned_up_to_version = "5.0"
+/// schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+/// "#;
+/// let checkpoint = Checkpoint::parse(marker).expect("a valid marker");
+///
+/// assert_eq!(checkpoint.pruned_up_to_version().to_string(), "5.0");
+/// assert_eq!(checkpoint.render(), marker);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkpoint {
     pruned_up_to_version: MigrationVersion,
@@ -74,7 +67,7 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
-    /// Creates a marker from an already validated boundary and stage hash.
+    /// Creates a boundary anchored at `pruned_up_to_version` with `schema_hash`.
     pub fn new(pruned_up_to_version: MigrationVersion, schema_hash: Checksum) -> Self {
         Self {
             pruned_up_to_version,
@@ -82,70 +75,40 @@ impl Checkpoint {
         }
     }
 
-    /// The version below which the migration history has been pruned.
-    pub fn pruned_up_to_version(&self) -> &MigrationVersion {
-        &self.pruned_up_to_version
-    }
-
-    /// The SHA-256 digest of the stage the history was pruned at.
-    pub fn schema_hash(&self) -> Checksum {
-        self.schema_hash
-    }
-
-    /// Renders the canonical `checkpoint.toml` marker.
+    /// Parses the `checkpoint.toml` document in `text`.
     ///
-    /// The rendering round-trips through [`Checkpoint::parse`], so a committed
-    /// marker is always readable back by the migration runner.
-    pub fn render(&self) -> String {
-        format!(
-            "[{}]\n{} = \"{}\"\n{} = \"{}\"\n",
-            CHECKPOINT_SECTION,
-            VERSION_KEY,
-            self.pruned_up_to_version,
-            HASH_KEY,
-            self.schema_hash.to_hex()
-        )
+    /// The document is read strictly: an unknown section, a misspelled or a
+    /// repeated key, a version that does not parse, and a hash that is not a
+    /// full SHA-256 digest are each refused with the location of the offending
+    /// declaration, so a marker is never read halfway.
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        let document: Document =
+            toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
+        let section = document.checkpoint;
+
+        let pruned_up_to_version = located_version(text, &section.pruned_up_to_version)?;
+        let schema_hash = located_digest(text, &section.schema_hash)?;
+
+        Ok(Self {
+            pruned_up_to_version,
+            schema_hash,
+        })
     }
 
-    /// Parses the `[checkpoint]` table out of `contents`.
-    pub fn parse(contents: &str) -> Result<Self, Error> {
-        let file: CheckpointFile =
-            toml::from_str(contents).map_err(|err| invalid(err.to_string()))?;
-
-        let pruned_up_to_version = file
-            .checkpoint
-            .pruned_up_to_version
-            .parse::<MigrationVersion>()
-            .map_err(|_| {
-                invalid(format!(
-                    "invalid version `{}`",
-                    file.checkpoint.pruned_up_to_version
-                ))
-            })?;
-
-        let schema_hash = Checksum::from_hex(&file.checkpoint.schema_hash).map_err(|_| {
-            invalid(format!(
-                "invalid SHA-256 hash `{}`",
-                file.checkpoint.schema_hash
-            ))
-        })?;
-
-        Ok(Self::new(pruned_up_to_version, schema_hash))
-    }
-
-    /// Reads the marker at `path`, returning `None` when no marker exists there.
+    /// Reads the marker at `path`.
     ///
-    /// An absent file means "no pruning boundary", and so does a path below a
-    /// component that is not a directory: no marker can live there, so the commit
-    /// reads the boundary as absent and the write that follows reports the
-    /// unusable path with the artifact it could not produce. A marker that is
-    /// present but unreadable or malformed stays an error, because silently
-    /// ignoring a broken marker would let the tail run against a database that can
-    /// no longer be advanced.
+    /// A path that names nothing is the one state that reads as no boundary:
+    /// `Ok(None)` says the history was never pruned, which is what an untouched
+    /// project carries. Every other failure keeps the boundary unknown and is
+    /// reported as [`Error::InvalidCheckpoint`] naming the path — a permission
+    /// refusal, a damaged file, and a path below a component that is not a
+    /// directory included. A read-only consumer that loads the marker to decide
+    /// whether the pruning guard applies therefore never proceeds with the
+    /// guard silently disarmed.
     pub fn load(path: &Path) -> Result<Option<Self>, Error> {
         match std::fs::read_to_string(path) {
-            Ok(contents) => Self::parse(&contents).map(Some),
-            Err(error) if no_marker_can_exist(path, &error) => Ok(None),
+            Ok(text) => Self::parse(&text).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(invalid(format!(
                 "failed to read `{}`: {error}",
                 path.display()
@@ -153,98 +116,144 @@ impl Checkpoint {
         }
     }
 
-    /// Verifies that the target history did not stop below the pruned boundary.
+    /// Renders the document `stage commit` publishes.
+    pub fn render(&self) -> String {
+        format!(
+            "[checkpoint]\npruned_up_to_version = \"{}\"\nschema_hash = \"{}\"\n",
+            self.pruned_up_to_version, self.schema_hash
+        )
+    }
+
+    /// The version below which the history was folded into the boundary snapshot.
+    pub fn pruned_up_to_version(&self) -> &MigrationVersion {
+        &self.pruned_up_to_version
+    }
+
+    /// The digest of the catalog the boundary was cut at.
+    pub fn schema_hash(&self) -> Checksum {
+        self.schema_hash
+    }
+
+    /// Rejects a recorded history that stopped at or diverged from this boundary.
     ///
-    /// The database version is the newest version recorded in
-    /// `__rurqe_schema_history`, which covers both applied versioned migrations
-    /// and the baseline marker written when a database is initialised from the
-    /// declarative stage. A target at or above the boundary is advanced by the
-    /// tail as usual; a target below it — or one that never recorded a version —
-    /// is rejected, because the scripts that would bring it forward have been
-    /// pruned.
-    ///
-    /// Both probes read the successful rows alone: the stage-marker probe skips
-    /// an unsuccessful entry, and so does the recorded-version probe. A history
-    /// whose newest row is the in-progress `<< Stage >>` marker of an interrupted
-    /// cold start therefore records no version here, and the boundary reports the
-    /// target as outdated. The caller checks failed entries before it reaches
-    /// this method, so the actionable partial-initialisation diagnostic wins over
-    /// the boundary rejection.
+    /// Only successful entries participate: a failed attempt records no applied
+    /// state, so it never lowers the version a target has reached. A history
+    /// that recorded no version at all — one holding only repeatable scripts —
+    /// sits below every boundary and is refused with no recorded version. A
+    /// target sitting exactly at the boundary is measured against
+    /// [`Checkpoint::schema_hash`] through the stage marker it recorded, while
+    /// a target above it has already been advanced past the boundary by the
+    /// tail.
     pub fn validate_history(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
-        let stage_marker = history.iter().find(|entry| {
-            entry.success
-                && entry.script == STAGE_SCRIPT
-                && entry.version.as_ref() == Some(&self.pruned_up_to_version)
-        });
-
-        if let Some(entry) = stage_marker {
-            if entry.checksum != Some(self.schema_hash) {
-                return Err(Error::CheckpointHashMismatch {
-                    pruned_up_to_version: self.pruned_up_to_version.to_string(),
-                    recorded_hash: entry
-                        .checksum
-                        .map(|checksum| checksum.to_hex())
-                        .unwrap_or_default(),
-                    expected_hash: self.schema_hash.to_hex(),
-                });
-            }
-        }
-
-        let recorded = history
+        let newest = history
             .iter()
             .filter(|entry| entry.success)
             .filter_map(|entry| entry.version.clone())
             .max();
 
-        match recorded {
-            Some(version) if version >= self.pruned_up_to_version => Ok(()),
-            older => Err(Error::OutdatedCheckpoint {
-                database_version: older.map(|version| version.to_string()),
-                pruned_up_to_version: self.pruned_up_to_version.to_string(),
-                schema_hash: self.schema_hash.to_hex(),
-            }),
+        let Some(newest) = newest else {
+            return Err(self.outdated(None));
+        };
+
+        if newest < self.pruned_up_to_version {
+            return Err(self.outdated(Some(newest)));
+        }
+
+        if newest == self.pruned_up_to_version {
+            return self.validate_stage_marker(history);
+        }
+
+        Ok(())
+    }
+
+    /// Measures the stage marker recorded at the boundary against the anchored digest.
+    fn validate_stage_marker(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
+        let recorded = history
+            .iter()
+            .filter(|entry| entry.success && entry.script == STAGE_SCRIPT)
+            .max_by_key(|entry| entry.installed_rank);
+
+        let Some(recorded) = recorded else {
+            return Ok(());
+        };
+        let Some(recorded_hash) = recorded.checksum else {
+            return Ok(());
+        };
+
+        if recorded_hash == self.schema_hash {
+            return Ok(());
+        }
+
+        Err(Error::CheckpointHashMismatch {
+            pruned_up_to_version: self.pruned_up_to_version.to_string(),
+            recorded_hash: recorded_hash.to_hex(),
+            expected_hash: self.schema_hash.to_hex(),
+        })
+    }
+
+    /// Builds the refusal of a target that stopped below the boundary.
+    fn outdated(&self, database_version: Option<MigrationVersion>) -> Error {
+        Error::OutdatedCheckpoint {
+            database_version: database_version.map(|version| version.to_string()),
+            pruned_up_to_version: self.pruned_up_to_version.to_string(),
+            schema_hash: self.schema_hash.to_hex(),
         }
     }
 }
 
-/// Whether a failed read means no marker exists at the requested path.
-///
-/// An absent file is the ordinary case: nothing was ever written there. The
-/// second confirmed case is a path below a component that is not a directory —
-/// the marker cannot live there, so the boundary is read as absent instead of
-/// aborting a commit that has not written anything yet, and the write that
-/// follows reports the unusable path with the artifact it could not produce.
-///
-/// Every other failure — a permission, a decode, a damaged file, or a read below
-/// a directory whose own metadata cannot be inspected — keeps the boundary
-/// unknown rather than pretending the history was never pruned, because a runner
-/// that assumes no boundary proceeds against exactly the outdated targets the
-/// marker exists to reject.
-fn no_marker_can_exist(path: &Path, error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        return true;
-    }
-
-    // A path below a regular file fails with an OS error that no stable error kind
-    // names on every toolchain, so the parent itself is inspected instead. The
-    // parent has to be *seen* not to be a directory: a metadata lookup that fails
-    // leaves the layout unknown, so the read error keeps propagating.
-    marker_parent(path).is_some_and(|parent| {
-        std::fs::metadata(parent).is_ok_and(|metadata| !metadata.is_dir())
-    })
+/// The marker document, read strictly so an unknown section is refused.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    checkpoint: Section,
 }
 
-/// The directory a marker path is resolved below.
-///
-/// A bare file name carries an empty parent, which names the current directory;
-/// every other path keeps the parent it declares. `None` means the path itself
-/// names no directory component, so nothing can be inspected for it.
-fn marker_parent(path: &Path) -> Option<&Path> {
-    let parent = path.parent()?;
-    if parent.as_os_str().is_empty() {
-        return Some(Path::new("."));
+/// The `[checkpoint]` table of the marker.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Section {
+    pruned_up_to_version: Spanned<String>,
+    schema_hash: Spanned<String>,
+}
+
+/// Parses the version a marker declares, reporting its location in `text`.
+fn located_version(text: &str, value: &Spanned<String>) -> Result<MigrationVersion, Error> {
+    value
+        .get_ref()
+        .parse::<MigrationVersion>()
+        .map_err(|error| located(text, value.span(), "pruned_up_to_version", &error))
+}
+
+/// Parses the digest a marker declares, reporting its location in `text`.
+fn located_digest(text: &str, value: &Spanned<String>) -> Result<Checksum, Error> {
+    Checksum::from_hex(value.get_ref())
+        .map_err(|error| located(text, value.span(), "schema_hash", &error))
+}
+
+/// Builds a refusal that names the declaration and its location in `text`.
+fn located(text: &str, span: Range<usize>, key: &str, error: &Error) -> Error {
+    let (line, column) = location(text, span.start);
+    invalid(format!("{key} at line {line}, column {column}: {error}"))
+}
+
+/// The one-based line and column of `offset` within `text`.
+fn location(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+
+    for (index, character) in text.char_indices() {
+        if index >= offset {
+            break;
+        }
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
     }
-    Some(parent)
+
+    (line, column)
 }
 
 /// Builds an [`Error::InvalidCheckpoint`] from `message`.
@@ -256,364 +265,456 @@ fn invalid(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::migration::Migration;
+    use std::path::PathBuf;
 
+    use super::*;
+    use crate::migration::MigrationKind;
+
+    /// The digest of the empty catalog, used as the hash of every fixture marker.
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-    fn marker(version: &str) -> Checkpoint {
-        Checkpoint::parse(&format!(
+    /// A directory of its own for one test.
+    fn temporary_directory(name: &str) -> PathBuf {
+        let directory = format!("rurqe-checkpoint-{}-{name}", std::process::id());
+        let path = std::env::temp_dir().join(directory);
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create the fixture directory");
+        path
+    }
+
+    /// Writes `contents` to `path`, creating its parent directories.
+    fn write(path: &Path, contents: &str) {
+        let parent = path.parent().expect("a fixture file has a parent");
+        std::fs::create_dir_all(parent).expect("create the fixture directory");
+        std::fs::write(path, contents).expect("write the fixture file");
+    }
+
+    /// The text of a marker anchoring `version` at the empty catalog.
+    fn marker(version: &str) -> String {
+        format!(
             "[checkpoint]\npruned_up_to_version = \"{version}\"\nschema_hash = \"{HASH}\"\n"
-        ))
-        .expect("a valid marker")
-    }
-
-    fn applied(script: &str) -> SchemaHistoryEntry {
-        let migration = Migration::parse(script, "SELECT 1;").expect("a valid script name");
-        SchemaHistoryEntry::applied(1, &migration, "2024-01-01 00:00:00", 1)
-    }
-
-    #[test]
-    fn the_canonical_marker_is_parsed() {
-        let checkpoint = marker("3.2");
-
-        assert_eq!(checkpoint.pruned_up_to_version().parts(), &[3, 2]);
-        assert_eq!(checkpoint.schema_hash(), Checksum::of(b""));
-    }
-
-    #[test]
-    fn unknown_sections_and_fields_are_rejected() {
-        let err = Checkpoint::parse(&format!(
-            "# pruning boundary\n\
-             [unknown_section]\n\
-             key = \"val\"\n\
-             \n\
-             [checkpoint]\n\
-             pruned_up_to_version = \"3.2\"\n\
-             schema_hash = \"{HASH}\"\n"
-        ))
-        .expect_err("unknown sections are rejected");
-        assert!(
-            err.to_string().contains("unknown field")
-                || err.to_string().contains("unknown_section")
-        );
-
-        let err = Checkpoint::parse(&format!(
-            "[checkpoint]\n\
-             pruned_up_to_version = \"3.2\"\n\
-             schema_hash = \"{HASH}\"\n\
-             extra_field = true\n"
-        ))
-        .expect_err("unknown fields are rejected");
-        assert!(err.to_string().contains("extra_field"));
-    }
-
-    #[test]
-    fn malformed_markers_are_reported_with_their_line() {
-        let missing_hash = Checkpoint::parse("[checkpoint]\npruned_up_to_version = \"3.2\"\n")
-            .expect_err("a missing hash is rejected");
-        assert!(missing_hash.to_string().contains("schema_hash"));
-
-        let missing_version =
-            Checkpoint::parse(&format!("[checkpoint]\nschema_hash = \"{HASH}\"\n"))
-                .expect_err("a missing version is rejected");
-        assert!(missing_version.to_string().contains("pruned_up_to_version"));
-
-        let unknown_key = Checkpoint::parse(&format!(
-            "[checkpoint]\npruned_up = \"3.2\"\nschema_hash = \"{HASH}\"\n"
-        ))
-        .expect_err("unknown keys are rejected");
-        assert!(unknown_key.to_string().contains("pruned_up"));
-
-        let bad_hash = Checkpoint::parse(
-            "[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"abc\"\n",
         )
-        .expect_err("a truncated hash is rejected");
-        assert!(bad_hash.to_string().contains("SHA-256 hash"));
-
-        let bad_version = Checkpoint::parse(&format!(
-            "[checkpoint]\npruned_up_to_version = \"v3\"\nschema_hash = \"{HASH}\"\n"
-        ))
-        .expect_err("a malformed version is rejected");
-        assert!(bad_version.to_string().contains("version"));
-
-        let duplicate = Checkpoint::parse(&format!(
-            "[checkpoint]\npruned_up_to_version = \"3\"\npruned_up_to_version = \"4\"\n\
-             schema_hash = \"{HASH}\"\n"
-        ))
-        .expect_err("repeated keys are rejected");
-        assert!(duplicate.to_string().contains("duplicate"));
     }
 
-    #[test]
-    fn the_marker_round_trips_through_its_rendering() {
-        let checkpoint = marker("3.2");
-
-        assert_eq!(Checkpoint::parse(&checkpoint.render()), Ok(checkpoint));
+    /// The digest a recorded script of the fixtures carries.
+    fn script_digest() -> String {
+        Checksum::of(b"script").to_hex()
     }
 
-    #[test]
-    fn a_path_below_a_regular_file_holds_no_marker() {
-        let dir = std::env::temp_dir().join(format!(
-            "rurqe-checkpoint-{}-{}",
-            std::process::id(),
-            std::line!()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the workspace");
-        let blocker = dir.join("blocker");
-        std::fs::write(&blocker, "not a directory").expect("write the blocking file");
+    /// The digest a fixture stage that agrees with the boundary records.
+    fn stage_digest() -> String {
+        Checksum::of(b"stage").to_hex()
+    }
 
-        // No marker can live below a regular file, so the boundary is absent and
-        // the write that follows reports the unusable path.
-        let loaded = Checkpoint::load(&blocker.join("checkpoint.toml"));
+    /// The digest a fixture stage that diverged from the boundary records.
+    fn other_digest() -> String {
+        Checksum::of(b"another stage").to_hex()
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(loaded, Ok(None));
+    /// A boundary anchored at `version` with the fixture stage digest.
+    fn boundary(version: &str) -> Checkpoint {
+        let version = version.parse().expect("a valid version");
+        Checkpoint::new(version, Checksum::of(b"stage"))
+    }
+
+    /// A history entry for one recorded script or stage marker.
+    fn entry(
+        installed_rank: i64,
+        version: &str,
+        script: &str,
+        checksum: &str,
+        success: bool,
+    ) -> SchemaHistoryEntry {
+        SchemaHistoryEntry {
+            installed_rank,
+            version: Some(version.parse().expect("a valid version")),
+            description: "fixture".to_owned(),
+            kind: if script == STAGE_SCRIPT {
+                MigrationKind::Baseline
+            } else {
+                MigrationKind::Versioned
+            },
+            script: script.to_owned(),
+            checksum: Some(Checksum::from_hex(checksum).expect("a valid digest")),
+            installed_on: "1970-01-01 00:00:00".to_owned(),
+            execution_time_ms: 0,
+            success,
+        }
     }
 
     #[test]
     fn the_marker_is_read_from_disk() {
-        let path = std::env::temp_dir().join(format!(
-            "rurqe-checkpoint-{}-{}.toml",
-            std::process::id(),
-            std::line!()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let root = temporary_directory("read");
+        let path = root.join(CHECKPOINT_FILE);
+        write(&path, &marker("5.0"));
 
-        assert_eq!(Checkpoint::load(&path), Ok(None));
-
-        std::fs::write(
-            &path,
-            format!("[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"{HASH}\"\n"),
-        )
-        .expect("write the marker");
-        let loaded = Checkpoint::load(&path).expect("the marker is valid");
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(loaded, Some(marker("3.2")));
-    }
-
-    #[test]
-    fn targets_above_the_boundary_are_accepted() {
-        let checkpoint = marker("3.2");
+        let loaded = Checkpoint::load(&path).expect("the marker is readable");
+        let checkpoint = loaded.expect("a boundary is present");
+        let version = "5.0".parse().expect("a valid version");
+        assert_eq!(checkpoint, Checkpoint::new(version, Checksum::of(b"")));
+        assert_eq!(checkpoint.pruned_up_to_version().to_string(), "5.0");
 
         assert_eq!(
-            checkpoint.validate_history(&[applied("V3_4__tail.sql")]),
-            Ok(())
+            Checkpoint::load(&root.join("absent.toml")).expect("nothing is named"),
+            None
         );
-    }
-
-    #[test]
-    fn the_baseline_marker_establishes_the_boundary() {
-        let checkpoint = marker("3.2");
-        let baseline = SchemaHistoryEntry::baseline(
-            1,
-            "3.2".parse::<MigrationVersion>().expect("a valid version"),
-            "stage",
-            "2024-01-01 00:00:00",
+        assert_eq!(
+            Checkpoint::load(&root.join("nested/checkpoint.toml")).expect("nothing is named"),
+            None
         );
 
-        assert_eq!(checkpoint.validate_history(&[baseline]), Ok(()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A path below a regular file is a misconfigured layout rather than an
+    /// empty history, so the reader keeps the boundary unknown.
+    #[test]
+    fn a_path_below_a_regular_file_keeps_the_boundary_unknown() {
+        let root = temporary_directory("blocked-component");
+        let blocking = root.join(CHECKPOINT_FILE);
+        write(&blocking, "this file is not a directory");
+        let path = blocking.join(CHECKPOINT_FILE);
+
+        let error = Checkpoint::load(&path).expect_err("a misconfigured layout stays an error");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "an unusable path is reported as an invalid checkpoint: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("failed to read"),
+            "the diagnostic names the failed read: {message}"
+        );
+        assert!(
+            message.contains(&blocking.display().to_string()),
+            "the diagnostic names the blocking path: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn stage_marker_with_matching_hash_is_accepted() {
-        let checkpoint = marker("3.2");
-        let stage = SchemaHistoryEntry {
-            installed_rank: 1,
-            version: Some("3.2".parse().expect("a valid version")),
-            description: "stage".to_owned(),
-            kind: crate::migration::MigrationKind::Baseline,
-            script: STAGE_SCRIPT.to_owned(),
-            checksum: Some(checkpoint.schema_hash()),
-            installed_on: "2024-01-01 00:00:00".to_owned(),
-            execution_time_ms: 0,
-            success: true,
-        };
+    fn a_directory_at_the_marker_path_keeps_the_boundary_unknown() {
+        let root = temporary_directory("directory");
+        let path = root.join(CHECKPOINT_FILE);
+        std::fs::create_dir_all(&path).expect("create the fixture directory");
 
-        assert_eq!(checkpoint.validate_history(&[stage]), Ok(()));
+        let error = Checkpoint::load(&path).expect_err("a directory is not a marker");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "a directory is reported as an invalid checkpoint: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("failed to read"),
+            "the diagnostic names the failed read: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn stage_marker_with_diverged_hash_is_rejected() {
-        let checkpoint = marker("3.2");
-        let stage = SchemaHistoryEntry {
-            installed_rank: 1,
-            version: Some("3.2".parse().expect("a valid version")),
-            description: "stage".to_owned(),
-            kind: crate::migration::MigrationKind::Baseline,
-            script: STAGE_SCRIPT.to_owned(),
-            checksum: Some(Checksum::of(b"diverged")),
-            installed_on: "2024-01-01 00:00:00".to_owned(),
-            execution_time_ms: 0,
-            success: true,
-        };
+    fn a_damaged_marker_keeps_the_boundary_unknown() {
+        let root = temporary_directory("damaged");
+        let path = root.join(CHECKPOINT_FILE);
+        write(&path, "this is not a marker");
 
-        let error = checkpoint
-            .validate_history(&[stage])
-            .expect_err("mismatched stage hash must be rejected");
+        let error = Checkpoint::load(&path).expect_err("a damaged marker stays an error");
 
-        match error {
-            Error::CheckpointHashMismatch {
-                pruned_up_to_version,
-                recorded_hash,
-                expected_hash,
-            } => {
-                assert_eq!(pruned_up_to_version, "3.2");
-                assert_eq!(recorded_hash, Checksum::of(b"diverged").to_hex());
-                assert_eq!(expected_hash, checkpoint.schema_hash().to_hex());
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "a damaged marker is reported as an invalid checkpoint: {error:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Asserts that an unreadable marker is reported instead of read as absent.
+    ///
+    /// A process that reads past the mode — a test suite running as root —
+    /// cannot observe the state these fixtures pin, so the fixture is skipped
+    /// instead of failing.
+    #[cfg(unix)]
+    fn assert_unreadable(outcome: Result<Option<Checkpoint>, Error>) {
+        match outcome {
+            Err(error) => {
+                assert!(
+                    matches!(&error, Error::InvalidCheckpoint { .. }),
+                    "an unreadable marker is reported as an invalid checkpoint: {error:?}"
+                );
+                assert!(
+                    error.to_string().contains("failed to read"),
+                    "the diagnostic names the failed read: {error}"
+                );
             }
-            other => panic!("expected CheckpointHashMismatch, got {other:?}"),
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("an unreadable marker must not read as an absent one"),
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn repeatable_scripts_never_establish_the_boundary() {
-        let checkpoint = marker("3.2");
-        let migration = Migration::parse("R__view.sql", "SELECT 1;").expect("a valid name");
-        let repeatable = SchemaHistoryEntry::applied(1, &migration, "now", 1);
+    fn an_unreadable_marker_file_keeps_the_boundary_unknown() {
+        use std::os::unix::fs::PermissionsExt;
 
-        let error = checkpoint
+        let root = temporary_directory("unreadable-file");
+        let path = root.join(CHECKPOINT_FILE);
+        write(&path, &marker("1"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("make the marker unreadable");
+
+        let outcome = Checkpoint::load(&path);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("restore the marker permissions");
+        assert_unreadable(outcome);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_inside_an_unreadable_directory_keeps_the_boundary_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temporary_directory("unreadable-directory");
+        let directory = root.join("migrations");
+        let path = directory.join(CHECKPOINT_FILE);
+        write(&path, &marker("1"));
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o000))
+            .expect("make the directory unreadable");
+
+        let outcome = Checkpoint::load(&path);
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+            .expect("restore the directory permissions");
+        assert_unreadable(outcome);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_marker_round_trips_through_render_and_parse() {
+        let version = "5_0".parse().expect("a valid version");
+        let checkpoint = Checkpoint::new(version, Checksum::of(b"stage"));
+        let rendered = checkpoint.render();
+
+        let expected = format!(
+            "[checkpoint]\npruned_up_to_version = \"5.0\"\nschema_hash = \"{}\"\n",
+            Checksum::of(b"stage").to_hex()
+        );
+
+        assert_eq!(rendered, expected);
+        assert_eq!(
+            Checkpoint::parse(&rendered).expect("the rendered marker parses"),
+            checkpoint
+        );
+        assert_eq!(
+            Checkpoint::parse(&marker("5_0"))
+                .expect("underscores separate the same version")
+                .pruned_up_to_version(),
+            checkpoint.pruned_up_to_version()
+        );
+    }
+
+    #[test]
+    fn a_misspelled_key_is_rejected_with_its_location() {
+        let text = format!(
+            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hahs = \"{HASH}\"\n"
+        );
+
+        let error = Checkpoint::parse(&text).expect_err("a misspelled key is refused");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("schema_hahs"),
+            "the diagnostic names the key: {message}"
+        );
+        assert!(
+            message.contains("line") && message.contains("column"),
+            "the diagnostic carries the location: {message}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_section_is_rejected() {
+        let text = format!("{}\n[other]\nkey = 1\n", marker("1"));
+
+        let error = Checkpoint::parse(&text).expect_err("an unknown section is refused");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "got {error:?}"
+        );
+        assert!(
+            error.to_string().contains("other"),
+            "the diagnostic names the section: {error}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_key_is_rejected() {
+        let text = format!(
+            "[checkpoint]\npruned_up_to_version = \"1\"\n\
+             pruned_up_to_version = \"2\"\nschema_hash = \"{HASH}\"\n"
+        );
+
+        let error = Checkpoint::parse(&text).expect_err("a repeated key is refused");
+
+        assert!(
+            error.to_string().contains("pruned_up_to_version"),
+            "the diagnostic names the key: {error}"
+        );
+    }
+
+    #[test]
+    fn a_version_that_does_not_parse_is_rejected() {
+        let error = Checkpoint::parse(&marker("v1")).expect_err("the version is refused");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("pruned_up_to_version"),
+            "the diagnostic names the key: {message}"
+        );
+        assert!(
+            message.contains("line 2"),
+            "the diagnostic carries the location: {message}"
+        );
+    }
+
+    #[test]
+    fn a_hash_that_is_not_a_digest_is_rejected() {
+        let short = "abc";
+        let text = format!(
+            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{short}\"\n"
+        );
+
+        let error = Checkpoint::parse(&text).expect_err("the hash is refused");
+
+        assert!(
+            matches!(&error, Error::InvalidCheckpoint { .. }),
+            "got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("schema_hash"),
+            "the diagnostic names the key: {message}"
+        );
+        assert!(
+            message.contains("line 3"),
+            "the diagnostic carries the location: {message}"
+        );
+
+        let not_hex = "z".repeat(64);
+        let text = format!(
+            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{not_hex}\"\n"
+        );
+
+        let error = Checkpoint::parse(&text).expect_err("a non-hexadecimal digest is refused");
+        assert!(
+            error.to_string().contains("schema_hash"),
+            "the diagnostic names the key: {error}"
+        );
+    }
+
+    #[test]
+    fn a_target_below_the_boundary_is_refused() {
+        let history = vec![entry(1, "1", "V1__init.sql", &script_digest(), true)];
+
+        let error = boundary("2")
+            .validate_history(&history)
+            .expect_err("the target stopped below the boundary");
+
+        assert_eq!(
+            error,
+            Error::OutdatedCheckpoint {
+                database_version: Some("1".to_owned()),
+                pruned_up_to_version: "2".to_owned(),
+                schema_hash: stage_digest(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_history_without_a_recorded_version_is_refused() {
+        let mut repeatable = entry(1, "1", "R__view.sql", &script_digest(), true);
+        repeatable.version = None;
+        repeatable.kind = MigrationKind::Repeatable;
+
+        let error = boundary("2")
             .validate_history(&[repeatable])
-            .expect_err("a version-less history stays below the boundary");
-        assert!(matches!(
+            .expect_err("a repeatable-only history sits below every boundary");
+
+        assert_eq!(
             error,
             Error::OutdatedCheckpoint {
                 database_version: None,
-                ..
+                pruned_up_to_version: "2".to_owned(),
+                schema_hash: stage_digest(),
             }
-        ));
+        );
     }
 
     #[test]
-    fn outdated_targets_are_rejected_with_a_remedy() {
-        let checkpoint = marker("3.2");
-        let error = checkpoint
-            .validate_history(&[applied("V3_1__tail.sql")])
-            .expect_err("a target below the boundary is rejected");
+    fn a_target_at_the_boundary_is_accepted() {
+        let history = vec![entry(2, "2", "V2__orders.sql", &script_digest(), true)];
 
-        match &error {
-            Error::OutdatedCheckpoint {
-                database_version,
-                pruned_up_to_version,
-                ..
-            } => {
-                assert_eq!(database_version.as_deref(), Some("3.1"));
-                assert_eq!(pruned_up_to_version, "3.2");
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
+    }
+
+    #[test]
+    fn a_target_above_the_boundary_is_accepted() {
+        let history = vec![entry(3, "3", "V3__orders.sql", &script_digest(), true)];
+
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
+    }
+
+    #[test]
+    fn a_stage_marker_at_the_boundary_must_anchor_the_boundary_digest() {
+        let history = vec![entry(1, "2", STAGE_SCRIPT, &other_digest(), true)];
+
+        let error = boundary("2")
+            .validate_history(&history)
+            .expect_err("the stage marker diverged from the boundary");
+
+        assert_eq!(
+            error,
+            Error::CheckpointHashMismatch {
+                pruned_up_to_version: "2".to_owned(),
+                recorded_hash: other_digest(),
+                expected_hash: stage_digest(),
             }
-            other => panic!("expected OutdatedCheckpoint, got {other:?}"),
-        }
-        assert!(error.to_string().contains("schema/"));
+        );
     }
 
     #[test]
-    fn a_bare_relative_path_keeps_an_unreadable_layout_unknown() {
-        let bare = std::path::Path::new(CHECKPOINT_FILE);
-        assert_eq!(bare.parent(), Some(std::path::Path::new("")));
+    fn a_stage_marker_at_the_boundary_anchoring_the_digest_is_accepted() {
+        let history = vec![entry(1, "2", STAGE_SCRIPT, &stage_digest(), true)];
 
-        // An absent file stays the unconditional absent signal ...
-        assert!(no_marker_can_exist(
-            bare,
-            &std::io::Error::from(std::io::ErrorKind::NotFound)
-        ));
-
-        // ... while a failure of any other cause leaves the boundary unknown: the
-        // empty parent of a bare name names the current directory, which a marker
-        // can live below, so the read error keeps propagating.
-        assert!(!no_marker_can_exist(
-            bare,
-            &std::io::Error::from(std::io::ErrorKind::PermissionDenied)
-        ));
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_parent_that_cannot_be_inspected_keeps_the_read_error() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_stage_marker_above_the_boundary_is_not_measured() {
+        let history = vec![entry(1, "3", STAGE_SCRIPT, &other_digest(), true)];
 
-        let root = scratch("unreadable-parent");
-        if !permissions_are_enforced(&root) {
-            let _ = std::fs::remove_dir_all(&root);
-            return;
-        }
-
-        let restricted = root.join("restricted");
-        std::fs::create_dir(&restricted).expect("create the restricted directory");
-        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o000))
-            .expect("withdraw the directory permissions");
-
-        // Resolving the marker requires traversing `restricted`, so neither the
-        // read nor the metadata lookup of the marker's parent can succeed.
-        let loaded = Checkpoint::load(&restricted.join("tail").join(CHECKPOINT_FILE));
-
-        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o700))
-            .expect("restore the directory permissions");
-        let _ = std::fs::remove_dir_all(&root);
-
-        let error = loaded.expect_err("an unreadable layout keeps the boundary unknown");
-        assert!(error.to_string().contains("failed to read"));
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn an_unreadable_marker_under_a_readable_directory_is_reported() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_failed_entry_does_not_mask_the_newest_recorded_version() {
+        let history = vec![
+            entry(1, "1", "V1__init.sql", &script_digest(), false),
+            entry(2, "3", "V3__orders.sql", &script_digest(), true),
+        ];
 
-        let root = scratch("unreadable-marker");
-        if !permissions_are_enforced(&root) {
-            let _ = std::fs::remove_dir_all(&root);
-            return;
-        }
-
-        let locked = root.join("locked");
-        std::fs::create_dir(&locked).expect("create the locked directory");
-        std::fs::write(
-            locked.join(CHECKPOINT_FILE),
-            format!("[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"{HASH}\"\n"),
-        )
-        .expect("write the marker");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
-            .expect("withdraw the directory permissions");
-
-        // The parent is inspectable and *is* a directory, so the marker may well
-        // exist behind the refused read: the failure has to reach the caller.
-        let loaded = Checkpoint::load(&locked.join(CHECKPOINT_FILE));
-
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
-            .expect("restore the directory permissions");
-        let _ = std::fs::remove_dir_all(&root);
-
-        let error = loaded.expect_err("a refused read is never an absent marker");
-        assert!(error.to_string().contains("failed to read"));
-    }
-
-    /// Creates an empty scratch directory unique to the calling test.
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rurqe-checkpoint-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the workspace");
-        dir
-    }
-
-    /// Whether the operating system enforces directory permissions for this process.
-    ///
-    /// A superuser bypasses them, so a directory cannot be made unreadable and the
-    /// regressions that depend on the refusal stand down.
-    #[cfg(unix)]
-    fn permissions_are_enforced(dir: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-
-        let probe = dir.join(".permission-probe");
-        if std::fs::create_dir(&probe).is_err() {
-            return false;
-        }
-
-        let enforced = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000))
-            .is_ok_and(|()| std::fs::File::open(&probe).is_err());
-        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700));
-        let _ = std::fs::remove_dir(&probe);
-
-        enforced
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
     }
 }

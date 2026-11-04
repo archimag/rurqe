@@ -84,12 +84,14 @@ never read halfway.
 An absent marker means no boundary and leaves the tail unaffected; a marker that
 is present but malformed stays an error, because silently ignoring it would let
 the tail run against exactly the outdated targets the marker exists to reject.
-The same distinction separates an unreadable marker from an absent one. A path
-that does not exist, and a path below a component that is not a directory, both
-read as no marker at all — nothing can live there, and the write that follows
-reports the unusable path with the artifact it could not produce — while a
-permission failure, a damaged file, or a directory whose own metadata cannot be
-inspected keeps the boundary unknown and stays an error.
+The same distinction separates an unreadable marker from an absent one. Only a
+path that names nothing reads as no marker at all. A path below a component that
+is not a directory, a permission failure, a damaged file, and a directory that
+cannot be read all keep the boundary unknown and stay errors: a
+structurally unusable path is a misconfigured layout rather than an empty
+history, and reporting it keeps every consumer — including a reader that only
+loads the marker, such as a status or a dry run — from proceeding with the
+pruning guard disarmed.
 
 `checkpoint.toml` is the default name, and it lives inside the resolved migration
 directory: `rurqe/migrations/checkpoint.toml` under the conventional layout, and
