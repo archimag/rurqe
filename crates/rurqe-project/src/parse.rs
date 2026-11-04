@@ -307,6 +307,12 @@ impl CodegenConfig {
     /// segment and is refused here. [`validate_override_schemas`] checks the
     /// schema of a three-segment path once the whole document has been read,
     /// because `schemas` may follow the table that declares the override.
+    ///
+    /// A table reached through a segment has to contribute at least one entry:
+    /// a header such as `[codegen.type_overrides.users.id]` names a column
+    /// without a Rust type, and accepting it would let a mistyped declaration
+    /// pass for a valid one, so the empty table is refused where its segment is
+    /// declared.
     fn read_overrides(
         &mut self,
         contents: &str,
@@ -316,6 +322,23 @@ impl CodegenConfig {
         enclosing: Option<Range<usize>>,
         declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
+        // The root table may stay empty: a project that declares no override
+        // writes `[codegen.type_overrides]` and nothing else. A table reached
+        // through a segment, however, has to end in a column declaration —
+        // otherwise the path names a column with no Rust type, and a mistyped
+        // declaration would pass for a valid one while the generator silently
+        // keeps the default mapping.
+        if let Some(prefix) = prefix.filter(|_| table.is_empty()) {
+            return Err(syntax_error(
+                contents,
+                enclosing,
+                format!(
+                    "`{section}.{prefix}` declares no column override; a path segment opens \
+                     a table that must declare at least one entry beneath it, because the \
+                     column itself is declared as a value and never as a table of its own"
+                ),
+            ));
+        }
         for (key, item) in table.iter() {
             let span = key_span(table, key).or_else(|| enclosing.clone());
 

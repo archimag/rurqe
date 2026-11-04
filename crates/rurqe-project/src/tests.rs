@@ -516,6 +516,74 @@ fn an_empty_quoted_key_contributes_an_empty_segment() {
     }
 }
 
+/// A table that declares no entry names a path but no Rust type, so accepting it
+/// would let a mistyped declaration pass for a valid one. The root table stays
+/// optional: a project that declares no override writes it empty and is accepted.
+#[test]
+fn vacuous_override_tables_are_rejected() {
+    for (contents, path) in [
+        (
+            "[codegen.type_overrides.users.id]\n",
+            "codegen.type_overrides.users.id",
+        ),
+        (
+            "[codegen.type_overrides]\nusers = {}\n",
+            "codegen.type_overrides.users",
+        ),
+        (
+            "schemas = [\"auth\"]\n[codegen.type_overrides.auth]\n",
+            "codegen.type_overrides.auth",
+        ),
+    ] {
+        let err = CodegenConfig::parse(contents)
+            .expect_err("a table that declares no column records no override");
+
+        assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("declares no column override"),
+            "the refusal says what the table leaves undeclared: {message}"
+        );
+        assert!(
+            message.contains(path),
+            "the refusal names the path the table reaches: {message}"
+        );
+    }
+
+    let root = CodegenConfig::parse("[codegen.type_overrides]\n")
+        .expect("a root table without overrides declares nothing and is accepted");
+    assert!(root.type_overrides().is_empty());
+
+    let inline = CodegenConfig::parse(
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides]\n\
+         auth = { users = { id = \"uuid::Uuid\" } }\n",
+    )
+    .expect("the chain of inline tables ends in a column declaration");
+    assert_eq!(
+        inline.type_override(Some("auth"), "users", "id"),
+        Some("uuid::Uuid")
+    );
+}
+
+/// The refusal is reported where the table that declares nothing is opened, so
+/// the operator sees the declaration that has to change.
+#[test]
+fn a_vacuous_override_table_is_reported_at_the_key_that_opens_it() {
+    let err = CodegenConfig::parse("[codegen.type_overrides]\nusers = {}\n")
+        .expect_err("an inline table that declares no column records no override");
+
+    assert!(
+        matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+        "{err}"
+    );
+    assert!(
+        err.to_string().contains("line 2, column 1"),
+        "the rendered diagnostic carries the key's position: {err}"
+    );
+}
+
 #[test]
 fn nested_three_segment_entries_are_reported_at_their_own_line() {
     let err = CodegenConfig::parse(

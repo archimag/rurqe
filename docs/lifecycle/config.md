@@ -328,6 +328,12 @@ invalid configuration at line 5, column 1: duplicate type override `users.id`
 invalid configuration at line 5, column 1: `codegen.type_overrides.users` must be a Rust type string or a table of column overrides
 ```
 
+- A table reached through a path segment has to declare at least one column beneath it, because a segment opens a table rather than a column. A header written in place of the column therefore records no override, and the empty table is refused where it is declared:
+
+```text
+invalid configuration at line 2, column 1: `codegen.type_overrides.users` declares no column override; a path segment opens a table that must declare at least one entry beneath it, because the column itself is declared as a value and never as a table of its own
+```
+
 An override survives every later regeneration, because the generator reads the file and never edits it: the type is declared once and applied each time the module is written.
 
 ### `output`
