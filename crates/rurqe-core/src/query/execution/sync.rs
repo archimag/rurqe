@@ -11,6 +11,24 @@ use super::error::ExecutionError;
 use super::ExecutableQuery;
 
 /// A database driver capable of executing rendered queries.
+///
+/// An implementation translates the typed parameters of a [`BuiltQuery`] into
+/// native driver values and reports the driver error unchanged. The three
+/// methods of this trait are the bare statement path of the session hygiene
+/// protocol of [`TransactionBackend`](crate::query::TransactionBackend): while
+/// the bookkeeping of the adapter records a refused transaction-control
+/// statement ([`TransactionStatus`](crate::query::TransactionStatus)), a
+/// statement is answered with that recorded failure before it reaches the
+/// driver, because the session may still hold the transaction the refused
+/// statement could not close. The transaction-control path stays open through
+/// [`TransactionBackend`](crate::query::TransactionBackend), whose statements
+/// are the ones that end the state.
+///
+/// A backend that mediates checkouts of shared sessions — a connection pool —
+/// owes the third obligation of the same protocol: it settles the disposition
+/// of every checkout it hands out, by proving the session idle, by repairing
+/// it, or by destroying the connection, and it never returns a session it
+/// cannot vouch for to the next caller.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot execute RURQE queries",
     label = "unsupported query backend",

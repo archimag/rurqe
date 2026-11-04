@@ -20,7 +20,53 @@
 //! `ROLLBACK` issued with no transaction open as an error, so its adapter
 //! answers that refusal as benign and the guard records the connection clean
 //! instead of poisoning it.
-
+//!
+//! # Session hygiene
+//!
+//! Two session states turn the following statements into silent lies: a
+//! transaction-control statement the driver refused may leave the session
+//! holding the transaction it was meant to close, and a transaction a raw
+//! driver handle opened is invisible to the bookkeeping of the adapter
+//! altogether. In both states the engine accepts the next statement inside the
+//! abandoned transaction, whose work survives only if something later commits
+//! it. The contracts of this module therefore carry three obligations,
+//! discharged by the adapter, the pool, and every build configuration alike.
+//!
+//! **A recorded refusal closes the bare statement path.** While
+//! [`TransactionStatus`] records a refused transaction-control statement, the
+//! adapter answers [`fetch_raw`](QueryBackend::fetch_raw),
+//! [`fetch_raw_limited`](QueryBackend::fetch_raw_limited), and
+//! [`execute_raw`](QueryBackend::execute_raw) with that recorded failure
+//! instead of dispatching them, because the session may still hold the
+//! transaction the statement could not close. The methods of
+//! [`TransactionBackend`] stay callable, because their statements are exactly
+//! the ones that end the state.
+//!
+//! **A typed transaction entry proves or repairs the session.** A transaction a
+//! raw driver handle opened is invisible to the record, so the entry points
+//! that open a block establish that the session is outside a transaction before
+//! [`begin`](TransactionBackend::begin) issues its statement: the caller proves
+//! it — a pooled checkout the pool drove to a known ending — or the adapter
+//! returns the session to an idle state itself. The recovery of
+//! [`TransactionGuard::begin`](super::TransactionGuard::begin) replays the
+//! failures its own record holds; it cannot observe a transaction opened behind
+//! its back, which is why the proof belongs to the adapter.
+//!
+//! **A pool settles the disposition of every checkout.** The session of a
+//! pooled connection outlives the adapter that drove it, so a pool proves a
+//! checkout idle, repairs it, or destroys the connection before it is reused,
+//! and a session it cannot vouch for never reaches the next caller.
+//!
+//! The synchronous PostgreSQL adapter is the reference implementation of the
+//! three obligations: `PgConnection` answers a bare statement on a connection
+//! recording a refused control statement with `PgError::ConnectionPoisoned`
+//! before the driver sees it, its typed transaction entries return the session
+//! to an idle state before the block opens, and `PgPooledConnection`, the guard
+//! of its `r2d2` pool, repairs a checkout the pool cannot prove. The
+//! obligations bind every surface and every build configuration: a statement
+//! path that never consults the record, an entry that repairs only a debug
+//! build, or a pool that recycles a session it cannot vouch for withdraws the
+//! guarantee of the whole protocol on that surface.
 use crate::query::{BuiltQuery, QueryBackend, SavepointName};
 
 use super::TransactionStatus;
@@ -65,6 +111,22 @@ fn execute_statement<B: QueryBackend + ?Sized>(
 }
 
 /// The transaction-control statements a driver adapter executes for the guard.
+///
+/// An implementation renders the control statements of its engine and hands the
+/// driver error of a refusal back unchanged, so the guard can classify what the
+/// refusal means for the session: a refusal the adapter answers as benign
+/// leaves the connection clean, while any other refusal is recorded and closes
+/// the bare statement path of that adapter, as the session hygiene obligations
+/// of this module describe.
+///
+/// The methods stay callable while that record is present. The rollback of a
+/// dropping guard, the savepoint recovery of the next entry, and the retry
+/// performed by [`begin`](TransactionBackend::begin) are the statements that
+/// end the state, so a gate that covered them would leave the session
+/// unrepairable. [`begin`](TransactionBackend::begin) is also where the second
+/// obligation meets the trait: an adapter that offers a typed transaction entry
+/// proves the session idle or repairs it before this method issues its
+/// statement, so a transaction a raw driver handle left open is never joined.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot run RURQE transaction blocks",
     label = "unsupported transaction backend",
@@ -120,6 +182,14 @@ pub trait TransactionBackend: QueryBackend {
 ///
 /// The guard mutates the bookkeeping through the returned status, so the
 /// adapter only has to keep it next to its handle.
+///
+/// That bookkeeping is the record the session hygiene protocol is keyed on. The
+/// adapter consults [`TransactionStatus::is_poisoned`] before it dispatches a
+/// bare statement, so a refusal it holds closes the statement path instead of
+/// letting the statement join the abandoned transaction, and it reads
+/// [`TransactionStatus::is_owned`] to decide what a recovery may touch: the
+/// whole transaction a departed guard left behind, or only the savepoint of a
+/// transaction a live guard still owns.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot own a RURQE transaction",
     label = "unsupported transactional connection",
