@@ -353,6 +353,18 @@ fn a_projected_record_reads_the_object_of_a_nested_row() {
 }
 
 #[test]
+fn a_projected_record_reads_the_json_text_of_a_nested_row() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let witness =
+        decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())]).expect("row decodes");
+
+    let document = SqlVal::Text("{\"user_id\":2,\"contact_email\":\"ops\"}".to_owned());
+    let row = read_nested(&witness, &document).expect("the nested row decodes");
+
+    assert_eq!(row.user_id, 2);
+    assert_eq!(row.contact_email, "ops");
+}
+#[test]
 fn a_projected_record_writes_the_object_of_a_nested_row() {
     let selection = select!(UserId, UserEmail as contact_email);
     let row = decode(
