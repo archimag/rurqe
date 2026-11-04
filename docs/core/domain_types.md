@@ -53,6 +53,37 @@ Two macros declare the binary and the textual mode without the derive:
 
 The macros emit the same contracts the derive does and are re-exported at the crate root and by the prelude, so a type is connected in one line instead of an attribute. A payload the parser of a textual type rejects becomes a decoding failure carrying the message of the parser, which keeps an invalid payload a reported failure rather than a panic.
 
+### Defining Textual Types (`#[sql(as = Text)]` or `impl_sql_text_newtype!`)
+
+A textual domain newtype binds and decodes through the driver's string channel (`SqlVal::Text`). This representation is required for:
+- String-like scalars with domain validation (`Email`, `Slug`, `PhoneNumber`).
+- Case-insensitive text (`CITEXT`).
+- Database enum labels stored as string identifiers.
+- Network and hardware addresses in PostgreSQL (`INET`, `CIDR`, `MACADDR`, `MACADDR8`), because the adapter normalises their wire representations into canonical text before row decoding.
+
+A textual type must implement `Display` for parameter encoding and `FromStr` for row decoding:
+
+```rust,no_run
+{{#rustdoc_include ../examples/schema.rs:text_newtype}}
+```
+
+Equivalently, the type can be annotated with `#[derive(SqlType)] #[sql(as = Text)]`.
+
+### Defining Binary Types (`#[sql(as = Bytes)]` or `impl_sql_binary_newtype!`)
+
+A binary domain newtype binds and decodes through raw octets (`SqlVal::Bytes`). This representation is required for:
+- Raw binary data (`BYTEA` in PostgreSQL, `BLOB` in SQLite).
+- Fixed-size cryptographic identifiers (transaction IDs, hashes, public keys).
+- Compact custom binary serialisations.
+
+A binary type must implement `AsRef<[u8]>` for parameter encoding and `TryFrom<&[u8]>` for row decoding:
+
+```rust,no_run
+{{#rustdoc_include ../examples/schema.rs:binary_newtype}}
+```
+
+When using `#[derive(SqlType)] #[sql(as = Bytes)]`, specifying `len = N` asserts that the decoded byte slice has an exact expected width; any length mismatch immediately returns `RowDecodeError::InvalidValue`.
+
 ## Nullability, arrays, and outer joins
 
 `Option<Self>` is the one nullable layer of a domain type. A nullable column wraps the type once, and a column read through a `LEFT JOIN` or a `LEFT JOIN LATERAL` lifts the type into `Option<Self>`, so reading it as an unwrapped value fails to compile. `SqlArrayElement` makes `Vec<Self>` a value of an array column in both directions: a vector binds element by element, and a produced array decodes into one.
@@ -86,7 +117,8 @@ The generator maps a column by the neutral type the catalog reports. By default 
 | `int64` | `i64` | `i64` |
 | `float64` | `f64` | `f64` |
 | `numeric` | `String` | `rust_decimal::Decimal` |
-| `text` | `String` | `String` |
+| `text` / `citext` | `String` | `String` |
+| `inet` / `cidr` / `macaddr` | `String` | `String` (or custom textual newtype) |
 | `bytes` | `Vec<u8>` | `Vec<u8>` |
 | `uuid` | `String` | `uuid::Uuid` |
 | `json` | `String` | `serde_json::Value` |

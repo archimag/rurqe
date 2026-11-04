@@ -39,3 +39,49 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+// ANCHOR: text_newtype
+/// A custom text-backed domain newtype for PostgreSQL `INET` or `CIDR` columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inet(pub std::net::IpAddr);
+
+impl std::fmt::Display for Inet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for Inet {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Inet)
+    }
+}
+
+rurqe::impl_sql_text_newtype!(Inet);
+// ANCHOR_END: text_newtype
+
+// ANCHOR: binary_newtype
+/// A custom binary-backed domain newtype for PostgreSQL `BYTEA` or SQLite `BLOB` columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Txid(pub [u8; 32]);
+
+impl AsRef<[u8]> for Txid {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<&[u8]> for Txid {
+    type Error = &'static str;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        bytes
+            .try_into()
+            .map(Txid)
+            .map_err(|_| "expected exactly 32 bytes")
+    }
+}
+
+rurqe::impl_sql_binary_newtype!(Txid, 32);
+// ANCHOR_END: binary_newtype

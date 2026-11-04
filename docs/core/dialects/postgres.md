@@ -192,3 +192,22 @@ Inside a transaction the terminal calls run against the transaction handle. `PgA
 `PgAsyncConnection::transaction_with_isolation` opens the closure-scoped form instead: it takes the isolation level, awaits the commit of a closure that returned `Ok` and the rollback of a closure that returned `Err`, and nests a block opened inside it through a SQL savepoint. `PgConnection::transaction` opens the blocking closure, which commits when the closure returns `Ok`, rolls back when it returns an error or panics, and nests a block opened inside it through a savepoint; `transaction_with_isolation` opens that block at an explicit level — `ReadCommitted`, `RepeatableRead`, or `Serializable`. The level applies to the outermost block only, because the engine defines no per-savepoint isolation.
 
 A statement the typed builder does not model is issued through the driver client the blocking adapter exposes with `client` and `client_mut`. Such a statement behaves exactly as the driver defines it and takes no part in the bookkeeping of the typed transaction around it.
+
+## Network Address Types
+
+PostgreSQL provides dedicated types for network and hardware addresses: `inet`, `cidr`, `macaddr`, and `macaddr8`.
+
+At the wire protocol level, RURQE's PostgreSQL adapter normalises network address values into canonical textual representations:
+- `inet` values decode to host or prefixed network strings (`192.168.1.1` or `192.168.1.1/24`).
+- `cidr` values always retain their explicit prefix length (`10.0.0.0/8`).
+- `macaddr` and `macaddr8` decode to colon-separated hexadecimal strings (`08:00:2b:01:02:03`).
+
+Because network addresses travel through the adapter as `SqlVal::Text`, the code generator maps them onto `String` by default. When wrapping network addresses into a custom Rust type (such as `std::net::IpAddr` or a domain wrapper), the type must be declared as a **textual domain newtype** (`Display` + `FromStr`), either via `rurqe::impl_sql_text_newtype!` or `#[derive(SqlType)] #[sql(as = Text)]`, and mapped through `[codegen.type_overrides]`. Defining a binary newtype (`#[sql(as = Bytes)]`) for an `inet` or `cidr` column is an error: row decoding will fail with `RowDecodeError::TypeMismatch` because the adapter supplies textual data.
+
+## Temporal INTERVAL Columns
+
+The PostgreSQL `interval` data type models spans of time. Native binary encoding and decoding for `interval` values are not yet included in the typed AST (scheduled in roadmap item 6).
+
+Attempting to query a raw `interval` column directly returns a driver error: `PgError::UnsupportedType("interval")`. Applications working with interval values can use the following patterns:
+- **Reading intervals:** cast the column to text (`cast::<String>(col)` or `sql!(<String> "duration::text")`), or extract units numerically (`sql!(<f64> "EXTRACT(EPOCH FROM duration)")`).
+- **Date and timestamp arithmetic:** construct interval expressions through the `sql!` escape hatch, e.g. `sql!("created_at > now() - ?::interval", "30 days")`.
