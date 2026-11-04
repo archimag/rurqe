@@ -144,15 +144,11 @@ impl<'a> PgAsyncScope<'a> {
     /// learns which statement could not be completed instead of only that the
     /// connection is unusable.
     fn refuse_if_poisoned(&self) -> Result<(), PgError> {
-        if !self.poison.is_poisoned() {
-            return Ok(());
+        if self.poison.is_poisoned() {
+            Err(self.poison.refusal())
+        } else {
+            Ok(())
         }
-
-        let reason = self
-            .poison
-            .poison_reason()
-            .unwrap_or_else(|| String::from("the connection recorded no reason"));
-        Err(PgError::ConnectionPoisoned { reason })
     }
 
     /// Runs `f` inside a nested transaction, releasing it on `Ok` and rolling it
@@ -236,7 +232,11 @@ impl<'a> PgAsyncScope<'a> {
     /// cell instead of being returned, because the failure of the block is the
     /// error the caller has to act on; the connection must then be discarded
     /// rather than reused, because the statements of the block stay pending
-    /// inside the enclosing transaction.
+    /// inside the enclosing transaction. The failed statement is recorded
+    /// together with the driver failure behind it, so the refusal a later
+    /// statement receives hands that failure back through
+    /// [`source`](std::error::Error::source) instead of reporting the reason
+    /// alone.
     async fn roll_back(&self, savepoint: &SavepointName) {
         let name = savepoint.as_str();
         let quoted = quoted_savepoint(name);
@@ -245,12 +245,16 @@ impl<'a> PgAsyncScope<'a> {
             Ok(()) => tracing::warn!(savepoint = %name, "rolled back to savepoint"),
             Err(failure) => {
                 let refused = format!("ROLLBACK TO SAVEPOINT {quoted}");
-                self.poison.mark(control_failure(&refused, &failure));
+                let reason = control_failure(&refused, &failure);
                 tracing::error!(
                     savepoint = %name,
                     failure = %failure,
                     "rolling back to the savepoint failed; the connection must be discarded"
                 );
+                // The block reports its own error instead of this one, so the
+                // failure is recorded on the cell: a later refusal hands it back
+                // through `source()` instead of leaving it in the trace alone.
+                self.poison.mark_with_cause(reason, failure);
             }
         }
     }

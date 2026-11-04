@@ -306,9 +306,10 @@ mod deadpool_impl {
     ///   out.
     ///
     /// A `ROLLBACK` the driver refuses supersedes the error of the block: the
-    /// refused statement is traced, and the caller receives
-    /// [`PgError::ConnectionPoisoned`] carrying it, because the transaction
-    /// state is unknown from that point on.
+    /// refused statement is recorded on the connection, and the caller receives
+    /// [`PgError::ConnectionPoisoned`] carrying it through
+    /// [`source`](std::error::Error::source), because the transaction state is
+    /// unknown from that point on.
     ///
     /// The checkout is proven idle before the block opens. One `ROLLBACK`
     /// through the simple query protocol — the statement PostgreSQL answers in
@@ -358,16 +359,17 @@ mod deadpool_impl {
                     Err(error)
                 }
                 Err(failure) => {
-                    poison.mark(control_failure("ROLLBACK", &failure));
+                    let reason = control_failure("ROLLBACK", &failure);
                     tracing::error!(
                         failure = %failure,
                         "rolling back the transaction failed; the connection is destroyed \
                          and the failure of the block is superseded"
                     );
-                    let reason = poison
-                        .poison_reason()
-                        .unwrap_or_else(|| String::from("the connection recorded no reason"));
-                    Err(E::from(PgError::ConnectionPoisoned { reason }))
+                    // The refusal supersedes the error of the block, so the
+                    // driver failure is recorded on the cell and handed back by
+                    // the refusal instead of surviving in the trace alone.
+                    poison.mark_with_cause(reason, failure);
+                    Err(E::from(poison.refusal()))
                 }
             },
         }

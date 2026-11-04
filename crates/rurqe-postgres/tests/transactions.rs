@@ -832,10 +832,13 @@ mod async_pool {
             })
             .await;
 
-        assert!(
-            matches!(&outcome, Err(PgError::ConnectionPoisoned { .. })),
-            "the refused rollback supersedes the block's error: {outcome:?}"
-        );
+        match &outcome {
+            Err(PgError::ConnectionPoisoned { cause, .. }) => assert!(
+                cause.is_some(),
+                "the refusal carries the failure of the rollback that was refused"
+            ),
+            other => panic!("the refused rollback supersedes the block's error: {other:?}"),
+        }
 
         // The poisoned checkout was destroyed rather than recycled, so the pool
         // opens a fresh connection for the block that follows.
@@ -909,10 +912,21 @@ mod async_pool {
             .await;
 
         match &outcome {
-            Err(PgError::ConnectionPoisoned { reason }) => assert!(
-                reason.contains("ROLLBACK TO SAVEPOINT"),
-                "the reason names the savepoint rollback that failed: {reason}"
-            ),
+            Err(PgError::ConnectionPoisoned { reason, cause }) => {
+                assert!(
+                    reason.contains("ROLLBACK TO SAVEPOINT"),
+                    "the reason names the savepoint rollback that failed: {reason}"
+                );
+                // The nested rollback never reached this caller, so the refusal
+                // is where the driver failure behind the state is handed back.
+                let cause = cause
+                    .as_ref()
+                    .expect("the refusal retains the failure behind it");
+                assert!(
+                    matches!(**cause, PgError::Driver(_)),
+                    "the cause is the driver failure of the refused statement: {cause:?}"
+                );
+            }
             other => panic!("the poisoned block refuses its commit: {other:?}"),
         }
 
@@ -1394,10 +1408,13 @@ mod async_connection {
 
         let refused =
             AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
-        assert!(
-            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
-            "the poisoned connection refuses further statements: {refused:?}"
-        );
+        match refused {
+            Err(PgError::ConnectionPoisoned { cause, .. }) => assert!(
+                cause.is_some(),
+                "the refusal retains the failure of the rollback that could not be awaited"
+            ),
+            other => panic!("the poisoned connection refuses further statements: {other:?}"),
+        }
     }
     /// A handle dropped without a terminal call leaves its server-side
     /// transaction open, and the adapter proves nothing about it: the connection
@@ -1549,10 +1566,18 @@ mod async_connection {
 
         let refused = AsyncQueryBackend::fetch_raw(&connection, &query).await;
         match refused {
-            Err(PgError::ConnectionPoisoned { reason }) => assert!(
-                reason.contains("BEGIN"),
-                "the reason names the statement that failed: {reason}"
-            ),
+            Err(PgError::ConnectionPoisoned { reason, cause }) => {
+                assert!(
+                    reason.contains("BEGIN"),
+                    "the reason names the statement that failed: {reason}"
+                );
+                // The refused entry hands its driver failure to this caller, so
+                // the refusal reports the reason alone.
+                assert!(
+                    cause.is_none(),
+                    "the refusal of a returned failure records no cause"
+                );
+            }
             other => panic!("the poisoned connection refuses further statements: {other:?}"),
         }
     }
@@ -1622,10 +1647,21 @@ mod async_connection {
             .await;
 
         match &outcome {
-            Err(PgError::ConnectionPoisoned { reason }) => assert!(
-                reason.contains("ROLLBACK TO SAVEPOINT"),
-                "the reason names the savepoint rollback that failed: {reason}"
-            ),
+            Err(PgError::ConnectionPoisoned { reason, cause }) => {
+                assert!(
+                    reason.contains("ROLLBACK TO SAVEPOINT"),
+                    "the reason names the savepoint rollback that failed: {reason}"
+                );
+                // The nested rollback never reached this caller, so the refusal
+                // is where the driver failure behind the state is handed back.
+                let cause = cause
+                    .as_ref()
+                    .expect("the refusal retains the failure behind it");
+                assert!(
+                    matches!(**cause, PgError::Driver(_)),
+                    "the cause is the driver failure of the refused statement: {cause:?}"
+                );
+            }
             other => panic!("the poisoned block refuses its commit: {other:?}"),
         }
 

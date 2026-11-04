@@ -404,10 +404,14 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// rollback instead of joining it.
     fn refuse_if_poisoned(&self) -> Result<(), PgError> {
         match self.status.poison() {
+            // The bookkeeping records the failure itself and hands it back to
+            // the caller that refuses the commit, so the refusal renders the
+            // reason alone instead of a second copy of the failure.
             Some(error) => Err(PgError::ConnectionPoisoned {
                 reason: format!(
                     "the connection recorded a refused transaction-control statement: {error}"
                 ),
+                cause: None,
             }),
             None => Ok(()),
         }

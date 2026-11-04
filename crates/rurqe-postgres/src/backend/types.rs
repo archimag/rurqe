@@ -18,6 +18,7 @@ mod tests;
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
@@ -77,6 +78,16 @@ pub enum PgError {
     ConnectionPoisoned {
         /// The transaction-control failure that poisoned the connection.
         reason: String,
+        /// The driver failure behind the state, when the adapter traced it.
+        ///
+        /// A path that hands the driver failure to its own caller records the
+        /// rendered reason alone, because that caller holds the failure itself.
+        /// A path that traces the failure instead — the savepoint rollback of a
+        /// nested block, and the rollback a block issues after its closure
+        /// returned — keeps it here, and [`source`](std::error::Error::source)
+        /// hands it back, so a caller inspects the variant, the SQLSTATE, and
+        /// the cause chain the engine reported instead of parsing the message.
+        cause: Option<Arc<PgError>>,
     },
     /// A pooled checkout could not return the connection to an idle session.
     ///
@@ -118,7 +129,7 @@ impl fmt::Display for PgError {
                 "invalid value for PostgreSQL column type `{column_type}`: {reason}"
             ),
             PgError::Catalog(reason) => write!(f, "PostgreSQL catalog error: {reason}"),
-            PgError::ConnectionPoisoned { reason } => {
+            PgError::ConnectionPoisoned { reason, .. } => {
                 write!(f, "the PostgreSQL connection is poisoned: {reason}")
             }
             PgError::AbandonedTransaction { failure } => write!(
@@ -138,7 +149,9 @@ impl StdError for PgError {
             PgError::UnsupportedType(_) => None,
             PgError::InvalidValue { .. } => None,
             PgError::Catalog(_) => None,
-            PgError::ConnectionPoisoned { .. } => None,
+            PgError::ConnectionPoisoned { cause, .. } => {
+                cause.as_deref().map(|failure| failure as &(dyn StdError + 'static))
+            }
             PgError::AbandonedTransaction { failure } => Some(failure),
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(error) => Some(error),

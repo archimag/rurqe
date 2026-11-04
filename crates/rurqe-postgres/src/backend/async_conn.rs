@@ -149,7 +149,7 @@ pub(crate) async fn close_block(
 
     let reason = poison
         .poison_reason()
-        .unwrap_or_else(|| String::from("the connection recorded no reason"));
+        .unwrap_or_else(|| String::from(super::poison::NO_RECORDED_REASON));
     tracing::error!(
         reason = %reason,
         "the connection is poisoned, so the block is rolled back instead of committed"
@@ -167,7 +167,7 @@ pub(crate) async fn close_block(
         }
     }
 
-    Err(PgError::ConnectionPoisoned { reason })
+    Err(poison.refusal())
 }
 
 /// Returns the session of a checked-out asynchronous client to a provably idle
@@ -247,15 +247,11 @@ impl PgAsyncConnection {
     /// learns which transaction-control statement could not be completed instead
     /// of only that the connection is unusable.
     fn refuse_if_poisoned(&self) -> Result<(), PgError> {
-        if !self.poison.is_poisoned() {
-            return Ok(());
+        if self.poison.is_poisoned() {
+            Err(self.poison.refusal())
+        } else {
+            Ok(())
         }
-
-        let reason = self
-            .poison
-            .poison_reason()
-            .unwrap_or_else(|| String::from("the connection recorded no reason"));
-        Err(PgError::ConnectionPoisoned { reason })
     }
 
     /// Begins a transaction over the connection.
@@ -445,12 +441,16 @@ impl PgAsyncConnection {
                         tracing::warn!("rolled back transaction");
                     }
                     Err(failure) => {
-                        poison.mark(control_failure("ROLLBACK", &failure));
+                        let reason = control_failure("ROLLBACK", &failure);
                         tracing::error!(
                             failure = %failure,
                             "rolling back the transaction failed; the connection is \
                              poisoned and must be discarded"
                         );
+                        // The block reports its own error instead of this one, so
+                        // the driver failure is recorded on the cell and handed
+                        // back by the refusal a later statement receives.
+                        poison.mark_with_cause(reason, failure);
                     }
                 }
                 Err(error)
@@ -646,6 +646,7 @@ impl Drop for PgAsyncTransaction<'_> {
 fn consumed_refusal() -> PgError {
     PgError::ConnectionPoisoned {
         reason: String::from("the transaction handle was already consumed by a terminal call"),
+        cause: None,
     }
 }
 

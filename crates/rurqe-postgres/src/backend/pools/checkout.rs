@@ -80,6 +80,7 @@ impl Checkout {
         let Some(object) = self.object.as_ref() else {
             return Err(PgError::ConnectionPoisoned {
                 reason: String::from("the checked-out connection is already destroyed"),
+                cause: None,
             });
         };
         Ok(&***object)

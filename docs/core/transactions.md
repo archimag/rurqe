@@ -7,6 +7,8 @@ RURQE offers two transactional surfaces, and the difference between them is what
 
 Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block and awaits the statement that ends it, while a guard is closed by its own `Drop`, which cannot await anything. A guard that ends without a terminal call therefore proves nothing and leaves its connection refusing further work. A connection a block cannot prove clean is never committed either: the adapter closes such a block with a rollback and reports the poisoned-connection error instead of the value the closure returned.
 
+Every refusal names what broke the transaction state, and keeps it. A poisoned connection reports the transaction-control statement that could not be completed, and — on the paths that trace the failure instead of returning it, namely the savepoint rollback of a nested block and the rollback a block issues once its closure returned — it also carries the driver failure behind the state and hands it back through `std::error::Error::source()`, so a caller reaches the variant, the SQLSTATE, and the cause chain the engine reported instead of parsing the message. A path that returns the driver failure to its own caller — a refused `BEGIN`, a refused `COMMIT`, a proof the pool could not obtain — reports the reason alone, because that caller already holds the failure itself.
+
 ## Asynchronous Transaction Guards
 
 The guard is the asynchronous handle form: a transaction is opened on a live connection through `.transaction()`, which hands back a handle that owns the transaction for the whole block:
