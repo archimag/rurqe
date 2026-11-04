@@ -44,7 +44,7 @@ Column types declared in `table!` map directly to database types and SQL `CAST` 
 | `rust_decimal::Decimal` (feature `decimal`) | `NUMERIC` |
 | `serde_json::Value` / `Json<T>` (feature `serde_json`) | `JSON` / `JSONB` |
 
-Wrapping a type in `Option<T>` marks the column as nullable in the schema. In addition, custom domain newtypes decorated with `#[derive(SqlType)]` automatically forward their underlying representation.
+Wrapping a type in `Option<T>` marks the column as nullable in the schema.
 
 ## Single Source of Truth: Automated Codegen
 

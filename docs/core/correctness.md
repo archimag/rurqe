@@ -69,13 +69,3 @@ Column references are resolved against one namespace from both gates. The compil
 | Compiler | `cargo build` | Positive assertions: relation scope, nullable joins, mutation typestates, dialect capability gates, grouped query projections | Compile-time error |
 | Statement validation | `.build()` | Negative assertions (duplicate unaliased relations), cross-clause alignments (`DISTINCT ON`), residual aggregation checks (`UngroupedColumnWithAggregate`), and the operand grammar of a window expression (`WindowOperandNotCall`) | `Result<BuiltQuery, BuildError>` |
 | Database engine | Terminal query call | Server-side runtime errors: constraint violations, missing permissions, invalid connection state | `Result<T, ExecutionError>` |
-
-## Engine Errors and Diagnostics
-
-Failures originating from the database engine (unique violations, foreign key conflicts, lock timeouts) are returned as `ExecutionError` preserving the underlying driver error. Diagnostic helpers provide clean classification without string inspection:
-
-* `is_not_found()`: Query yielded zero rows when expecting at least one.
-* `is_multiple_rows()`: Single-row query returned multiple matching rows.
-* `is_row_decode()`: Column value failed deserialization into the requested Rust type.
-* `is_build()`: Pre-flight AST validation rejected the query.
-* `as_backend()` and `into_backend()`: Inspect or unwrap the native driver error.

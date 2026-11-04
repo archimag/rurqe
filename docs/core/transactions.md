@@ -2,7 +2,7 @@
 
 RURQE offers two transactional surfaces, and the difference between them is what closes the transaction.
 
-- A **closure-scoped block** lends the transaction to a closure. The adapter opens the block, nests a block opened inside it through a SQL savepoint, awaits the commit of a block that returned `Ok`, awaits the rollback of a block that returned `Err`, and returns the connection on either ending. The synchronous connections and pools offer this form, and so do the asynchronous connection and pool.
+- A **closure-scoped block** lends the transaction to a closure. The adapter opens the block, nests a block opened inside it through a SQL savepoint, awaits the commit of a block that returned `Ok`, awaits the rollback of a block that returned `Err`, and returns the connection on either ending. The synchronous connections offer this form, and so does the asynchronous pool.
 - A **transaction guard** lends the transaction itself to the caller. Opening one on the asynchronous connection hands back a handle that owns the transaction until its commit is awaited; the handle neither nests nor selects an isolation level, and dropping it without a commit asks the driver for a rollback the adapter cannot prove was delivered, so the connection is marked poisoned rather than reused.
 
 Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block and awaits the statement that ends it, while a guard is closed by its own `Drop`, which cannot await anything. A guard that ends without a terminal call therefore proves nothing and leaves its connection refusing further work. A connection a block cannot prove clean is never committed either: the adapter closes such a block with a rollback and reports the poisoned-connection error instead of the value the closure returned.
@@ -67,19 +67,9 @@ The guarantee this establishes is one-directional: a failed nested scope is neve
 {{#rustdoc_include ../examples/sync_transactions.rs:transaction}}
 ```
 
-## Asynchronous Savepoint Nesting
-
-The asynchronous closure form nests the same way, one awaited statement at a time. A block opened through the scope of an open transaction is a SQL savepoint of that transaction: the adapter issues `SAVEPOINT savepoint_N` before the nested closure runs, awaits `RELEASE SAVEPOINT savepoint_N` when the nested block returns `Ok`, and awaits `ROLLBACK TO SAVEPOINT savepoint_N` when it returns `Err`. The enclosing transaction stays open, so a nested block loses its own work and nothing else, and nesting works the same way one savepoint deeper.
-
-```rust,no_run
-{{#rustdoc_include ../examples/pool_transactions.rs:nesting}}
-```
-
-A rollback the driver refuses is traced instead of replacing the error of the block, and the connection is poisoned from that point on: further statements and further savepoints are refused with the poisoned-connection error, so the connection has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction. The enclosing block then refuses to commit as well: a closure that swallows the nested error and returns `Ok` is rolled back and the call reports the poisoned-connection error instead of the value the closure returned, so the statements whose undo failed are never persisted.
-
 ## Transaction Isolation Levels
 
-This section documents the synchronous runtime form of an isolated transaction boundary, followed by the asynchronous closure form. Transaction blocks can be configured with explicit SQL isolation levels:
+This section documents the synchronous runtime form of an isolated transaction boundary. Transaction blocks can be configured with explicit SQL isolation levels:
 
 * `ReadCommitted`: Prevents dirty reads (default in PostgreSQL).
 * `RepeatableRead`: Prevents non-repeatable reads and phantom reads.
@@ -93,59 +83,7 @@ Isolation levels are configured at the transaction boundary:
 
 The level reaches the statement that opens the outermost block — `BEGIN ISOLATION LEVEL <level>` — so every statement of the block observes it. A block opened while a transaction is already open nests inside a savepoint, and SQL defines no per-savepoint isolation, so the enclosing transaction keeps the level it was opened with and the requested one applies to the outermost block alone.
 
-The asynchronous closure form takes the level the same way and awaits the boundary it opens:
-
-```rust,no_run
-{{#rustdoc_include ../examples/pool_transactions.rs:isolation}}
-```
-
-The adapter awaits the commit of a block that returned `Ok` and the rollback of a block that returned `Err`, so the isolation boundary is closed before the result reaches the caller. SQLite offers no isolation-level boundary at all: the engine serialises access through database-level locking, so the adapter's `BEGIN` ignores an isolation level by design.
-
-## Pooled Transactions
-
-A pool executes a single statement by checking a connection out, proving its session idle, running the statement in autocommit, and returning the connection once the statement settled. Several statements become one atomic block through the closure form, which keeps one connection checked out for the whole duration of the block:
-
-```rust,no_run
-{{#rustdoc_include ../examples/pool_transactions.rs:transaction}}
-```
-
-- The outermost block of a pooled transaction runs between `BEGIN` and `COMMIT`; a block opened while a transaction is already open nests inside a `SAVEPOINT`.
-- A block that returns `Err` has its statements rolled back before that error reaches the caller.
-- A checkout failure surfaces as `PgError::Pool`, while a failure raised by `BEGIN`, by the block, or by `COMMIT` surfaces as `PgError`.
-- A `ROLLBACK` the driver refuses supersedes the error of the block and surfaces as the poisoned-connection error `PgError::ConnectionPoisoned`, because the transaction state is unknown from that point on.
-- A block whose connection is poisoned before its commit is not committed: the adapter rolls its statements back and reports `PgError::ConnectionPoisoned`, and the poisoned checkout is destroyed rather than returned to the pool.
-- A checkout whose block reached its end returns to the pool, whether the block committed or was rolled back, so several transactions of a shared pool run concurrently, each on its own connection.
-- Every checkout the pool mediates is proven idle before its work runs: the adapter issues one `ROLLBACK` through the simple query protocol before `BEGIN` or before a statement is dispatched, which PostgreSQL answers in every session state, so a session that reached the pool with a transaction still open — a checkout driven through the raw driver pool, or a transaction-control statement issued through a single-statement path — has that transaction ended before the work runs and can be neither joined nor persisted by it. A proof the driver refuses destroys the checkout and surfaces as `PgError::AbandonedTransaction`, so a session the pool cannot vouch for never reaches another caller.
-
-A block that is cancelled or unwound never reaches the end of the call, so neither `COMMIT` nor `ROLLBACK` is awaited for it, and a `BEGIN`, `COMMIT`, or `ROLLBACK` the driver refuses leaves the transaction state unknown. Either ending destroys the checkout instead of returning it to the pool, so the connection never reaches another caller: dropping it closes its session, the server rolls the abandoned transaction back when that session ends, and the work of the abandoned block is discarded. The pool replaces the destroyed connection, so the next caller starts on a fresh session; a block that has to survive an abandoned future belongs in a task that finishes or reports its own cancellation.
-
-A statement is mediated the same way. Its checkout is proven idle before the statement is dispatched, so a transaction a previous checkout left open is ended instead of being joined by the statement, and the checkout returns to the pool once the statement settled — on a driver refusal as well, because a refused statement leaves the session in the state the proof established. A statement whose future is dropped before it settles is never settled by its own `Drop`, which cannot await a proof, so the connection is taken out of the pool and destroyed and the pool opens a fresh one for the next caller. The contract break is bounded the same way: a transaction-control statement issued through a single-statement path leaves a transaction open on the session, and the idle proof of the next mediated checkout — a block or a statement — ends it before that checkout runs, so the abandoned transaction is neither inherited nor committed by a later caller.
-
-### The synchronous pool
-
-This section documents the synchronous runtime form. The synchronous pool hands its closure the checked-out connection, and the closure reports the driver error of that runtime. The pool reports a failure of the block as `SqlitePoolError::Query`, a failure to check a connection out as `SqlitePoolError::Pool`, and a checkout whose session could not be repaired as `SqlitePoolError::AbandonedTransaction`; the synchronous PostgreSQL pool reports a failure of the block as `PgPoolError::Query` and a failure to check a connection out as `PgPoolError::Pool`, over a closure that reports `PgError`. Either pool type converts from the failures its own paths raise, so a checkout failure and a statement failure propagate with `?` into a function returning the pool error type, and a connection checked out of the pool reports that same type. The handle is cheap to clone, because every clone addresses the one underlying pool, and `pool()` hands back the wrapped pool for configuration or inspection performed outside the adapter. The three error types these surfaces report — `PgError`, `PgPoolError`, and `SqlitePoolError` — are open by design: their variants follow the adapters a build compiles, since the checkout failure of the asynchronous pool belongs to `PgError` only when that pool is compiled, so a match over any of them carries a wildcard arm and a variant added for a new adapter does not break the matches already compiled.
-
-```rust,no_run
-{{#rustdoc_include ../examples/sync_pool_transactions.rs:transaction}}
-```
-
-The block commits when the closure returns `Ok` and rolls back when the closure returns `Err` or unwinds, exactly as the owned connection does, and the checkout returns to the pool on every one of those paths.
-
-The synchronous PostgreSQL pool proves the state of the session it hands out instead of inspecting it. A synchronous client exposes no transaction state, so the pool cannot ask a session whether it is idle; it arranges for every connection to be returned to the pool in an idle state instead. A checkout therefore costs no round trip of its own: a statement or a transaction block the pool drives closes the work it opens, and the checkout returns the connection to the pool without a repair.
-
-A checkout whose session the pool cannot vouch for — one a caller drove through the raw handle and left inside a transaction, or one whose rollback the driver refused — is repaired on the way out. The repair is one round trip of the simple protocol carrying a single `ROLLBACK`, the statement PostgreSQL answers in every session state: a session that still holds a transaction has it ended, including the aborted one where a `BEGIN` would be rejected with `25P02`, and a session that is already idle answers with the warning `25P01` instead of an error, so the repair never has to classify the state the session arrived in. It is paid by the checkout that left the session open, so neither a transaction block nor a single statement issued through the pool inherits an abandoned transaction.
-
-A repair the driver refuses leaves the session in a state the pool cannot vouch for, so the connection is never handed to the next caller: the pool reports the failure in its log, discards the connection once the driver marks it closed, and opens a fresh connection for the next caller. The failure the repair reports is the `PgError::AbandonedTransaction` value, which keeps the driver failure whole and hands it back through `std::error::Error::source()`, so the cause the driver observed stays reachable for the operator reading the log.
-
-The synchronous SQLite pool returns every connection to an idle session before handing it out as well. The reset runs on every checkout and reads the engine's own observation of the session: a connection that is already outside a transaction issues no statement at all, while one that still holds a transaction — opened through the raw handle, or left open by a block whose rollback the driver refused — has it ended by a single `ROLLBACK`. The observation is what makes the repair sound, because the engine reports exactly whether a transaction is pending, and it is the same observation the adapter uses to classify a rollback the driver refused. A connection whose `ROLLBACK` the driver refuses is never handed out: the checkout fails with `SqlitePoolError::AbandonedTransaction` carrying the driver failure, instead of running the work of the next caller inside the abandoned transaction.
-
-A block opened inside a pooled transaction nests the same way:
-
-```rust,no_run
-{{#rustdoc_include ../examples/sync_pool_transactions.rs:nesting}}
-```
-
-Returning `Ok` releases the savepoint of the nested block; returning `Err` or unwinding rolls it back, and the enclosing block stays open to commit its own work.
+SQLite offers no isolation-level boundary at all: the engine serialises access through database-level locking, so the adapter's `BEGIN` ignores an isolation level by design.
 
 ## Raw Handle Escape Hatch
 

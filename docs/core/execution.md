@@ -57,9 +57,4 @@ In addition to the standard terminal methods, RURQE provides backend-driven exec
 ```
 ## Typed Error Handling
 
-Terminal methods return `Result<T, ExecutionError<E>>`, preserving driver-specific errors without type erasure:
-
-* `rurqe::postgres::prelude::*` aliases errors to `ExecutionError<PgError>`.
-* `rurqe::sqlite::prelude::*` aliases errors to `ExecutionError<rusqlite::Error>`.
-
-Propagating errors with `?` cleanly bubbles typed failures up to the caller.
+Terminal methods return `Result<T, ExecutionError<E>>`, where `E` is the driver error of the runtime in scope: a driver failure is neither erased nor boxed, so its variants and its cause chain stay reachable at the call site. A terminal call is propagated with `?`, and the failure surfaces at the runtime boundary of the application.

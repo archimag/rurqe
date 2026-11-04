@@ -30,11 +30,13 @@
 
 - [SQL execution: sync vs async](core/execution.md)
 - [Transactions](core/transactions.md)
+- [Connection Pools](core/pools.md)
 
 # Schema & Code Generation
 
 - [Database schema](core/schema.md)
 - [Multi-schema databases](core/multi_schema.md)
+- [Custom Domain Types](core/domain_types.md)
 - [Schema code generation](lifecycle/codegen.md)
 
 # Schema Lifecycle
@@ -53,3 +55,4 @@
 - [PostgreSQL](core/dialects/postgres.md)
 - [SQLite](core/dialects/sqlite.md)
 - [Project configuration](lifecycle/config.md)
+- [Errors](core/errors.md)
