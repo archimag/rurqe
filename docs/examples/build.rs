@@ -585,6 +585,13 @@ const FRAGMENTS: &[Fragment] = &[
         terminal: Terminal::Executed,
         chapters: &["core/pools.md"],
     },
+    Fragment {
+        file: "expressions.rs",
+        anchor: "period_analytics",
+        binding: "recent_orders",
+        terminal: Terminal::Executed,
+        chapters: &["core/expressions.md"],
+    },
 ];
 
 fn main() {

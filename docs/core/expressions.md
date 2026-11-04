@@ -79,7 +79,27 @@ The operand is any expression, so a column marker and a whole built predicate ar
 
 ## The escape hatch
 
-When an expression the builder does not model is unavoidable, `sql!` builds a typed expression from a raw fragment with bound parameters, and `raw_sql!` replaces a whole statement. Both validate their placeholders at compile time. They are the fallback, not the first choice: everything above is checked against the schema, a raw fragment is not.
+When an expression the builder does not model is unavoidable, `sql!` builds a typed expression from a raw fragment with bound parameters, and `raw_sql!` is the same macro under a name that reads as the statement it writes. Both validate their placeholders at compile time. They are the fallback, not the first choice: everything above is checked against the schema, a raw fragment is not.
+
+The hatch covers what the typed surface does not model — a dialect function, an interval expression, a clause no builder method carries. It is not a way around a rule the typed surface enforces: a raw fragment is written in the columns of the statement, and nothing checks that the names it spells exist.
+
+### Period analytics
+
+A rolling window is the recurring shape of the hatch, because the typed surface models neither `now()` nor `INTERVAL` arithmetic. The boundary is written as a template carrying one placeholder, and the interval is bound as a value:
+
+```rust,no_run
+{{#rustdoc_include ../examples/expressions.rs:period_analytics}}
+```
+
+```sql
+SELECT "id" AS "order_id" FROM "orders" WHERE created_at > now() - $1::interval
+```
+
+Every argument after the template is bound as a typed SQL value, through the same conversion the rest of the builder encodes parameters with, so `"30 days"` becomes `$1` and the template's `?` renders as that placeholder. The placeholder count is checked when the macro expands: a call binding a number of arguments other than its template declares does not compile, instead of reaching the engine with a missing value. A literal question mark or a JSON brace is escaped as `??`, `{{`, and `}}`, so neither is read as a placeholder.
+
+The other boundaries are the same call with another bound interval — `"3 months"`, `"1 year"` — because the interval is data rather than SQL text. That is what the hatch is chosen for on this shape: one assembled statement, one parameter, three windows.
+
+Typed builders for `now()` and interval arithmetic are not part of the surface yet. SQLite has no `now()` function, so the same window takes a different form there — `datetime('now', ?)` computes the boundary from the same bound modifier — and stays a raw fragment for the same reason.
 
 ## What is refused, and why
 

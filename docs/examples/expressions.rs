@@ -9,6 +9,7 @@ table!(
         OrderStatus => "status": String,
         OrderTotal => "total": f64,
         OrderTax => "tax": f64,
+        OrderCreatedAt => "created_at": chrono::DateTime<chrono::Utc>,
     }
 );
 
@@ -64,6 +65,15 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: null_safe
     println!("{}", reclassified.len());
+
+    // ANCHOR: period_analytics
+    let recent_orders = select_from(Order)
+        .select(cols!(order_id: OrderId))
+        .where_(sql!(<bool> "created_at > now() - ?::interval", "30 days"))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: period_analytics
+    println!("{}", recent_orders.len());
 
     Ok(())
 }
