@@ -35,10 +35,11 @@ pub struct ColdStartReport {
 /// matches the checkpoint `stage commit` writes whatever engine executed the DDL.
 /// A backend that cannot introspect itself keeps the digest of the marker.
 ///
-/// A database that already carries a stage marker for the same version and the
+/// A database carrying nothing but a stage marker for the same version and the
 /// same catalog digest is left untouched and reported as a no-op; any other
 /// history is rejected, because a cold start never overwrites an initialised
-/// database.
+/// database. A marker the migration tail advanced past is one such history: the
+/// database it describes is initialised, whatever the live catalog reports.
 ///
 /// A stage holding a script marked non-transactional cannot be applied
 /// atomically, so the cold start commits an in-progress marker before the first
@@ -91,10 +92,28 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
         .max_by_key(|entry| entry.installed_rank);
 
     if let Some(existing) = recorded {
-        // The backend reports the digest of the catalog really present, so a
-        // database whose schema drifted from the recorded marker is rejected
-        // instead of being reported as initialised. A backend that cannot
-        // introspect itself keeps the digest the caller supplied.
+        // The migration tail advanced the database past the marker, so the
+        // history carries more than the stage it was initialised from. That is
+        // the same "already initialised" state as any other recorded history,
+        // and it is classified before the live catalog is read: comparing the
+        // catalog first reported a healthy, fully migrated database as a
+        // diverged stage, while a backend that cannot introspect itself reported
+        // the very same history as an untouched stage, so the outcome followed
+        // the capability of the backend instead of the state of the schema.
+        if let Some(later) = history
+            .iter()
+            .filter(|entry| entry.installed_rank != existing.installed_rank)
+            .max_by_key(|entry| entry.installed_rank)
+        {
+            return Err(already_initialised(later));
+        }
+
+        // Nothing but the marker is recorded, so the database still describes
+        // the stage it was initialised from. The backend reports the digest of
+        // the catalog really present, so a database whose schema drifted from
+        // the recorded marker is rejected instead of being reported as
+        // initialised. A backend that cannot introspect itself keeps the digest
+        // the caller supplied.
         let current = match guard.catalog_checksum() {
             Ok(Some(checksum)) => checksum,
             Ok(None) => marker.checksum(),
@@ -131,15 +150,8 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
     {
         return Err(partial_initialisation(interrupted));
     }
-
     if let Some(existing) = history.iter().max_by_key(|entry| entry.installed_rank) {
-        return Err(Error::BaselineAlreadyExists {
-            version: existing
-                .version
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| existing.script.clone()),
-        });
+        return Err(already_initialised(existing));
     }
 
     let start_time = std::time::Instant::now();
@@ -374,6 +386,20 @@ fn withdraw_marker<B: MigrationBackend>(guard: &mut LockGuard<'_, B>, installed_
             error = %error,
             "failed to open the transaction withdrawing the in-progress stage marker"
         ),
+    }
+}
+
+/// Builds the diagnostic of an initialised database a cold start never overwrites.
+///
+/// The newest recorded entry names the state the operator has to inspect: its
+/// version, or its script name when the entry carries none.
+fn already_initialised(entry: &SchemaHistoryEntry) -> Error {
+    Error::BaselineAlreadyExists {
+        version: entry
+            .version
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| entry.script.clone()),
     }
 }
 
