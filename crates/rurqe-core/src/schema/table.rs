@@ -388,6 +388,28 @@ macro_rules! table {
                 const NAME: &'static str = $column_name;
             }
 
+            // The column marker also exposes the path form of the value
+            // constructor, so `Col::set(value)` keeps resolving wherever a column
+            // is named as a type, while the method form `col.set(value)` comes
+            // from the `ColumnAssignValue` implementation every column carries.
+            // The allowance covers a declaration whose constructor a binary
+            // target never calls.
+            #[allow(dead_code)]
+            impl $column {
+                /// Assigns `value` to the column, checking operand compatibility.
+                ///
+                /// This is the path form of the value constructor a statement
+                /// spells as `col.set(value)`; both construct the same assignment
+                /// and bind the value as a query parameter.
+                pub fn set<V>(value: V) -> $crate::dml::Assignment<$column, V, ()>
+                where
+                    V: $crate::expr::SqlCompatible<$rust_type, V>
+                        + ::core::convert::Into<$crate::expr::SqlVal>,
+                {
+                    $crate::dml::Assignment::set(value)
+                }
+            }
+
             $crate::__rurqe_column_arithmetic!([] [] $column, $table);
         )*
 

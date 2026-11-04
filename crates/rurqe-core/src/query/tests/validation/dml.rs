@@ -203,7 +203,7 @@ fn build_error_display_excluded_without_conflict() {
 
 #[test]
 fn a_conflict_target_predicate_qualified_by_a_foreign_relation_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let built = InsertQuery::<UpsertDialect, Order>::new()
         .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
@@ -220,7 +220,7 @@ fn a_conflict_target_predicate_qualified_by_a_foreign_relation_is_rejected() {
 
 #[test]
 fn a_conflict_update_predicate_qualified_by_a_foreign_relation_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let built = InsertQuery::<UpsertDialect, Order>::new()
         .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
@@ -322,7 +322,7 @@ impl TableSelection<Order> for TrunkReturning {
 
 #[test]
 fn an_insert_returning_projection_embedding_an_invalid_statement_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The `RETURNING` clause belongs to the same statement, so a nested statement it
     // embeds is audited exactly like a projection of a `SELECT`.
@@ -338,7 +338,7 @@ fn an_insert_returning_projection_embedding_an_invalid_statement_is_rejected() {
 
 #[test]
 fn an_update_returning_projection_embedding_an_invalid_statement_is_rejected() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     let built = UpdateQuery::<UpsertDialect, Order>::new()
         .set(OrderTotal::set(2.5f64))
@@ -424,7 +424,7 @@ fn build_error_display_empty_insert_row() {
 
 #[test]
 fn an_insert_returning_projection_qualified_by_a_foreign_relation_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The clause belongs to the statement that inserts into `orders`, so a reference
     // qualified through another relation names nothing the rendered statement
@@ -445,7 +445,7 @@ fn an_insert_returning_projection_qualified_by_a_foreign_relation_is_rejected() 
 
 #[test]
 fn an_update_returning_projection_reading_a_foreign_column_is_rejected() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     // A plain column reference names its relation through the node itself, so the
     // clause is rejected through the membership rule rather than the qualifier rule.
@@ -489,7 +489,7 @@ fn a_delete_returning_projection_qualified_by_a_foreign_relation_is_rejected() {
 
 #[test]
 fn a_returning_projection_repeating_the_mutated_target_is_accepted() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     // The projection names the mutated relation under the name the statement renders
     // it by, so the clause renders unqualified beside the single relation.
@@ -540,7 +540,7 @@ fn row_number_window() -> ExprKind {
 
 #[test]
 fn an_insert_returning_projection_carrying_an_aggregate_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The clause reports each inserted row on its own, so an aggregate written
     // into it would collapse the rows the statement is handing back.
@@ -554,7 +554,7 @@ fn an_insert_returning_projection_carrying_an_aggregate_is_rejected() {
 
 #[test]
 fn an_update_returning_projection_carrying_an_aggregate_is_rejected() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     let built = UpdateQuery::<UpsertDialect, Order>::new()
         .set(OrderTotal::set(2.5f64))
@@ -579,7 +579,7 @@ fn a_delete_returning_projection_carrying_an_aggregate_is_rejected() {
 
 #[test]
 fn an_insert_returning_projection_carrying_a_window_call_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The window rule is a branch of its own: a window call is not an aggregate,
     // so only that branch reports it, and the aggregate branch stays silent.
@@ -593,7 +593,7 @@ fn an_insert_returning_projection_carrying_a_window_call_is_rejected() {
 
 #[test]
 fn an_update_returning_projection_carrying_a_window_call_is_rejected() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     let built = UpdateQuery::<UpsertDialect, Order>::new()
         .set(OrderTotal::set(2.5f64))
@@ -618,7 +618,7 @@ fn a_delete_returning_projection_carrying_a_window_call_is_rejected() {
 
 #[test]
 fn a_returning_projection_reports_its_aggregate_before_an_invalid_embedded_statement() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The projection is both an aggregate and a statement the pre-flight pass
     // refuses, so the two rules meet on one clause: the row-clause rule runs
@@ -640,7 +640,7 @@ fn a_returning_projection_reports_its_aggregate_before_an_invalid_embedded_state
 
 #[test]
 fn a_returning_projection_reading_an_aggregating_subquery_is_accepted() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     // The aggregate belongs to the nested statement, which collapses its own rows
     // into the one value the projection reads: the rule stops at the statement

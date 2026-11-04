@@ -2,6 +2,8 @@
 
 use core::marker::PhantomData;
 
+use crate::dml::Assignment;
+use crate::expr::{SqlCompatible, SqlVal};
 use crate::schema::table::{Column, Table, TableRef};
 
 /// A compile-time name under which an [`Aliased`] table is referenced.
@@ -237,6 +239,20 @@ impl<A: TableAlias, C: Column> AliasedCol<A, C> {
     /// mirror the accessor of the table it aliases as a constant.
     pub const fn new() -> Self {
         AliasedCol(PhantomData)
+    }
+
+    /// Assigns `value` to the column addressed through the alias.
+    ///
+    /// This is the path form of the value constructor a statement spells as
+    /// `col.set(value)`. The value form reaches the same constructor through the
+    /// [`ColumnAssignValue`](crate::dml::ColumnAssignValue) implementation every
+    /// column marker carries, so both spellings build the identical assignment and
+    /// bind the same parameter.
+    pub fn set<V>(value: V) -> Assignment<Self, V, ()>
+    where
+        V: SqlCompatible<C::RustType, V> + Into<SqlVal>,
+    {
+        Assignment::set(value)
     }
 }
 

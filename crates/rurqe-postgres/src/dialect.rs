@@ -127,7 +127,7 @@ impl<V: PgVersion> SupportsDistinctFrom for Postgres<V> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    use rurqe_core::dml::InsertQuery;
     use rurqe_core::expr::SqlVal;
     use rurqe_core::schema::{Aliased, AliasedCol};
     use rurqe_core::{table, table_alias};

@@ -1,5 +1,7 @@
 use super::*;
-use crate::dml::{AssignColumn, Assignment, ColumnAssign, DeleteQuery, UpdateQuery};
+use crate::dml::{
+    AssignColumn, Assignment, ColumnAssign, ColumnAssignValue, DeleteQuery, UpdateQuery,
+};
 use crate::dml::{AssignmentScope, AssignmentSet};
 use crate::expr::{Expr, SqlVal};
 use crate::query::SelectQuery;
@@ -87,6 +89,29 @@ fn an_aliased_target_renders_the_alias_on_a_supporting_dialect() {
         "INSERT INTO \"users\" AS \"u\" (\"id\") VALUES ($1) RETURNING \"u\".\"id\""
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn an_aliased_target_is_reachable_through_the_value_form() {
+    // The target and its columns are addressed as values: the aliased table is
+    // handed to the constructor its dialect is ascribed on, and the alias
+    // accessor builds the assignment, so the statement is written without a
+    // single turbofish.
+    let target = User.as_alias(UserAlias);
+    let query: InsertQuery<AliasedInsertMockDialect, Aliased<User, UserAlias>> =
+        InsertQuery::into_table(target);
+
+    let built = query
+        .values(UserAlias.UserId.set(7i64))
+        .returning((UserAlias.UserId,))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" AS \"u\" (\"id\") VALUES ($1) RETURNING \"u\".\"id\""
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
 
 #[test]

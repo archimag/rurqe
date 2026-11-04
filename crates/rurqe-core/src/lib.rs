@@ -17,8 +17,8 @@ pub use dialect::{
 };
 pub use dml::{
     excluded, AssignColumn, AssignValue, Assignment, AssignmentScope, AssignmentSet, ColumnAssign,
-    DeleteQuery, Excluded, ExecutableDelete, ExecutableUpdate, InsertQuery, Unfiltered,
-    UpdateQuery,
+    ColumnAssignValue, DeleteQuery, Excluded, ExecutableDelete, ExecutableUpdate, InsertQuery,
+    Unfiltered, UpdateQuery,
 };
 pub use expr::{
     greatest, is_distinct_from, is_not_distinct_from, least, nullif, Aggregate, AggregateFunc,

@@ -7,7 +7,7 @@
 use super::*;
 use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::dml::{
-    AssignColumn, AssignValue, AssignmentScope, AssignmentSet, ColumnAssign, Excluded, InsertQuery,
+    AssignColumn, AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery,
 };
 use crate::query::{BuildError, Selection, TableSelection};
 use crate::expr::{ExprKind, Expression, SqlVal, Unscoped};

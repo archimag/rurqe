@@ -230,7 +230,7 @@ fn an_assignment_reading_a_window_call_of_a_nested_statement_is_accepted() {
 
 #[test]
 fn a_conflict_target_predicate_reading_a_window_call_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
         op: BinaryOp::Gt,
@@ -255,7 +255,7 @@ fn a_conflict_target_predicate_reading_a_window_call_is_rejected_before_renderin
 
 #[test]
 fn a_conflict_update_predicate_reading_a_window_call_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
         op: BinaryOp::Gt,
@@ -280,7 +280,7 @@ fn a_conflict_update_predicate_reading_a_window_call_is_rejected_before_renderin
 
 #[test]
 fn a_window_call_in_a_mutation_filter_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     // The filter of a mutation selects the rows it rewrites, so the engine evaluates
     // it before a window could read the rows the statement produced.
@@ -347,7 +347,7 @@ fn an_aggregate_assigned_to_a_column_is_rejected_before_rendering() {
 
 #[test]
 fn an_aggregate_in_a_conflict_target_predicate_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
         op: BinaryOp::Gt,
@@ -373,7 +373,7 @@ fn an_aggregate_in_a_conflict_target_predicate_is_rejected_before_rendering() {
 
 #[test]
 fn an_aggregate_in_a_conflict_update_predicate_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
         op: BinaryOp::Gt,
@@ -399,7 +399,7 @@ fn an_aggregate_in_a_conflict_update_predicate_is_rejected_before_rendering() {
 
 #[test]
 fn an_aggregate_in_a_mutation_filter_is_rejected_before_rendering() {
-    use crate::dml::{ColumnAssign, UpdateQuery};
+    use crate::dml::UpdateQuery;
 
     // The `WHERE` predicate of a mutation decides which rows take part, so the
     // engine evaluates it before any aggregate could collapse them. The call site

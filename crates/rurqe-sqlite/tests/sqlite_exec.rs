@@ -1,6 +1,6 @@
 //! End-to-end execution tests for the `rusqlite` adapter against in-memory SQLite.
 
-use rurqe_sqlite::rurqe_core::dml::{ColumnAssign, InsertQuery};
+use rurqe_sqlite::rurqe_core::dml::InsertQuery;
 use rurqe_sqlite::rurqe_core::expr::{Expr, SqlVal};
 use rurqe_sqlite::rurqe_core::query::{
     ExecutionError, QueryBackendExt, SavepointName, SelectQuery, TransactionBackend,

@@ -386,6 +386,67 @@ pub trait ColumnAssign: Column + Sized {
 
 impl<C: Column> ColumnAssign for C {}
 
+/// Value-based construction of typed column [`Assignment`]s.
+///
+/// [`ColumnAssign`] constructs an assignment from the column marker spelled as a
+/// type — `UserId::set(value)` — while this trait constructs the same assignment
+/// from the marker as a *value*: `UserId.set(value)` on a bare marker, and
+/// `Manager.UserId.set(value)` on a column reached through a table-bound alias.
+/// Both spellings produce the identical [`Assignment`], because the value form
+/// delegates to the constructor the path form uses: the compatibility check and
+/// the bound parameter are the same ones.
+///
+/// The trait is implemented for every [`Column`], which covers the markers a table
+/// declaration emits together with the markers a table-bound alias mirrors. It is
+/// the spelling a statement reads as SQL, because it addresses the column exactly
+/// the way the projection addresses it.
+///
+/// ```
+/// use rurqe_core::dml::{AssignValue, ColumnAssignValue};
+/// use rurqe_core::expr::SqlVal;
+///
+/// rurqe_core::table!(
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// );
+///
+/// rurqe_core::table_alias! {
+///     /// The `u` alias.
+///     U1 => User as "u"
+/// }
+///
+/// // The bare marker addresses the column of a single-relation statement.
+/// let bare = UserId.set(7i64);
+/// assert_eq!(bare.column_name(), "id");
+/// assert_eq!(bare.value(), &AssignValue::Value(SqlVal::I64(7)));
+///
+/// // A table-bound alias mirrors the columns of its table, so the alias
+/// // addresses the column the same way.
+/// let aliased = U1.UserId.set(9i64);
+/// assert_eq!(aliased.column_name(), "id");
+/// assert_eq!(aliased.value(), &AssignValue::Value(SqlVal::I64(9)));
+/// ```
+///
+/// The value is bound as a query parameter, so a query is refused here exactly as
+/// the path form refuses it: a computed value is stored through `set_expr`.
+pub trait ColumnAssignValue: Column + Sized {
+    /// Assigns `value` to the column, checking operand compatibility.
+    ///
+    /// The value is bound as a query parameter, so it has to be a scalar the
+    /// driver can encode. A query is no such value, even when it projects a
+    /// single column: a computed value is stored through `set_expr`, and
+    /// `set_expr(Expr::subquery(query))` stores the result of a scalar subquery.
+    fn set<V>(self, value: V) -> Assignment<Self, V, ()>
+    where
+        V: SqlCompatible<Self::RustType, V> + Into<SqlVal>,
+    {
+        Assignment::set(value)
+    }
+}
+
+impl<C: Column> ColumnAssignValue for C {}
+
 /// A borrowed, type-erased view of a single column assignment.
 #[derive(Debug, Clone, Copy)]
 pub struct AssignColumn<'a> {
@@ -490,12 +551,33 @@ impl_assignment_set_for_tuple!(
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_value_form_constructs_the_assignment_the_path_form_constructs() {
+        let through_value = UserId.set(7i64);
+        let through_path = UserId::set(7i64);
+
+        assert_eq!(through_value.column_name(), through_path.column_name());
+        assert_eq!(through_value.value(), through_path.value());
+    }
+
+    #[test]
+    fn the_value_form_reaches_a_column_addressed_through_a_table_alias() {
+        let assignment = UserAlias.UserId.set(9i64);
+
+        assert_eq!(assignment.column_name(), "id");
+        assert_eq!(assignment.value(), &AssignValue::Value(SqlVal::I64(9)));
+    }
     crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
     );
+
+    crate::table_alias! {
+        /// The `u` alias of the users table.
+        UserAlias => User as "u"
+    }
 
     fn collect_columns<T: Table, S: AssignmentSet<T>>(set: &S) -> Vec<&'static str> {
         let mut out = Vec::new();

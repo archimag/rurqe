@@ -160,7 +160,7 @@ fn a_lock_nested_two_statements_deep_is_rejected_as_well() {
 
 #[test]
 fn a_lock_nested_in_a_returning_projection_is_rejected() {
-    use crate::dml::{ColumnAssign, InsertQuery};
+    use crate::dml::InsertQuery;
 
     // The `RETURNING` clause belongs to the statement, so a nested statement it
     // embeds is rejected by the same rule that audits a projection of a `SELECT`.

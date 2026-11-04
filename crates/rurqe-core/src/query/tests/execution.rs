@@ -5,7 +5,7 @@ use super::{
     OrderId, OrderTotal, User, UserId, UserName,
 };
 use crate::dml::insert::InsertedSelect;
-use crate::dml::{ColumnAssign, DeleteQuery, Filtered, HasAssignments, InsertQuery, UpdateQuery};
+use crate::dml::{DeleteQuery, Filtered, HasAssignments, InsertQuery, UpdateQuery};
 use crate::expr::{Expr, SqlVal};
 use crate::query::*;
 
