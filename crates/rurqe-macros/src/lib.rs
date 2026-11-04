@@ -138,10 +138,28 @@ pub fn raw_sql(input: TokenStream) -> TokenStream {
 /// Derives SQL parameter and row-value support for a domain newtype.
 ///
 /// The derive mirrors the declarative `impl_sql_binary_newtype!` and
-/// `impl_sql_text_newtype!` helpers and adds a delegation mode, so a domain type
-/// binds like a built-in scalar without repeating the conversion code by hand:
+/// `impl_sql_text_newtype!` helpers and adds a delegation mode. The mode decides
+/// where the conversions live:
+///
+/// - `#[sql(transparent)]` delegates to the wrapped value, so a domain type binds
+///   like a built-in scalar without repeating the conversion code by hand. The
+///   wrapped value has to implement `Clone`, because the borrowed forms of the
+///   newtype read it through a clone instead of moving out of the reference;
+/// - `#[sql(as = Bytes)]` requires `AsRef<[u8]>` and `TryFrom<&[u8]>` on the
+///   derived newtype itself, and validates the decoded blob length when `len = N`
+///   is given;
+/// - `#[sql(as = Text)]` requires `Display` and `FromStr` on the derived newtype
+///   itself.
+///
+/// The binary and textual modes of a newtype read those traits off the derived
+/// type, never off the field it wraps: a newtype wrapping a value that already
+/// implements them has to write its own implementations, which is what the
+/// example below does.
 ///
 /// ```ignore
+/// use std::fmt;
+/// use std::str::FromStr;
+///
 /// #[derive(SqlType)]
 /// #[sql(transparent)]
 /// struct UserId(i64);
@@ -150,19 +168,48 @@ pub fn raw_sql(input: TokenStream) -> TokenStream {
 /// #[sql(as = Bytes, len = 4)]
 /// struct Txid([u8; 4]);
 ///
+/// impl AsRef<[u8]> for Txid {
+///     fn as_ref(&self) -> &[u8] {
+///         &self.0
+///     }
+/// }
+///
+/// impl TryFrom<&[u8]> for Txid {
+///     type Error = &'static str;
+///
+///     fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+///         let bytes: [u8; 4] = slice.try_into().map_err(|_| "expected four bytes")?;
+///         Ok(Txid(bytes))
+///     }
+/// }
+///
 /// #[derive(SqlType)]
 /// #[sql(as = Text)]
 /// struct Address(String);
+///
+/// impl fmt::Display for Address {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         f.write_str(&self.0)
+///     }
+/// }
+///
+/// impl FromStr for Address {
+///     type Err = &'static str;
+///
+///     fn from_str(value: &str) -> Result<Self, Self::Err> {
+///         if value.starts_with("addr_") {
+///             Ok(Address(value.to_owned()))
+///         } else {
+///             Err("addresses start with `addr_`")
+///         }
+///     }
+/// }
 /// ```
 ///
 /// The generated code implements `ToSqlVal`, `From<Self> for SqlVal`,
 /// `FromSqlValue`, and the expression-compatibility impls, so the newtype is
 /// usable both as a bound parameter and as a decoded row value, by value and by
 /// reference.
-///
-/// The borrowed form of the newtype reads the wrapped value through a clone, so
-/// a `#[sql(transparent)]` newtype requires its wrapped value to implement
-/// `Clone`.
 #[proc_macro_derive(SqlType, attributes(sql))]
 pub fn sql_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

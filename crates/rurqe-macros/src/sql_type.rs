@@ -9,9 +9,16 @@
 //!   binds and decodes exactly like `i64`. The wrapped value has to implement
 //!   `Clone`, because the borrowed forms of the newtype read it through a clone
 //!   instead of moving out of the reference;
-//! - `#[sql(as = Bytes)]` encodes through `AsRef<[u8]>` and decodes through
-//!   `TryFrom<&[u8]>`, optionally validating the blob length with `len = N`;
-//! - `#[sql(as = Text)]` encodes through `Display` and decodes through `FromStr`.
+//! - `#[sql(as = Bytes)]` encodes through the `AsRef<[u8]>` implementation of the
+//!   derived newtype itself and decodes through its `TryFrom<&[u8]>`
+//!   implementation, validating the blob length with `len = N` when it is given;
+//! - `#[sql(as = Text)]` encodes through the `Display` implementation of the
+//!   derived newtype itself and decodes through its `FromStr` implementation.
+//!
+//! The binary and textual modes of a newtype read those traits off the derived
+//! type, never off the field it wraps: a newtype wrapping a value that already
+//! implements them does not inherit the implementations, so the author writes
+//! them on the newtype beside the derive.
 //!
 //! The derive applies to a unit-variant enum as well, which is how a database
 //! enum type reaches Rust code. Every variant is stored as its label, so the enum

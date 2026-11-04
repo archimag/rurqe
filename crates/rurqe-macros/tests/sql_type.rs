@@ -48,6 +48,25 @@ impl TryFrom<&[u8]> for Txid {
     }
 }
 
+/// A binary domain type decoded from a blob of any length.
+#[derive(Debug, PartialEq, Eq, SqlType)]
+#[sql(as = Bytes)]
+struct Blob(Vec<u8>);
+
+impl AsRef<[u8]> for Blob {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl TryFrom<&[u8]> for Blob {
+    type Error = &'static str;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Blob(slice.to_vec()))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, SqlType)]
 #[sql(as = Text)]
 pub struct Address(String);
@@ -229,6 +248,29 @@ fn binary_newtypes_round_trip_and_validate_length() {
     assert!(short.to_string().contains("expected 4 bytes"));
 
     assert!(Txid::from_sql_value(&SqlVal::Text("abcd".to_owned())).is_err());
+}
+
+#[test]
+fn binary_newtypes_without_a_length_accept_any_blob_size() {
+    assert_eq!(
+        Blob(vec![1, 2, 3]).to_sql_val(),
+        SqlVal::Bytes(vec![1, 2, 3])
+    );
+    assert_eq!(
+        Blob::from_sql_value(&SqlVal::Bytes(vec![1, 2])),
+        Ok(Blob(vec![1, 2]))
+    );
+    assert_eq!(
+        Blob::from_sql_value(&SqlVal::Bytes(Vec::new())),
+        Ok(Blob(Vec::new()))
+    );
+
+    let wrong = Blob::from_sql_value(&SqlVal::Text("abcd".to_owned()))
+        .expect_err("a textual value is not a blob");
+    assert!(matches!(
+        wrong,
+        RowDecodeError::TypeMismatch { found: "text", .. }
+    ));
 }
 
 #[test]
