@@ -578,6 +578,13 @@ const FRAGMENTS: &[Fragment] = &[
         terminal: Terminal::Executed,
         chapters: &["core/window.md"],
     },
+    Fragment {
+        file: "pool_transactions.rs",
+        anchor: "adapt_pool",
+        binding: "accounts",
+        terminal: Terminal::Executed,
+        chapters: &["core/pools.md"],
+    },
 ];
 
 fn main() {

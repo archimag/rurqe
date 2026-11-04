@@ -10,6 +10,26 @@ A pool keeps a set of open sessions and lends one of them to the work that needs
 
 The synchronous wrappers clone without rebuilding the pool, because every clone addresses the one underlying pool, and `pool()` hands back the wrapped driver pool for configuration or inspection performed outside the adapter.
 
+## Adapting an existing pool
+
+An application assembles its pool before it hands it over: the size, the TLS connector, the timeouts, and the recycling policy are settings of the pool itself, and none of them is a property of a typed query. `PgAsyncPool::new(pool)` is the one adaptation point — it stores the finished `deadpool_postgres::Pool` as it is, without rebuilding or reconfiguring it — while `pool()` hands the same driver pool back for a setting or an observation the adapter does not model:
+
+```rust,no_run
+{{#rustdoc_include ../examples/pool_transactions.rs:adapt_pool}}
+```
+
+The statement renders:
+
+```sql
+SELECT "id" AS "account_id", "balance" AS "account_balance" FROM "accounts" WHERE ("balance" > $1)
+```
+
+A terminal call on the adapter checks a connection out of that pool, runs against the session it received, and returns the checkout once the statement settled. Wrapping a pool changes where the sessions come from, not how a call on them behaves.
+
+### Where the guarantee of the adapter ends
+
+The guarantees this chapter documents are guarantees about the checkouts the adapter mediates. A checkout the caller takes from the wrapped pool and drives itself — `pool().get().await?.transaction().await?` — is the driver's own transaction: the server opens and closes it, but the adapter never saw that checkout, so its session is not proven idle before the work runs, the savepoint nesting of the closure form does not apply inside it, and a refused control statement is recorded nowhere. An application therefore routes its transactional surface through `PgAsyncPool::transaction`, or through `transaction_with_isolation` when a block needs an isolation level, and keeps the wrapped pool for the settings and the observations the adapter does not model.
+
 ## A statement on a pool
 
 A single statement is executed by checking a connection out, proving its session idle, running the statement in autocommit, and returning the connection once the statement settled. A statement the driver refused is settled as well, so the checkout returns to the pool on that path too.

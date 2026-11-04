@@ -1,8 +1,9 @@
 //! Pooled transactions on the asynchronous PostgreSQL adapter.
 //!
-//! Every block below runs inside a pooled transaction, so the example carries
-//! the functions that own them: the pipeline compiles the file and executes
-//! none of it, exactly as a chapter that includes a fragment needs.
+//! Every transaction block runs inside a pooled transaction, so the example
+//! carries the functions that own them: the pipeline compiles the file and
+//! executes none of it, exactly as a chapter that includes a fragment needs.
+//! The `adapt_pool` fragment states where the pool itself comes from.
 
 use rurqe::postgres::prelude::*;
 
@@ -99,8 +100,34 @@ async fn record_around_nested_block(pool: &PgAsyncPool) -> Result<(), Error> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // The pool is never built: a transaction block is entered through a live
-    // pool handle, and the pipeline compiles this example without running it,
-    // so the functions above carry the blocks a chapter includes.
+    // Every transaction block above is entered through a live pooled session,
+    // and the pipeline compiles this example without running it, so the
+    // functions above carry the blocks a chapter includes. The fragment below
+    // assembles the pool itself: building one reads its configuration and
+    // dials nothing.
+
+    // ANCHOR: adapt_pool
+    // A pool the application assembled is wrapped as it is: its size, its TLS
+    // connector, and its timeouts stay the settings of that pool.
+    let mut config = deadpool_postgres::Config::new();
+    config.url = Some(String::from("postgres://app@localhost/app"));
+    let driver = config
+        .create_pool(Some(deadpool_postgres::Runtime::Tokio1), tokio_postgres::NoTls)
+        .expect("the documented pool configuration is a valid connection string");
+    let pool = PgAsyncPool::new(driver);
+
+    // The wrapped pool stays reachable, so an observation the adapter does not
+    // model is read through the driver's own handle.
+    let size_cap = pool.pool().status().max_size;
+
+    let accounts = select_from(Account)
+        .select(cols!(AccountId, AccountBalance))
+        .where_(AccountBalance.gt(100i64))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: adapt_pool
+
+    println!("{} account(s), at most {size_cap} connection(s)", accounts.len());
+
     Ok(())
 }
