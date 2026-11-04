@@ -170,6 +170,37 @@ pub(crate) async fn close_block(
     Err(PgError::ConnectionPoisoned { reason })
 }
 
+/// Returns the session of a checked-out asynchronous client to a provably idle
+/// state.
+///
+/// A connection a pool hands back carries the session state of the block that
+/// drove it last: a transaction a caller opened through the raw driver pool, a
+/// `BEGIN` whose `COMMIT` nobody issued, or a block whose rollback the driver
+/// refused. The reset is one round trip of the simple protocol carrying a single
+/// `ROLLBACK`, the one transaction-control statement PostgreSQL answers in every
+/// session state: a session that still holds a transaction has it ended —
+/// including the aborted one, where the server rejects a `BEGIN` with `25P02`
+/// and would abort the rest of a multi-statement reset — and a session that is
+/// already idle answers with the warning `25P01` instead of an error. The idle
+/// state is therefore guaranteed without classifying the state the session
+/// arrived in.
+///
+/// A reset the driver refuses means the connection could not be brought back to
+/// a known state, so the failure is reported in the
+/// [`PgError::AbandonedTransaction`] variant instead of the session being handed
+/// to the next caller: the driver failure travels whole, so an operator reaches
+/// the cause it reports through [`source`](std::error::Error::source).
+///
+/// The callers are the pools, because only a checkout can still close the state
+/// a previous block left behind: the bookkeeping of an adapter dies with the
+/// adapter, while the session of the server outlives it.
+#[cfg_attr(not(all(feature = "deadpool-postgres", feature = "tokio-postgres")), allow(dead_code))]
+pub(crate) async fn ensure_idle_async(client: &tokio_postgres::Client) -> Result<(), PgError> {
+    client
+        .batch_execute("ROLLBACK")
+        .await
+        .map_err(|failure| PgError::AbandonedTransaction { failure })
+}
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.
 ///
 /// The adapter implements the asynchronous

@@ -30,20 +30,34 @@
 //! reported as the poisoned-connection failure, and its checkout is destroyed
 //! the same way.
 //!
+//! Every checkout the pool mediates for a closure-scoped block is proven idle
+//! before that block opens: one `ROLLBACK` through the simple query protocol is
+//! issued before `BEGIN`, which PostgreSQL answers in every session state. A
+//! session that reached the pool with a transaction still open — a checkout a
+//! caller drove through the raw pool, or one a transaction-control statement
+//! left open through a statement path — has that transaction ended before the
+//! block opens, so the block can neither join the abandoned transaction nor
+//! persist its work with its own `COMMIT`. A proof the driver refuses records
+//! its reason on the shared poison record, reports
+//! `PgError::AbandonedTransaction`, and destroys the checkout like every other
+//! unclean ending, so a session the pool cannot prove idle never reaches
+//! another caller. The synchronous pools close the same hazard from the other
+//! side, by repairing the session when a checkout ends.
+//!
 //! A single statement driven through either pool — `fetch_raw`,
 //! `fetch_raw_limited`, or `execute_raw` — runs in autocommit, and the idle
 //! proof of such a checkout is granted by that contract instead of being
 //! verified. Issuing a transaction-control statement (`BEGIN`, `SAVEPOINT`,
 //! `COMMIT`, `ROLLBACK`) through that path breaks the contract rather than
 //! being refused: the session returns to the pool with a transaction still
-//! open, and the next checkout inherits it, because the synchronous pool has
-//! granted an idle proof its `ensure_idle` repair never ran, and the
-//! asynchronous pool recycles an object its driver checked for socket
-//! liveness alone. Work that spans several statements belongs in
-//! `PgPool::transaction`, `PgPool::transaction_with_isolation`,
-//! `PgAsyncPool::transaction`, or `PgAsyncPool::transaction_with_isolation`,
-//! which keep one connection checked out for the whole block and settle the
-//! transaction state it ends in.
+//! open, and a statement issued through the same path next runs inside it. On
+//! the synchronous pool the granted proof is never verified either, so even the
+//! next block inherits the transaction. A block on the asynchronous pool never
+//! joins it, because it proves the session idle before it opens. Work that
+//! spans several statements belongs in `PgPool::transaction`,
+//! `PgPool::transaction_with_isolation`, `PgAsyncPool::transaction`, or
+//! `PgAsyncPool::transaction_with_isolation`, which keep one connection checked
+//! out for the whole block and settle the transaction state it ends in.
 //!
 //! Each pool is gated on the driver it pools, so the feature that enables a pool
 //! carries its driver and the module of that pool is compiled on the pair.
@@ -123,6 +137,18 @@ mod deadpool_impl {
         /// every exit path, because the guard that owns it is dropped however the
         /// block ends.
         ///
+        /// Every checkout the method mediates is proven idle before the block
+        /// opens: one `ROLLBACK` through the simple query protocol is issued
+        /// before `BEGIN`, which PostgreSQL answers in every session state. A
+        /// session that reached the pool with a transaction still open — a
+        /// checkout driven through [`pool`](PgAsyncPool::pool), or one a
+        /// transaction-control statement left open through a statement path —
+        /// has that transaction ended before the block opens, so the block can
+        /// neither join the abandoned transaction nor persist its work. A proof
+        /// the driver refuses destroys the checkout and surfaces as
+        /// [`PgError::AbandonedTransaction`] instead of opening the block on a
+        /// session the pool cannot vouch for.
+        ///
         /// ```text
         /// pool
         ///     .transaction(|scope| {
@@ -165,10 +191,10 @@ mod deadpool_impl {
         /// unchanged.
         ///
         /// A checkout failure surfaces as [`PgError::Pool`]; a failure raised by
-        /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`]. A savepoint
-        /// rollback the driver refuses inside the block is recorded on the poison
-        /// record of the connection, which is the record the guard reads, so the
-        /// connection is destroyed instead of being returned to the pool. The same
+        /// the idle proof, by `BEGIN`, by `f`, or by `COMMIT` surfaces as
+        /// [`PgError`]. A savepoint rollback the driver refuses inside the block
+        /// is recorded on the poison record of the connection, which is the
+        /// record the guard reads, so the
         /// record gates the commit: a block that returns `Ok` while its record is
         /// poisoned is rolled back and reported as [`PgError::ConnectionPoisoned`]
         /// instead of being committed.
@@ -212,9 +238,11 @@ mod deadpool_impl {
         /// no per-savepoint isolation and the enclosing transaction keeps the
         /// level it was opened with.
         ///
-        /// The error mapping and the abandoned-block failure mode are the ones
-        /// documented on [`PgAsyncPool::transaction`]: a checkout failure
-        /// surfaces as [`PgError::Pool`], a failure raised by `BEGIN`, by `f`,
+        /// The idle proof that precedes the block, the error mapping, and the
+        /// abandoned-block failure mode are the ones documented on
+        /// [`PgAsyncPool::transaction`]: the checkout is proven idle before
+        /// `BEGIN` is dispatched, a checkout failure surfaces as
+        /// [`PgError::Pool`], a failure raised by the proof, by `BEGIN`, by `f`,
         /// or by `COMMIT` surfaces as [`PgError`], and a cancelled, unwound, or
         /// control-failed block destroys its connection instead of returning it
         /// to the pool.
@@ -261,6 +289,15 @@ mod deadpool_impl {
     /// [`PgError::ConnectionPoisoned`] carrying it, because the transaction
     /// state is unknown from that point on.
     ///
+    /// The checkout is proven idle before the block opens. One `ROLLBACK`
+    /// through the simple query protocol — the statement PostgreSQL answers in
+    /// every session state — ends whatever transaction the session still held
+    /// before the opening `BEGIN` is dispatched, so the block can neither join
+    /// an abandoned transaction nor persist its work with its own `COMMIT`. A
+    /// proof the driver refuses records its reason on the shared poison record,
+    /// returns [`PgError::AbandonedTransaction`], and destroys the checkout like
+    /// every other unclean ending.
+    ///
     /// The block shares the poison record of the checkout instead of receiving a
     /// record of its own: a savepoint rollback the driver refuses is recorded on
     /// the cell the guard reads, which turns that failure into a destroyed
@@ -282,7 +319,15 @@ mod deadpool_impl {
                 reason: String::from("the checked-out connection is already destroyed"),
             }));
         };
-
+        // The checkout is proven idle before the block opens, so a transaction
+        // the session still holds is ended here instead of being joined by the
+        // `BEGIN` below and persisted by the block's own `COMMIT`. A refused
+        // proof records its reason on the shared cell, and the disposition guard
+        // destroys the connection instead of returning it to the pool.
+        if let Err(failure) = crate::backend::async_conn::ensure_idle_async(client).await {
+            poison.mark(control_failure("ROLLBACK", &failure));
+            return Err(E::from(failure));
+        }
         if let Err(failure) = execute_control(client, begin).await {
             poison.mark(control_failure("BEGIN", &failure));
             return Err(E::from(failure));

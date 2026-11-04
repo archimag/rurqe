@@ -20,7 +20,10 @@
 //! own checkout instead of returning it to the pool, and a transaction handle
 //! dropped without a terminal call poisons the connection it borrows, and so does
 //! an entry whose `BEGIN` the driver refused or whose future was dropped before
-//! the transaction opened. An owned connection is covered too: a typed entry
+//! the transaction opened. A session that reaches the asynchronous pool with a
+//! transaction still open is ended by the idle proof of the next block, whether
+//! a raw-pool checkout or a statement path left it there. An owned connection is
+//! covered too: a typed entry
 //! repairs a session a raw driver handle left inside a transaction before its
 //! block opens, so the block never joins the abandoned work.
 
@@ -888,6 +891,99 @@ mod async_pool {
         assert_eq!(
             support::totals(&pool, "rurqe_tx_async_poisoned").await,
             (0, 0)
+        );
+    }
+
+    /// A session that reaches the pool with a transaction still open is ended by
+    /// the idle proof of the next block, so the leaked work is never persisted
+    /// with that block's commit.
+    #[tokio::test]
+    async fn a_leaked_transaction_is_ended_before_the_next_block() {
+        let Some(url) = support::database_url("PgAsyncPool::transaction leaked transaction reset")
+        else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_leak").await;
+
+        // The raw driver pool is the supported escape hatch, so the leak this
+        // scenario produces is the ordinary one: a `BEGIN` the caller issued
+        // itself and never closed.
+        {
+            let client = pool
+                .pool()
+                .get()
+                .await
+                .expect("the fixture connection is checked out");
+            client
+                .batch_execute("BEGIN")
+                .await
+                .expect("the manual transaction opens");
+            client
+                .batch_execute("INSERT INTO rurqe_tx_async_leak (id, amount) VALUES (1, 100)")
+                .await
+                .expect("the leaked row is written");
+            // The object returns to the pool with its transaction still open.
+        }
+
+        pool.transaction(|scope| {
+            Box::pin(async move {
+                support::execute(
+                    &scope,
+                    "INSERT INTO rurqe_tx_async_leak (id, amount) VALUES (2, 200)",
+                )
+                .await?;
+                Ok::<(), PgError>(())
+            })
+        })
+        .await
+        .expect("the block commits on the session the proof returned to idle");
+
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_leak").await,
+            (1, 200),
+            "the proof rolled the abandoned transaction back, so only the block's row persists"
+        );
+    }
+
+    /// The contract break the pool documents — a transaction-control statement
+    /// issued through a single-statement path — leaves the session inside a
+    /// transaction, and the idle proof of the next block ends it before that
+    /// block opens.
+    #[tokio::test]
+    async fn a_statement_path_break_is_ended_before_the_next_block() {
+        let Some(url) = support::database_url("PgAsyncPool::execute_raw leaked transaction reset")
+        else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_break").await;
+
+        support::execute(&pool, "BEGIN").await.expect("the transaction opens");
+        support::execute(
+            &pool,
+            "INSERT INTO rurqe_tx_async_break (id, amount) VALUES (1, 100)",
+        )
+        .await
+        .expect("the row of the broken transaction is written");
+
+        pool.transaction(|scope| {
+            Box::pin(async move {
+                support::execute(
+                    &scope,
+                    "INSERT INTO rurqe_tx_async_break (id, amount) VALUES (2, 200)",
+                )
+                .await?;
+                Ok::<(), PgError>(())
+            })
+        })
+        .await
+        .expect("the block commits on the session the proof returned to idle");
+
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_break").await,
+            (1, 200),
+            "the proof ended the abandoned transaction, so only the block's row persists"
         );
     }
 }
