@@ -41,9 +41,21 @@ The expansion itself parses nothing. Every artifact is baked as raw text through
 compilation: editing an artifact recompiles the binary that carries it. The text
 then reaches `EmbeddedMigrations::from_artifacts`, which parses it at startup with
 the very parsers the rest of the migration crate uses, so a malformed artifact is
-rejected before any connection is opened. A combination the baked artifacts
-contradict is refused there as well, whether or not either text is malformed on
-its own.
+rejected before any connection is opened.
+
+A combination the baked artifacts contradict is refused there as well, whether
+or not either text is malformed on its own. One disagreement is decidable from
+the artifacts alone: a baked boundary marker and a baked catalog snapshot
+anchor different digests, while no versioned script rises above the pruned
+boundary. The marker a cold start records would land exactly at that boundary
+carrying the snapshot digest, where it is measured against the checkpoint
+hash, so the run would reject the target only after initialising it, and
+every later run would reject it the same way. Such a collection is refused at
+construction instead, before a connection is opened. What the artifacts cannot
+decide stays the guard of the run itself: a declarative stage whose DDL no
+longer matches the baked snapshot, or a tail whose applied scripts produce
+another catalog, is reported by the final catalog check once the scripts
+have run.
 
 Four artifacts are baked, and each one is optional on its own:
 
@@ -152,7 +164,8 @@ distinguishes the cases instead of matching on text:
   the pruned boundary: the cold-start marker would land exactly at that boundary,
   where the boundary check measures it against the checkpoint hash, so the
   combination is refused before a connection is opened instead of initialising a
-  target every later run rejects.
+  target every later run rejects. The boundary marker and the snapshot have
+  to be regenerated from one state of the schema.
 - `FailedMigrationAlreadyApplied` refuses a run over a history that records an
   unsuccessful attempt: the attempt has to be cleared first.
 - `ChecksumMismatch` refuses an applied versioned script whose contents no longer
