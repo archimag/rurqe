@@ -10,7 +10,10 @@
 //! marker it names, so the expansion has no type parameter to give the struct it
 //! emits. A declaration carrying generic parameters or a `where` clause is
 //! rejected with a diagnostic naming `dto!` and the concrete form it expects,
-//! instead of the parser's generic missing-body error.
+//! instead of the parser's generic missing-body error. A field projecting a
+//! computed expression rather than a schema column is refused before any field
+//! name is derived, so the rejection names the rule `dto!` enforces instead of
+//! the alias remedy of `select!`.
 //!
 //! The same declaration describes the row of a related collection: the struct
 //! implements [`MultisetRow`](rurqe_core::nested::MultisetRow) together with
@@ -38,7 +41,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Attribute, Ident, Token, Visibility};
+use syn::{Attribute, Ident, Path, Token, Visibility};
 
 use crate::parse::ProjectionList;
 use crate::record::{Record, RecordField};
@@ -101,6 +104,33 @@ fn reject_generics(input: ParseStream) -> syn::Result<()> {
     Ok(())
 }
 
+/// Returns the schema column marker of every projection, refusing a computed one.
+///
+/// A DTO describes a row of a table or of a related collection, so every field is
+/// read from a schema column and no field carries a computed expression. The rule
+/// runs over the whole list before the uniqueness pass, because that pass derives
+/// a field name through `ProjectionItem::field_ident`, and an unaliased computed
+/// expression is refused there with the `select!` alias remedy — a remedy `dto!`
+/// cannot accept, since an aliased computed expression is refused by this rule in
+/// turn. Reporting this rejection first names the rule the author broke, and every
+/// accepted declaration passes it unchanged.
+fn column_markers(fields: &ProjectionList) -> syn::Result<Vec<&Path>> {
+    let mut columns = Vec::with_capacity(fields.len());
+
+    for item in &fields.items {
+        let Some(column) = item.column_path() else {
+            return Err(syn::Error::new_spanned(
+                item.target.tokens(),
+                "`dto!` fields must be schema column markers; \
+                 use `select!` for computed projections",
+            ));
+        };
+        columns.push(column);
+    }
+
+    Ok(columns)
+}
+
 /// Expands a parsed `dto!` input into the struct declaration and the record
 /// contract of its fields.
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
@@ -111,18 +141,12 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         fields,
     } = syn::parse2(input)?;
 
+    let columns = column_markers(&fields)?;
     crate::parse::ensure_unique_field_names(&fields)?;
 
     let mut record_fields = Vec::with_capacity(fields.len());
-    for item in &fields.items {
+    for (item, column) in fields.items.iter().zip(columns) {
         let field = item.field_ident()?;
-        let Some(column) = item.column_path() else {
-            return Err(syn::Error::new_spanned(
-                item.target.tokens(),
-                "`dto!` fields must be schema column markers; \
-                 use `select!` for computed projections",
-            ));
-        };
         let field_attrs = &item.attrs;
 
         record_fields.push(RecordField {
@@ -331,6 +355,38 @@ mod tests {
             error.to_string(),
             "`dto!` cannot declare a `where` clause; \
              declare a concrete struct whose fields are schema column markers"
+        );
+    }
+
+    #[test]
+    fn a_computed_projection_names_the_dto_rule_before_the_alias_remedy() {
+        let error = expand(quote! {
+            pub struct Bad {
+                Expr::count_all()
+            }
+        })
+        .expect_err("a DTO field projects a schema column");
+
+        assert_eq!(
+            error.to_string(),
+            "`dto!` fields must be schema column markers; \
+             use `select!` for computed projections"
+        );
+    }
+
+    #[test]
+    fn an_aliased_computed_projection_names_the_dto_rule() {
+        let error = expand(quote! {
+            pub struct Bad {
+                total: Expr::count_all()
+            }
+        })
+        .expect_err("an alias names a field, not a column");
+
+        assert_eq!(
+            error.to_string(),
+            "`dto!` fields must be schema column markers; \
+             use `select!` for computed projections"
         );
     }
 }
