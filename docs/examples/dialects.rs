@@ -18,7 +18,10 @@ fn main() -> Result<(), BuildError> {
     println!("{}", postgres_query.sql);
 
     // ANCHOR: sqlite
-    let sqlite_query = sqlite3_35::select_from(User)
+    // This file composes both engines, so the entry point names the prelude it
+    // starts from: the unversioned prelude of SQLite binds the statement to
+    // SQLite 3.35.
+    let sqlite_query = rurqe::sqlite::prelude::select_from(User)
         .select(cols!(UserId))
         .where_(UserId.eq(7i64))
         .build()?;

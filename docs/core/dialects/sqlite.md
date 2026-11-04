@@ -13,7 +13,7 @@ The engine releases are exposed as modules, and each one carries the builder ent
 - `sqlite3_35`
 - `sqlite3_38`
 
-The unversioned prelude binds the dialect to SQLite 3.35:
+The unversioned prelude binds the dialect to SQLite 3.35, the release the dialect defaults to:
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/dialects.rs:sqlite}}
@@ -22,6 +22,8 @@ The unversioned prelude binds the dialect to SQLite 3.35:
 ```sql
 SELECT "id" AS "user_id" FROM "users" WHERE ("id" = ?)
 ```
+
+The example composes both engines in one file, so the chain names the prelude it starts from — `rurqe::sqlite::prelude` — instead of importing it with a glob; an application targeting SQLite alone imports that prelude with a glob and starts the chain with `select_from`, which resolves to the same entry point.
 
 A pinned module records the release the statement targets. The same chain composes for any of them, and only the clauses that release does not support stay unreachable:
 
