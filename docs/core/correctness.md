@@ -33,7 +33,7 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 
 ## Gate 2: Pre-Flight Validation in `.build()`
 
-Rules that require checking the absence of a relation or comparing multi-clause alignments are evaluated deterministically in `.build()` before any network dispatch. Rejections produce typed `BuildError` values:
+Rules that check the absence of a relation, compare multi-clause alignments, or inspect the shape of an assembled expression are evaluated deterministically in `.build()` before any network dispatch. Rejections produce typed `BuildError` values:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/quickstart.rs:build_refusal}}
@@ -53,10 +53,11 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 | An ungrouped statement projects an aggregate beside a bare column | `UngroupedColumnWithAggregate` |
 | A collapsed statement orders or deduplicates by a column the collapse dropped | `UngroupedColumn` |
 | A `HAVING` predicate reads a column that is neither aggregated nor grouped | `UngroupedHavingColumn` |
+| An `OVER (...)` clause wraps an operand that is not a function application | `WindowOperandNotCall` |
 | A mutation's `RETURNING` projection reads an aggregate or a window call | `AggregateInRowClause`, `WindowInRowClause` |
 | An `ON CONFLICT` clause records a `DO UPDATE` action or a target predicate without a conflict target | `MissingConflictTarget` |
 
-The grouping rules sit on both gates, and the split follows the two contracts. A query that grouped its rows through `.group_by(...)` is a grouped statement at the call site, so a projection, a `HAVING` predicate, or a window specification reading a column the grouping dropped is refused by the compiler. The three grouping variants above are the residuals the second gate owns: a statement that projects an aggregate beside a stored column without grouping its rows carries no grouped typestate, so it compiles and is refused when it is built, and the ordering, the `DISTINCT ON` expressions, and the `HAVING` predicate are re-checked on the assembled statement before any SQL is rendered.
+The grouping rules sit on both gates, and the split follows the two contracts. A query that grouped its rows through `.group_by(...)` is a grouped statement at the call site, so a projection, a `HAVING` predicate, or a window specification reading a column the grouping dropped is refused by the compiler. The three grouping variants above are the residuals the second gate owns: a statement that projects an aggregate beside a stored column without grouping its rows carries no grouped typestate, so it compiles and is refused when it is built, and the ordering, the `DISTINCT ON` expressions, and the `HAVING` predicate are re-checked on the assembled statement before any SQL is rendered. The operand of a window call belongs to that check as well: the aggregate a window evaluates reads the rows the statement produced, so the column it aggregates has to survive the grouping, and the walk collects it through the scalar functions, the arithmetic operators, a `CASE`, and a `CAST` around the call.
 When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias resolves the conflict: `table_alias!` declares the alias marker, and `User.as_alias(Manager)` hands the aliased relation to the builder.
 When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias resolves the conflict: `table_alias!` declares the alias marker, and `User.as_alias(Manager)` hands the aliased relation to the builder.
 
@@ -66,7 +67,7 @@ Column references are resolved against one namespace from both gates. The compil
 | Gate | Execution timing | Evaluated invariants | Caller outcome |
 |---|---|---|---|
 | Compiler | `cargo build` | Positive assertions: relation scope, nullable joins, mutation typestates, dialect capability gates, grouped query projections | Compile-time error |
-| Statement validation | `.build()` | Negative assertions (duplicate unaliased relations), cross-clause alignments (`DISTINCT ON`), and residual aggregation checks (`UngroupedColumnWithAggregate`) | `Result<BuiltQuery, BuildError>` |
+| Statement validation | `.build()` | Negative assertions (duplicate unaliased relations), cross-clause alignments (`DISTINCT ON`), residual aggregation checks (`UngroupedColumnWithAggregate`), and the operand grammar of a window expression (`WindowOperandNotCall`) | `Result<BuiltQuery, BuildError>` |
 | Database engine | Terminal query call | Server-side runtime errors: constraint violations, missing permissions, invalid connection state | `Result<T, ExecutionError>` |
 
 ## Engine Errors and Diagnostics

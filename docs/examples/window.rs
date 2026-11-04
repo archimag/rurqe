@@ -57,6 +57,24 @@ async fn main() -> Result<()> {
     // ANCHOR_END: frames
     println!("{}", moving.len());
 
+    // ANCHOR: operand_refusal
+    // `OVER (...)` attaches to a function application alone, so a column
+    // reference cannot carry the clause: the statement is refused while it is
+    // built, before it reaches an engine that would answer with a syntax error.
+    let rejected = select_from(Order)
+        .select(cols!(
+            order_id: OrderId,
+            total_window: Expr::column::<OrderTotal>().over(Window::new()),
+        ))
+        .build();
+    assert!(matches!(
+        rejected,
+        Err(BuildError::WindowOperandNotCall {
+            operand: "a column reference"
+        })
+    ));
+    // ANCHOR_END: operand_refusal
+
     Ok(())
 }
 

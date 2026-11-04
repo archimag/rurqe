@@ -26,7 +26,7 @@ Exactly four projection forms survive a grouping:
 | a column | it is part of `GROUP BY` |
 | an aggregate expression | the call folds the rows of the group |
 | a constant expression | it reads no table |
-| a window expression | the window reads grouped columns, and its operand aggregates rows or is constant |
+| a window expression | the window reads grouped columns, and so do the columns its operand aggregates |
 
 Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
@@ -109,7 +109,9 @@ The call site refuses a grouped query that reads a column the grouping dropped �
 | Typed failure | The statement it refuses |
 |---|---|
 | `UngroupedColumnWithAggregate` | a query without `GROUP BY` that projects an aggregate beside a bare column |
-| `UngroupedColumn` | a statement whose rows an aggregate collapsed, read through a column the collapse dropped — in a projection, in the ordering, or in a `DISTINCT ON` expression |
+| `UngroupedColumn` | a statement whose rows an aggregate collapsed, read through a column the collapse dropped — in a projection, in the ordering, in a `DISTINCT ON` expression, or in the operand of a window call |
 | `UngroupedHavingColumn` | a `HAVING` predicate reading a column that is neither aggregated nor grouped |
 
 `select_from(Order).select((OrderUserId, count_all()))` is the first row: it compiles, and the statement is refused when it is built, with a diagnostic asking for the grouping this chapter describes. The second row also governs the ordering of an aggregated query — projecting `count_all()` and ordering the result by `OrderTotal` names a per-row column the collapse removed — while a grouped query orders by a grouped column or by an aggregate, which is what its ordering methods accept.
+
+The operand of a window call is covered by the same walk. A window evaluated over the rows a statement produced reads that operand from them, so the columns an aggregate inside the operand aggregates have to survive the grouping exactly like the argument of a statement aggregate — the walk collects them through the scalar functions, the arithmetic operators, a `CASE` branch, and a `CAST` around the call. An aggregate nested inside the operand — `sum(sum(OrderTotal)) OVER (...)` — collapses the groups before the window reads them, so it ends that walk and governs the column it reads itself.
