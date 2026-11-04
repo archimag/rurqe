@@ -89,6 +89,26 @@ fn insert_renders_columns_defaults_and_parameters() {
     assert_eq!(built.params, vec![SqlVal::Text("root".to_owned())]);
 }
 
+// The prelude exports both assignment constructors, so the value form of the
+// marker resolves through the glob import while the inherent constructor keeps
+// the path form `UserId::set(...)` unambiguous.
+#[test]
+fn the_value_form_of_set_resolves_through_the_prelude() {
+    let built = insert_into::<Postgres, User>()
+        .values((UserId.set(1i64), UserName.set("root")))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+}
+
 #[test]
 fn bulk_insert_renders_one_row_per_assignment_set() {
     let built = insert_into::<Postgres<Pg15>, User>()

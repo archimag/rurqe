@@ -522,8 +522,8 @@ pub mod prelude {
 
     pub use rurqe_core::dml::{
         excluded, AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent,
-        ColumnAssign, DeleteQuery, EmptyRows, Excluded, Filtered, HasAssignments, InsertQuery,
-        NoAssignments, Unfiltered, UpdateQuery,
+        ColumnAssign, ColumnAssignValue, DeleteQuery, EmptyRows, Excluded, Filtered, HasAssignments,
+        InsertQuery, NoAssignments, Unfiltered, UpdateQuery,
     };
 
     #[cfg(feature = "macros")]
