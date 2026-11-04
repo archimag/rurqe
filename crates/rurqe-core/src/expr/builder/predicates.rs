@@ -8,8 +8,15 @@
 //! arithmetic does, so a predicate collapses the rows of its group only when
 //! every operand it reads does, and a grouped query admits it into `HAVING`
 //! accordingly.
+//!
+//! The null predicates and the membership tests over a nested statement root a
+//! new node instead of folding two operands, so they degrade the aggregate
+//! marker of the expression they are applied to: a predicate written over an
+//! aggregate call still collapses the rows of its group and stays projectable
+//! from a grouped query, while `DISTINCT` and `FILTER (WHERE ...)` stay
+//! reachable on the aggregate call alone.
 
-use super::Expr;
+use super::{Expr, NonAggregate};
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect, SubqueryOp};
 use crate::expr::fragments::RawFragments;
 use crate::expr::ops::{CombineAggr, CombinedAggr, InSubquery, IntoExpr, IntoExprList};
@@ -21,7 +28,17 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///
     /// The predicate compares against SQL `NULL` itself instead of a bound
     /// parameter, so it works for any expression type, optional or not.
-    pub fn is_null(&self) -> Expr<bool, Scope, Aggr, D> {
+    ///
+    /// The predicate roots a new node, so the aggregate marker of the tested
+    /// expression degrades exactly as it does in an arithmetic combination: a
+    /// predicate written over an aggregate call still collapses the rows of its
+    /// group and stays projectable from a grouped query, while `DISTINCT` and
+    /// `FILTER (WHERE ...)` stay reachable on the aggregate call alone.
+    #[allow(clippy::type_complexity)]
+    pub fn is_null(&self) -> Expr<bool, Scope, CombinedAggr<Aggr, NonAggregate, ()>, D>
+    where
+        Aggr: CombineAggr<NonAggregate, ()>,
+    {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: false,
@@ -29,7 +46,14 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Builds an `IS NOT NULL` predicate over this expression.
-    pub fn is_not_null(&self) -> Expr<bool, Scope, Aggr, D> {
+    ///
+    /// The predicate roots a new node, so it degrades the aggregate marker of
+    /// the tested expression exactly as [`is_null`](Self::is_null) does.
+    #[allow(clippy::type_complexity)]
+    pub fn is_not_null(&self) -> Expr<bool, Scope, CombinedAggr<Aggr, NonAggregate, ()>, D>
+    where
+        Aggr: CombineAggr<NonAggregate, ()>,
+    {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: true,
@@ -96,11 +120,19 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///
     /// A nested query of another shape is rejected at the call site; see
     /// [`InSubquery`](crate::expr::InSubquery) for the shapes it refuses.
+    ///
+    /// The predicate roots a new node, so the aggregate marker of the tested
+    /// expression degrades exactly as it does in an arithmetic combination: a
+    /// membership test over an aggregate call still collapses the rows of its
+    /// group and stays projectable from a grouped query, while `DISTINCT` and
+    /// `FILTER (WHERE ...)` stay reachable on the aggregate call alone.
+    #[allow(clippy::type_complexity)]
     pub fn in_subquery<S: InSubquery<(T,)>>(
         self,
         subquery: S,
-    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
+    ) -> Expr<bool, Scope, CombinedAggr<Aggr, NonAggregate, ()>, MergedDialect<D, S::Dialect>>
     where
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<S::Dialect>,
     {
         Expr::new(ExprKind::Subquery {
@@ -116,11 +148,16 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// The negation keeps the contract of the positive form: the nested query
     /// still has to project a single column of the compared type, as
     /// [`in_subquery`](Self::in_subquery) requires.
+    ///
+    /// The predicate roots a new node, so it degrades the aggregate marker of
+    /// the tested expression exactly as [`in_subquery`](Self::in_subquery) does.
+    #[allow(clippy::type_complexity)]
     pub fn not_in_subquery<S: InSubquery<(T,)>>(
         self,
         subquery: S,
-    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
+    ) -> Expr<bool, Scope, CombinedAggr<Aggr, NonAggregate, ()>, MergedDialect<D, S::Dialect>>
     where
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<S::Dialect>,
     {
         Expr::new(ExprKind::Subquery {

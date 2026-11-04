@@ -25,7 +25,7 @@ use core::marker::PhantomData;
 use super::ast::{CaseBuilder, ExprKind, MergeDialect, MergedDialect};
 use super::fragments::RawFragments;
 use super::functions::SqlCastTarget;
-use super::ops::IntoExpr;
+use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Unscoped};
@@ -196,7 +196,9 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// The conversion is rendered as `CAST(<expr> AS <type>)`, so the database
     /// performs it, and the expression keeps the tables it reads: a cast stays in
     /// the scope of its operand and remains projectable from a grouped query when
-    /// that operand is an aggregate.
+    /// that operand is an aggregate, while the conversion is no longer the call
+    /// itself: the marker degrades to the general aggregate one, so `DISTINCT`
+    /// and `FILTER (WHERE ...)` stay reachable on the aggregate call alone.
     ///
     /// ```
     /// use rurqe_core::expr::{Expr, ExprKind};
@@ -221,7 +223,10 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///     }
     /// );
     /// ```
-    pub fn cast<U: SqlCastTarget>(self) -> Expr<U, Scope, Aggr, D> {
+    pub fn cast<U: SqlCastTarget>(self) -> Expr<U, Scope, CombinedAggr<Aggr, NonAggregate, ()>, D>
+    where
+        Aggr: CombineAggr<NonAggregate, ()>,
+    {
         Expr::new(ExprKind::Cast {
             operand: Box::new(self.kind),
             target: U::SQL_TYPE,
@@ -255,8 +260,9 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// the enclosing statement is rendered. The node is built by inheriting the
     /// operands it is built from: the scope is merged from both sides, so a
     /// foreign column on the right extends the scope with its table, the
-    /// aggregation marker is inherited from the left operand, and the dialect
-    /// requirements merge, so an operand pinned to a dialect keeps requiring it.
+    /// aggregation marker degrades exactly as it does in an arithmetic
+    /// combination, and the dialect requirements merge, so an operand pinned to
+    /// a dialect keeps requiring it.
     ///
     /// The result type `Out` and the operand type `RhsT` are named explicitly,
     /// because nothing in this crate fixes the type an extension operator
@@ -267,9 +273,15 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         self,
         op: &'static str,
         rhs: V,
-    ) -> Expr<Out, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        Out,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, NonAggregate, ()>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<RhsT>,
     {
@@ -287,8 +299,9 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// argument, so the value compared against it sits on the left. The method is
     /// therefore called on the quantified side, so
     /// `array_column.dialect_quantified::<i64, _>("ANY", 7i64)` renders
-    /// `$1 = ANY("array_column")`. The scope, the aggregation marker, and the
-    /// dialect requirements are inherited from the two operands, so a quantified
+    /// `$1 = ANY("array_column")`. The scope and the dialect requirements are
+    /// inherited from the two operands while the aggregation marker degrades
+    /// exactly as it does in an arithmetic combination, so a quantified
     /// comparison over a foreign column extends the scope with its table.
     #[doc(hidden)]
     #[allow(clippy::type_complexity)]
@@ -296,9 +309,15 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         self,
         fn_name: &'static str,
         value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, NonAggregate, ()>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<E>,
     {

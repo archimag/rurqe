@@ -2,13 +2,15 @@
 
 use super::{DirectAggregate, Expr};
 use crate::dialect::{Dialect, SupportsAggregateFilter};
-use crate::expr::{count_distinct, render_expr, sum, ExprKind, SqlVal};
+use crate::expr::{count_distinct, render_expr, sum, Aggregate, ExprKind, SqlVal};
+use crate::query::SelectQuery;
 use crate::schema::TableRef;
 
 crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
+        OrderNote => "note": String,
     }
 );
 
@@ -116,5 +118,50 @@ fn a_forged_marker_keeps_the_dropped_filter_visible() {
         fragments.first(),
         Some("/* invalid aggregate marker: FILTER predicate dropped */")
     );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn a_new_root_degrades_the_aggregate_call_to_the_general_marker() {
+    // `DISTINCT` and `FILTER (WHERE ...)` belong to the aggregate call itself,
+    // so a builder that roots a new node over the call degrades the marker the
+    // same way an arithmetic combination does: the produced expression still
+    // collapses the rows of its group and stays projectable from a grouped
+    // query, while neither clause stays reachable on it.
+    fn assert_general<T, Scope, D>(_: Expr<T, Scope, Aggregate, D>) {}
+
+    assert_general(Expr::<i64>::count::<OrderId>().is_null());
+    assert_general(Expr::<i64>::count::<OrderId>().is_not_null());
+    assert_general(Expr::<i64>::sum::<OrderId>().cast::<i32>());
+    assert_general(sum(OrderId).filter_where(Expr::column::<OrderId>().gt(0i64)).is_null());
+    assert_general(Expr::<String>::max::<OrderNote>().like("A%"));
+    assert_general(Expr::<String>::max::<OrderNote>().ilike("a%"));
+    assert_general(Expr::<i64>::sum::<OrderId>().dialect_op::<i64, i64, _>("+", 1i64));
+    assert_general(Expr::<i64>::sum::<OrderId>().dialect_quantified::<i64, _>("ANY", 1i64));
+
+    let nested = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,));
+    assert_general(Expr::<i64>::sum::<OrderId>().in_subquery(nested));
+
+    let nested = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,));
+    assert_general(Expr::<i64>::sum::<OrderId>().not_in_subquery(nested));
+}
+
+#[test]
+fn a_new_root_places_its_own_node_at_the_root() {
+    // The rendered statement carries the node the builder created, so the
+    // aggregate call sits inside it instead of at the root.
+    let predicate = Expr::<i64>::sum::<OrderId>().is_null();
+    assert!(matches!(
+        predicate.kind(),
+        ExprKind::IsNull { negated: false, .. }
+    ));
+
+    let cast = sum(OrderId).cast::<i32>();
+    let (sql, params) = render(cast.kind());
+    assert_eq!(sql, "CAST(SUM(\"id\") AS INTEGER)");
     assert!(params.is_empty());
 }

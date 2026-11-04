@@ -85,6 +85,23 @@ where
     /// ));
     /// ```
     ///
+    /// A builder that roots a new node over a call is no call either, so the
+    /// modifier stays unreachable after it:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::Expr;
+    ///
+    /// rurqe_core::table!(
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// );
+    ///
+    /// // Fails to compile: `IS NULL` replaces the aggregate call at the root of
+    /// // the expression, so no call is left for the modifier to restrict.
+    /// let _ = Expr::<f64>::sum::<OrderTotal>().is_null().distinct();
+    /// ```
+    ///
     /// The method never discards the modifier it applies. The
     /// [`AcceptsAggregateClause`] gate keeps it unreachable on a tree that is no
     /// aggregate call, so the fallback below covers a tree assembled by hand — a
@@ -210,6 +227,25 @@ where
     /// // Fails to compile: the arithmetic combination is an `Aggregate`, not the
     /// // aggregate call itself, so it takes no `FILTER` clause.
     /// let _ = (sum(OrderTotal) + 1.0)
+    ///     .filter_where(Expr::column::<OrderTotal>().gt(0.0));
+    /// ```
+    ///
+    /// A builder that roots a new node over the call leaves the clause
+    /// unreachable the same way:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::Expr;
+    ///
+    /// rurqe_core::table!(
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// );
+    ///
+    /// // Fails to compile: the cast replaces the aggregate call at the root of
+    /// // the expression, so no call is left for the clause to restrict.
+    /// let _ = Expr::<f64>::sum::<OrderTotal>()
+    ///     .cast::<i64>()
     ///     .filter_where(Expr::column::<OrderTotal>().gt(0.0));
     /// ```
     ///

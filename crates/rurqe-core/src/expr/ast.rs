@@ -346,13 +346,25 @@ impl<Scope, Aggr, D> Expr<String, Scope, Aggr, D> {
     ///
     /// In the pattern, `%` matches any sequence of characters and `_` matches a
     /// single character, following the SQL `LIKE` semantics.
+    ///
+    /// The predicate roots a new node, so the aggregate marker of the tested
+    /// expression degrades exactly as it does in an arithmetic combination: a
+    /// pattern test over an aggregate call still collapses the rows of its group
+    /// and stays projectable from a grouped query, while `DISTINCT` and
+    /// `FILTER (WHERE ...)` stay reachable on the aggregate call alone.
     #[allow(clippy::type_complexity)]
     pub fn like<V>(
         self,
         pattern: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, NonAggregate, ()>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
@@ -364,13 +376,22 @@ impl<Scope, Aggr, D> Expr<String, Scope, Aggr, D> {
     }
 
     /// Builds a case-insensitive `ILIKE` pattern-matching predicate over this expression.
+    ///
+    /// The predicate roots a new node, so it degrades the aggregate marker of
+    /// the tested expression exactly as [`like`](Self::like) does.
     #[allow(clippy::type_complexity)]
     pub fn ilike<V>(
         self,
         pattern: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, NonAggregate, ()>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<NonAggregate, ()>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
