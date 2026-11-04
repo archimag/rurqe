@@ -6,7 +6,7 @@
 //! the toolchain's diagnostics usable both as one operator line and as a library
 //! value:
 //!
-//! * one pre-rendered line for the shared channel — the process writes it through
+//! * one pre-rendered line for the failure channel — the process writes it through
 //!   [`write_message`](crate::write_message), which owns the `Error: ` marker
 //!   every failure carries, so no failure type formats that marker itself;
 //! * an optional typed [`CliCause`] preserved to the boundary, so an embedder or
@@ -49,7 +49,7 @@ pub enum CliCause {
 }
 
 impl CliCause {
-    /// The line the shared channel reports for this cause.
+    /// The line the failure channel reports for this cause.
     ///
     /// The wording comes from the wrapped taxonomy's own `Display`, so the
     /// operator line of a typed failure cannot drift from the message the taxonomy
@@ -133,7 +133,8 @@ impl HeldSection {
 }
 
 impl fmt::Display for HeldSection {
-    /// The refusal the channel writes, naming the holder and the remedy.
+    /// The refusal the failure channel reports, naming the holder and the
+    /// remedy.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -218,7 +219,8 @@ pub enum TransportRefusal {
 }
 
 impl fmt::Display for TransportRefusal {
-    /// The refusal the shared channel writes, naming the target and the remedy.
+    /// The refusal the failure channel reports, naming the target and the
+    /// remedy.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnrecognisedTarget { scheme, url } => {
@@ -262,7 +264,7 @@ impl fmt::Display for TransportRefusal {
     }
 }
 
-/// A failure of the toolchain, as the shared operator channel reports it.
+/// A failure of the toolchain, as the failure channel reports it.
 ///
 /// The value carries the finished line rather than a message rendered later,
 /// because the process writes exactly one line per failure and a command that
@@ -270,7 +272,7 @@ impl fmt::Display for TransportRefusal {
 /// context before the line reaches the channel.
 #[derive(Debug)]
 pub struct CliError {
-    /// The line the channel writes, already rendered.
+    /// The line the failure channel writes, already rendered.
     message: String,
     /// The typed failure the line was rendered from, when the failure belongs to a
     /// named taxonomy.
@@ -325,7 +327,7 @@ impl CliError {
 }
 
 impl fmt::Display for CliError {
-    /// The line the shared channel writes, exactly as the failure rendered it.
+    /// The line the failure channel writes, exactly as the failure rendered it.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.message)
     }

@@ -1846,7 +1846,7 @@ fn a_refused_sink_installation_reports_what_did_not_take_effect() {
 }
 
 #[test]
-fn a_command_report_reaches_the_shared_channel() {
+fn a_command_report_reaches_the_report_channel() {
     let dir = scratch("report-channel");
 
     // A committed checkpoint keeps the command offline while it still produces a
@@ -1875,8 +1875,8 @@ fn a_command_report_reaches_the_shared_channel() {
     ])
     .expect("the command reports instead of failing");
 
-    // The bytes the report produces are exactly the bytes the shared channel
-    // declares, so routing the report through the channel lost nothing.
+    // The bytes the report produces are exactly the bytes the report channel
+    // declares, so routing the report through it lost nothing.
     let mut routed = Vec::new();
     output
         .write_into(&mut routed)
@@ -1899,7 +1899,7 @@ fn a_command_report_reaches_the_shared_channel() {
 }
 
 #[test]
-fn a_command_failure_reaches_the_shared_channel() {
+fn a_command_failure_reaches_the_failure_channel() {
     let dir = scratch("failure-channel");
 
     let error = run_cli(vec![
@@ -1915,7 +1915,8 @@ fn a_command_failure_reaches_the_shared_channel() {
     .expect_err("a missing checkpoint fails the prune");
 
     // The failure the process boundary prints is shaped by the same helper the
-    // reports travel, so the two classes of operator output cannot diverge.
+    // reports travel through, so the two classes of operator output differ in
+    // their destination alone.
     let mut routed = Vec::new();
     write_message(&mut routed, MessageClass::Failure, &error.to_string())
         .expect("writing to a buffer cannot fail");

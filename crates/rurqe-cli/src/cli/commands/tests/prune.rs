@@ -70,7 +70,7 @@ fn a_dry_run_keeps_every_script_in_place() {
 }
 
 #[test]
-fn a_pruned_report_reaches_the_operator_through_the_shared_channel() {
+fn a_pruned_report_reaches_the_operator_through_the_report_channel() {
     let dir = workspace("prune-channel");
     let migrations_dir = dir.join("migrations");
     scripts(&migrations_dir, &["V1__init.sql", "V2__orders.sql"]);
