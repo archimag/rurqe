@@ -5,7 +5,9 @@ The promise "valid SQL or a compile error" cannot be expressed entirely inside t
 1. **The compiler (Gate 1)** enforces relational invariants expressible as positive assertions: relation scope isolation, outer-join nullability lifting, typestates, dialect capability gating, and the grouping coverage of a query that grouped its rows.
 2. **Validation inside `.build()` (Gate 2)** enforces the rules that need a negative assertion (absence of duplicate unaliased relations), a cross-clause alignment (`DISTINCT ON` prefix matching leading `ORDER BY`), or a statement-level aggregation the builder typestates never saw: an aggregate projected beside a bare column without a grouping (`UngroupedColumnWithAggregate`), and the ordering, deduplication, and `HAVING` clauses of a collapsed statement.
 
-A statement that passes both gates is guaranteed valid for the target dialect and engine version. Both gates decide the statement before any I/O: assembling a query performs no I/O and carries no runtime or connection type, so the terminal method alone determines whether execution is awaited or synchronous.
+A statement that passes both gates is valid SQL for the target dialect and engine version, provided its schema markers describe the live catalog. The guarantee covers the assembled statement. It does not cover the execution: the engine stays a third gate, so a constraint violation, a missing permission, or an invalid connection state surfaces from the terminal call as an `ExecutionError`.
+
+Both gates decide the statement before any I/O: assembling a query performs no I/O and carries no runtime or connection type, so the terminal method alone determines whether execution is awaited or synchronous.
 
 ## Gate 1: The Compiler
 
