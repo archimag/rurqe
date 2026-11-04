@@ -1,3 +1,4 @@
+use crate::discover::{discover_config_in, discover_or_default_in, read_discovered};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -821,57 +822,6 @@ fn malformed_entries_are_reported_with_their_line() {
     );
 }
 
-/// The nearest `rurqe.toml` at or above `start`, spelled out as the walk is specified.
-///
-/// The scratch trees live in the host's temporary directory, and the directories above
-/// it belong to the host, so a test that pins the absence tier compares against this
-/// expectation unconditionally instead of asserting only when no ancestor declares a
-/// configuration: the expectation is absence on a host that keeps none, and the host's
-/// own file otherwise.
-///
-/// Each candidate is classified the way the walk classifies it, rather than through a
-/// presence predicate that answers every failure as absence: a host keeping something
-/// else at that path, or holding it beyond a directory it does not let the process
-/// search, is reported as the refusal the walk produces.
-fn nearest_declared_config(start: &Path) -> Result<Option<PathBuf>, ConfigError> {
-    for ancestor in start.ancestors() {
-        let candidate = ancestor.join(DEFAULT_CONFIG_PATH);
-
-        match std::fs::metadata(&candidate) {
-            Ok(metadata) if metadata.is_file() => return Ok(Some(candidate)),
-            Ok(_) => {
-                return Err(ConfigError::NotARegularFile {
-                    path: candidate.display().to_string(),
-                });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(ConfigError::Io {
-                    path: candidate.display().to_string(),
-                    source: error,
-                });
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-/// Asserts that `discovered` answers the tier the host above the scratch tree implies.
-///
-/// The two answers are compared through their rendering rather than by value, because the
-/// `Io` refusal carries the operating-system error a probe observed, and two probes of
-/// one path do not produce equal errors.
-fn assert_same_walk_tier(
-    discovered: Result<Option<PathBuf>, ConfigError>,
-    expected: Result<Option<PathBuf>, ConfigError>,
-) {
-    let answered = discovered.map_err(|error| error.to_string());
-    let implied = expected.map_err(|error| error.to_string());
-
-    assert_eq!(answered, implied, "the walk answers the tier the host implies");
-}
-
 /// Sets the permission bits of `directory` to `mode`.
 #[cfg(unix)]
 fn set_directory_mode(directory: &Path, mode: u32) {
@@ -1481,6 +1431,11 @@ fn a_dangling_symlink_at_a_candidate_reads_as_absence() {
     assert_eq!(directory, root.to_path_buf());
 }
 
+/// The absence tier over a chain the test determines: the walk is handed exactly the
+/// directories the test created, so the answer is the literal `None` the chain implies
+/// rather than a second implementation of the walk beside it. A `rurqe.toml` somewhere
+/// above the system temporary directory takes no part in the answer, which keeps the
+/// expectation a property of the tree instead of a property of the build host.
 #[test]
 fn a_directory_tree_without_a_configuration_file_yields_none() {
     let project = temporary_project("absent");
@@ -1488,14 +1443,10 @@ fn a_directory_tree_without_a_configuration_file_yields_none() {
     let nested = root.join("crates").join("app");
     std::fs::create_dir_all(&nested).expect("the nested directories are created");
 
-    // The tree declares no configuration of its own, so the walk leaves it and answers
-    // with the nearest declaration above it: absence on a host that keeps none, and the
-    // host's own file otherwise. Comparing against the exact expectation keeps the tier
-    // checked in both cases instead of skipping it when an ancestor declares one.
-    let discovered = discover_config(&nested);
-    let expected = nearest_declared_config(&nested);
+    let chain = [nested.as_path(), root];
+    let discovered = discover_config_in(chain).expect("no candidate declares a configuration");
 
-    assert_same_walk_tier(discovered, expected);
+    assert_eq!(discovered, None);
 }
 
 #[test]
@@ -1694,6 +1645,9 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
     );
 }
 
+/// The default tier over a chain the test determines: a tree that declares no
+/// configuration is an ordinary project, so the answer is the engine-neutral defaults
+/// anchored at the directory the caller started from.
 #[test]
 fn discover_or_default_without_a_configuration_yields_the_default() {
     let project = temporary_project("discover-default");
@@ -1701,32 +1655,12 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
     let nested = root.join("crates").join("app");
     std::fs::create_dir_all(&nested).expect("the nested directories are created");
 
-    // The tree declares no configuration, so the walk leaves it: the answer is the
-    // defaults anchored at the caller's directory on a host that keeps none, and the
-    // host's own declaration otherwise. Every tier asserts, so the test never passes
-    // without checking the tier it describes.
-    let answer = discover_or_default(&nested);
+    let chain = [nested.as_path(), root];
+    let answer = discover_or_default_in(&nested, chain);
+    let (configuration, directory) = answer.expect("no configuration is declared");
 
-    match nearest_declared_config(&nested) {
-        Ok(None) => {
-            let (configuration, directory) =
-                answer.expect("a walk over absent candidates answers the defaults");
-
-            assert_eq!(configuration, CodegenConfig::default());
-            assert_eq!(directory, nested, "the default is anchored at the caller");
-        }
-        Ok(Some(declared)) => {
-            let anchor = declared.parent().expect("a configuration file sits in a directory");
-            let (_, directory) = answer.expect("the answer comes from the host above");
-
-            assert_eq!(directory.as_path(), anchor, "the answer comes from the host above");
-        }
-        Err(expected) => {
-            let error = answer.expect_err("the walk refuses the candidate the host keeps");
-
-            assert_eq!(error.to_string(), expected.to_string(), "the walk reports the host");
-        }
-    }
+    assert_eq!(configuration, CodegenConfig::default());
+    assert_eq!(directory, nested, "the default is anchored at the caller");
 }
 
 #[test]
@@ -1865,29 +1799,12 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
         read_discovered(&path, &member).expect("an absent file is the walk's own tier");
     assert_eq!(vanished, (CodegenConfig::default(), member.clone()));
 
-    // A tree that never declared one answers the same tuple whenever the host above the
-    // scratch tree declares none either; when the host does declare one, the answer comes
-    // from that file. Every tier is asserted instead of skipping the comparison.
-    match nearest_declared_config(&member) {
-        Ok(None) => assert_eq!(
-            discover_or_default(&member)
-                .expect("a walk over absent candidates answers the defaults"),
-            vanished
-        ),
-        Ok(Some(declared)) => {
-            let anchor = declared.parent().expect("a configuration file sits in a directory");
-            let (_, directory) =
-                discover_or_default(&member).expect("the answer comes from the host above");
-
-            assert_eq!(directory.as_path(), anchor, "the answer comes from the host above");
-        }
-        Err(expected) => {
-            let error = discover_or_default(&member)
-                .expect_err("the walk refuses the candidate the host keeps");
-
-            assert_eq!(error.to_string(), expected.to_string(), "the walk reports the host");
-        }
-    }
+    // The same chain the walk climbed answers the same tuple, so a configuration that
+    // vanished between the two filesystem calls and a tree that never declared one are
+    // one outcome rather than two that happen to agree.
+    let chain = [member.as_path(), root];
+    let absent = discover_or_default_in(&member, chain);
+    assert_eq!(absent.expect("no configuration is declared"), vanished);
 }
 
 /// The walk's absence tier answers with the defaults, so a file the walk did find is not
