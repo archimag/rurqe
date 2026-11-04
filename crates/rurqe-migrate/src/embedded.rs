@@ -108,7 +108,17 @@ use crate::version::MigrationVersion;
 ///
 /// A script name identifies one migration, so a collection refuses two entries
 /// sharing one script name: one run would otherwise apply two different bodies
-/// under a single recorded identity.
+    /// under a single recorded identity.
+    ///
+    /// A baked checkpoint and a baked snapshot that anchor different catalogs are
+    /// refused the same way, because the disagreement is decidable from the
+    /// artifacts alone: the cold-start marker lands at the higher of the newest
+    /// versioned migration and the pruned boundary, so a tail rising no higher
+    /// than that boundary puts the marker exactly at it — where the boundary
+    /// check measures it against the checkpoint hash. A snapshot anchoring
+    /// another digest is therefore refused at construction with
+    /// [`Error::IncoherentArtifacts`] instead of initialising a target every
+    /// later run rejects.
 ///
 /// A collection assembled from the full project artifacts —
 /// [`from_artifacts`](Self::from_artifacts) — carries the project checkpoint, the
@@ -175,6 +185,14 @@ impl EmbeddedMigrations {
     /// — so a malformed artifact is rejected before any connection is opened. An
     /// artifact the caller does not bake leaves the lifecycle step it feeds
     /// switched off without disturbing the others.
+    ///
+    /// A combination the artifacts contradict is refused here as well. The
+    /// cold-start marker lands at the higher of the newest versioned migration
+    /// and the pruned boundary, and a marker recorded exactly at the boundary is
+    /// measured against the checkpoint hash, so a baked snapshot anchoring
+    /// another digest while no versioned migration rises above the boundary is
+    /// rejected with [`Error::IncoherentArtifacts`] before a connection is
+    /// opened — instead of initialising the target and rejecting it afterwards.
     pub fn from_artifacts(artifacts: EmbeddedArtifacts<'_>) -> Result<Self, Error> {
         let mut parsed = Vec::with_capacity(artifacts.tail.len());
         for &(script, sql) in artifacts.tail {
@@ -235,6 +253,10 @@ impl EmbeddedMigrations {
     /// The scripts were parsed into a list this collection owns, so they are ordered
     /// where they already sit instead of being cloned into a second list, and the
     /// ordered result is shared behind an [`Arc`] rather than duplicated per run.
+    ///
+    /// A checkpoint and a snapshot that anchor different catalogs are refused
+    /// here too, since the disagreement is decidable from the artifacts alone:
+    /// [`validate_artifact_coherence`] holds the rule.
     fn with_artifacts(
         migrations: Vec<Migration>,
         checkpoint: Option<Checkpoint>,
@@ -243,6 +265,7 @@ impl EmbeddedMigrations {
     ) -> Result<Self, Error> {
         let ordered = Migrator::order_scripts(migrations);
         Migrator::validate_script_uniqueness(&ordered)?;
+        validate_artifact_coherence(&ordered, checkpoint.as_ref(), schema_hash)?;
         Ok(Self {
             migrations: Arc::from(ordered),
             checkpoint,
@@ -414,22 +437,12 @@ impl EmbeddedMigrations {
     /// higher, and `0` for a collection declaring neither. Repeatable migrations
     /// carry no version, so they stay outside the boundary and run after the cold
     /// start has created the stage.
+    ///
+    /// The value comes from [`marker_version_of`], which the constructor shares:
+    /// the refusal of incoherent artifacts asks the same question about the
+    /// scripts a collection is about to own.
     fn marker_version(&self) -> Result<MigrationVersion, Error> {
-        let tail = self
-            .migrations
-            .iter()
-            .filter_map(|migration| migration.version.as_ref())
-            .max()
-            .cloned();
-        let boundary = self
-            .checkpoint
-            .as_ref()
-            .map(|checkpoint| checkpoint.pruned_up_to_version().clone());
-
-        match tail.max(boundary) {
-            Some(version) => Ok(version),
-            None => "0".parse(),
-        }
+        marker_version_of(&self.migrations, self.checkpoint.as_ref())
     }
 
     /// Compares the catalog the run produced against the baked digest.
@@ -612,6 +625,68 @@ impl EmbeddedMigrations {
             .baseline_async(backend, version, description)
             .await
     }
+}
+
+/// The version the cold-start marker of a run lands at.
+///
+/// That is the newest versioned migration or the pruned boundary, whichever is
+/// higher, and `0` for a collection declaring neither: repeatable scripts carry
+/// no version, so they stay outside the boundary. The constructor asks the same
+/// question about the scripts a collection is about to own, so the two cannot
+/// disagree about where the marker lands.
+fn marker_version_of(
+    migrations: &[Migration],
+    checkpoint: Option<&Checkpoint>,
+) -> Result<MigrationVersion, Error> {
+    let tail = migrations
+        .iter()
+        .filter_map(|migration| migration.version.as_ref())
+        .max()
+        .cloned();
+    let boundary = checkpoint.map(|checkpoint| checkpoint.pruned_up_to_version().clone());
+
+    match tail.max(boundary) {
+        Some(version) => Ok(version),
+        None => "0".parse(),
+    }
+}
+
+/// Refuses baked artifacts that describe two different catalogs.
+///
+/// The refusal covers the disagreement decidable from the artifacts alone. When
+/// a collection bakes both a boundary marker and a snapshot, the cold-start
+/// marker lands where [`marker_version_of`] puts it, and the boundary check
+/// measures a marker recorded exactly at
+/// [`Checkpoint::pruned_up_to_version`] against [`Checkpoint::schema_hash`]. A
+/// versioned migration above the boundary moves the marker past it, where the
+/// checkpoint no longer describes the schema, so the marker is never measured
+/// and the disagreement is legitimate. With the marker at the boundary, two
+/// different digests mean the cold start would record the snapshot digest at a
+/// version measured against the checkpoint hash, and every run after it would be
+/// rejected — so the combination is refused here, before a connection is opened.
+fn validate_artifact_coherence(
+    migrations: &[Migration],
+    checkpoint: Option<&Checkpoint>,
+    snapshot: Option<Checksum>,
+) -> Result<(), Error> {
+    let (Some(checkpoint), Some(snapshot)) = (checkpoint, snapshot) else {
+        return Ok(());
+    };
+
+    let marker_version = marker_version_of(migrations, Some(checkpoint))?;
+    if marker_version != *checkpoint.pruned_up_to_version() {
+        return Ok(());
+    }
+
+    if snapshot == checkpoint.schema_hash() {
+        return Ok(());
+    }
+
+    Err(Error::IncoherentArtifacts {
+        pruned_up_to_version: checkpoint.pruned_up_to_version().to_string(),
+        snapshot_hash: snapshot.to_hex(),
+        checkpoint_hash: checkpoint.schema_hash().to_hex(),
+    })
 }
 
 /// Whether the target database carries no recorded history at all.

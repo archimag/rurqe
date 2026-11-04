@@ -61,6 +61,27 @@ pub enum Error {
         /// The duplicated script name.
         script: String,
     },
+    /// A baked `checkpoint.toml` and a baked `schema.lock` describe different
+    /// catalogs.
+    ///
+    /// The refusal covers the disagreement decidable from the artifacts alone.
+    /// The cold-start marker lands at the higher of the newest versioned
+    /// migration and the pruned boundary, and a marker recorded exactly at the
+    /// boundary is measured against the checkpoint hash. When no versioned
+    /// migration rises above the boundary, the marker lands on it, so a snapshot
+    /// anchoring another digest would be recorded there and rejected by that
+    /// measurement — after the cold start had already committed the stage, and
+    /// on every later run as well. The collection therefore refuses the
+    /// combination while it is still assembling its artifacts, before any
+    /// connection is opened.
+    IncoherentArtifacts {
+        /// The boundary version of the baked checkpoint.
+        pruned_up_to_version: String,
+        /// The catalog digest anchored by the baked `schema.lock` snapshot.
+        snapshot_hash: String,
+        /// The catalog digest anchored by the baked `checkpoint.toml`.
+        checkpoint_hash: String,
+    },
     /// A script's metadata does not fit the column that records it.
     ///
     /// The widths are a storage contract of the history table: an engine that
@@ -214,6 +235,19 @@ impl fmt::Display for Error {
                 f,
                 "duplicate migration script name `{script}`: every migration of a run must \
                  declare a distinct script name"
+            ),
+            Error::IncoherentArtifacts {
+                pruned_up_to_version,
+                snapshot_hash,
+                checkpoint_hash,
+            } => write!(
+                f,
+                "the baked `checkpoint.toml` and `schema.lock` describe different catalogs: the \
+                 checkpoint prunes history up to `{pruned_up_to_version}` with schema hash \
+                 `{checkpoint_hash}`, while the snapshot anchors `{snapshot_hash}`, and no \
+                 versioned migration rises above the boundary, so the cold-start marker would \
+                 land exactly at it; regenerate the checkpoint marker and the snapshot from one \
+                 state of the schema"
             ),
             Error::MetadataTooLong {
                 script,

@@ -41,7 +41,9 @@ The expansion itself parses nothing. Every artifact is baked as raw text through
 compilation: editing an artifact recompiles the binary that carries it. The text
 then reaches `EmbeddedMigrations::from_artifacts`, which parses it at startup with
 the very parsers the rest of the migration crate uses, so a malformed artifact is
-rejected before any connection is opened.
+rejected before any connection is opened. A combination the baked artifacts
+contradict is refused there as well, whether or not either text is malformed on
+its own.
 
 Four artifacts are baked, and each one is optional on its own:
 
@@ -145,6 +147,12 @@ distinguishes the cases instead of matching on text:
 
 - `DuplicateScriptName` refuses a collection carrying two entries under one script
   name, before a connection is opened.
+- `IncoherentArtifacts` refuses a collection whose baked boundary marker and
+  baked snapshot anchor different digests while no versioned script rises above
+  the pruned boundary: the cold-start marker would land exactly at that boundary,
+  where the boundary check measures it against the checkpoint hash, so the
+  combination is refused before a connection is opened instead of initialising a
+  target every later run rejects.
 - `FailedMigrationAlreadyApplied` refuses a run over a history that records an
   unsuccessful attempt: the attempt has to be cleared first.
 - `ChecksumMismatch` refuses an applied versioned script whose contents no longer

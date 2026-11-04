@@ -517,3 +517,133 @@ fn a_stage_without_a_catalog_artifact_anchors_its_own_digest() {
     .checksum();
     assert_eq!(backend.history[0].checksum, Some(expected));
 }
+
+/// A snapshot disagreeing with the boundary is refused at construction when the
+/// cold-start marker would land exactly on that boundary.
+///
+/// The marker sits at the higher of the newest versioned migration and the
+/// pruned boundary, and a marker recorded at the boundary is measured against
+/// the checkpoint hash. Recording the snapshot digest there would initialise the
+/// target and only then reject it — on every later run as well.
+#[test]
+fn a_snapshot_disagreeing_with_the_boundary_is_refused_at_construction() {
+    let boundary = Checksum::of(b"the boundary stage");
+    let snapshot = SchemaCatalog::default().to_lock();
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        boundary.to_hex()
+    );
+
+    let error = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
+        checkpoint: Some(marker.as_str()),
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect_err("the marker would land exactly at the boundary with the snapshot digest");
+
+    assert_eq!(
+        error,
+        Error::IncoherentArtifacts {
+            pruned_up_to_version: "2".to_owned(),
+            snapshot_hash: SchemaCatalog::default().checksum().to_hex(),
+            checkpoint_hash: boundary.to_hex(),
+        }
+    );
+}
+
+/// The refusal does not depend on a stage or a tail migration: a collection
+/// declaring neither still anchors its marker at the boundary it bakes.
+#[test]
+fn a_snapshot_disagreeing_with_the_boundary_is_refused_without_a_tail() {
+    let boundary = Checksum::of(b"the boundary stage");
+    let snapshot = SchemaCatalog::default().to_lock();
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        boundary.to_hex()
+    );
+
+    let error = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: Some(marker.as_str()),
+        stage: &[],
+        schema_lock: Some(&snapshot),
+    })
+    .expect_err("a collection declaring neither a tail nor a stage still anchors the boundary");
+
+    assert_eq!(
+        error,
+        Error::IncoherentArtifacts {
+            pruned_up_to_version: "2".to_owned(),
+            snapshot_hash: SchemaCatalog::default().checksum().to_hex(),
+            checkpoint_hash: boundary.to_hex(),
+        }
+    );
+}
+
+/// A versioned migration above the boundary lets the tail supersede the boundary
+/// state, so the checkpoint and the snapshot legitimately describe two different
+/// catalogs and the collection is assembled.
+#[test]
+fn a_versioned_script_above_the_boundary_keeps_the_artifacts_decodable() {
+    let boundary = Checksum::of(b"an earlier boundary stage");
+    let snapshot = SchemaCatalog::default().to_lock();
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        boundary.to_hex()
+    );
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V3__orders.sql", "CREATE TABLE orders (id INTEGER);")],
+        checkpoint: Some(marker.as_str()),
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("the tail supersedes the boundary state, so the digests may differ");
+
+    assert_eq!(embedded.len(), 1);
+    assert!(embedded.checkpoint().is_some());
+    assert!(embedded.schema_hash().is_some());
+}
+
+/// The refusal targets the disagreement, never the combination: agreeing digests
+/// at the boundary construct and complete the run they describe.
+#[test]
+fn an_agreeing_snapshot_initialises_the_boundary_target() {
+    let catalog = SchemaCatalog::default();
+    let snapshot = catalog.to_lock();
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        catalog.checksum().to_hex()
+    );
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: Some(marker.as_str()),
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("the baked artifacts describe one catalog");
+
+    let mut backend = InMemoryBackend::new();
+    backend.catalog_checksum = Some(catalog.checksum());
+
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the target is initialised at the boundary");
+
+    assert_eq!(
+        report.cold_start.expect("the cold start runs").stage_scripts,
+        vec!["users.sql"]
+    );
+    assert_eq!(report.applied_count, 0);
+
+    assert_eq!(backend.history.len(), 1);
+    let recorded = backend.history.first().expect("the marker is recorded");
+    assert!(recorded.success);
+    assert_eq!(recorded.checksum, Some(catalog.checksum()));
+    assert_eq!(
+        recorded.version.as_ref().map(ToString::to_string),
+        Some("2".to_owned())
+    );
+}
