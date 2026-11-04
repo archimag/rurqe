@@ -64,6 +64,11 @@ pub(super) fn decode(ty: &Type, payload: &[u8]) -> Option<Result<String, String>
 /// the codec of the type it carries. The families mirror the ones [`decode`]
 /// renders back into text, so a value read from a column of one of them stays
 /// writable to the column it came from in the same build.
+///
+/// A temporal value is checked against the calendar the days are counted in, so
+/// a day its month does not carry is refused instead of linearised into the
+/// following month, and `24:00:00` names the midnight that closes the day the
+/// value is written with.
 pub(super) fn encode(ty: &Type, text: &str, out: &mut BytesMut) -> Option<Result<(), String>> {
     #[cfg(not(feature = "uuid"))]
     {
@@ -85,13 +90,13 @@ pub(super) fn encode(ty: &Type, text: &str, out: &mut BytesMut) -> Option<Result
     #[cfg(not(feature = "chrono"))]
     {
         if ty == &Type::TIMESTAMP {
-            return Some(timestamp_octets(text, false, out));
+            return Some(temporal::timestamp_octets(text, false, out));
         }
         if ty == &Type::TIMESTAMPTZ {
-            return Some(timestamp_octets(text, true, out));
+            return Some(temporal::timestamp_octets(text, true, out));
         }
         if ty == &Type::DATE {
-            return Some(date_octets(text, out));
+            return Some(temporal::date_octets(text, out));
         }
     }
 
@@ -145,205 +150,8 @@ fn jsonb_octets(text: &str, out: &mut BytesMut) -> Result<(), String> {
     Ok(())
 }
 
-/// Microseconds between the Unix epoch and the PostgreSQL epoch of 2000-01-01.
 #[cfg(not(feature = "chrono"))]
-const POSTGRES_EPOCH_MICROSECONDS: i64 =
-    POSTGRES_EPOCH_DAYS * SECONDS_PER_DAY * MICROSECONDS_PER_SECOND;
-
-/// Encodes a `TIMESTAMP` or `TIMESTAMPTZ` value into microseconds since 2000-01-01.
-///
-/// A zoned value has the offset it declares subtracted, so the payload carries the
-/// instant it names rather than the civil time it was written as.
-#[cfg(not(feature = "chrono"))]
-fn timestamp_octets(text: &str, zoned: bool, out: &mut BytesMut) -> Result<(), String> {
-    let (days, micros, offset) = parse_civil(text)?;
-    let shift = if zoned { offset } else { 0 };
-
-    let since_epoch = days
-        .checked_mul(SECONDS_PER_DAY)
-        .and_then(|seconds| seconds.checked_sub(shift))
-        .and_then(|seconds| seconds.checked_mul(MICROSECONDS_PER_SECOND))
-        .and_then(|value| value.checked_add(micros))
-        .and_then(|value| value.checked_sub(POSTGRES_EPOCH_MICROSECONDS))
-        .ok_or_else(|| temporal_out_of_range(text))?;
-
-    out.extend_from_slice(&since_epoch.to_be_bytes());
-    Ok(())
-}
-
-/// Encodes a `DATE` value into days since 2000-01-01.
-#[cfg(not(feature = "chrono"))]
-fn date_octets(text: &str, out: &mut BytesMut) -> Result<(), String> {
-    let trimmed = text.trim();
-    let date = trimmed
-        .split_once([' ', 'T', 't'])
-        .map_or(trimmed, |(date, _)| date);
-
-    let days = parse_date(date, trimmed)? - POSTGRES_EPOCH_DAYS;
-    let days = i32::try_from(days).map_err(|_| temporal_out_of_range(trimmed))?;
-
-    out.extend_from_slice(&days.to_be_bytes());
-    Ok(())
-}
-
-/// Parses a civil date and time into days since the Unix epoch, microseconds of the
-/// day, and the offset from UTC the value declares.
-#[cfg(not(feature = "chrono"))]
-fn parse_civil(text: &str) -> Result<(i64, i64, i64), String> {
-    let trimmed = text.trim();
-    let (body, offset) = split_offset(trimmed)?;
-    let (date, time) = match body.split_once([' ', 'T', 't']) {
-        Some((date, time)) => (date, time),
-        None => (body, "00:00:00"),
-    };
-
-    Ok((parse_date(date, trimmed)?, parse_time(time, trimmed)?, offset))
-}
-
-/// Splits the offset from UTC off the end of a temporal value.
-///
-/// A `Z` suffix and a `+HH:MM`, `+HHMM`, or `+HH:MM:SS` suffix all declare the zone
-/// the value is written in. Only a sign after the separator between the date and
-/// the time declares one, because the date part carries hyphens of its own.
-#[cfg(not(feature = "chrono"))]
-fn split_offset(text: &str) -> Result<(&str, i64), String> {
-    if let Some(body) = text.strip_suffix(['Z', 'z']) {
-        return Ok((body.trim_end(), 0));
-    }
-
-    let Some(separator) = text.find([' ', 'T', 't']) else {
-        return Ok((text, 0));
-    };
-    let Some(after) = text.get(separator..) else {
-        return Ok((text, 0));
-    };
-    let Some(position) = after.rfind(['+', '-']) else {
-        return Ok((text, 0));
-    };
-    let boundary = separator.saturating_add(position);
-    let (Some(body), Some(zone)) = (text.get(..boundary), text.get(boundary..)) else {
-        return Ok((text, 0));
-    };
-
-    Ok((body.trim_end(), parse_offset(zone, text)?))
-}
-
-/// Parses the offset `zone` into the seconds it declares.
-#[cfg(not(feature = "chrono"))]
-fn parse_offset(zone: &str, whole: &str) -> Result<i64, String> {
-    let malformed = || format!("`{whole}` carries the invalid offset `{zone}`");
-    let (negative, digits) = match zone.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, zone.strip_prefix('+').ok_or_else(|| malformed())?),
-    };
-
-    let digits: String = digits.chars().filter(|character| *character != ':').collect();
-    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(malformed());
-    }
-    let (hours, minutes, seconds) = match digits.len() {
-        2 => (digits.as_str(), "00", "00"),
-        4 => {
-            let (hours, minutes) = digits.split_at(2);
-            (hours, minutes, "00")
-        }
-        6 => {
-            let (hours, minutes) = digits.split_at(2);
-            let (minutes, seconds) = minutes.split_at(2);
-            (hours, minutes, seconds)
-        }
-        _ => return Err(malformed()),
-    };
-
-    let field = |text: &str| text.parse::<i64>().map_err(|_| malformed());
-    let total = field(hours)? * 3_600 + field(minutes)? * 60 + field(seconds)?;
-    if !(0..86_400).contains(&total) {
-        return Err(malformed());
-    }
-
-    Ok(if negative { -total } else { total })
-}
-
-/// Parses a `YYYY-MM-DD` date into days since the Unix epoch.
-#[cfg(not(feature = "chrono"))]
-fn parse_date(date: &str, whole: &str) -> Result<i64, String> {
-    let malformed = || format!("`{whole}` does not carry a `YYYY-MM-DD` date");
-    let (year, rest) = date.split_once('-').ok_or_else(|| malformed())?;
-    let (month, day) = rest.split_once('-').ok_or_else(|| malformed())?;
-
-    let field = |text: &str| text.parse::<i64>().map_err(|_| malformed());
-    let year = field(year)?;
-    let month = u32::try_from(field(month)?).map_err(|_| malformed())?;
-    let day = u32::try_from(field(day)?).map_err(|_| malformed())?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return Err(format!("`{whole}` carries the invalid date `{date}`"));
-    }
-
-    Ok(days_from_civil(year, month, day))
-}
-
-/// Parses a `HH:MM:SS[.ffffff]` time into microseconds of the day.
-#[cfg(not(feature = "chrono"))]
-fn parse_time(time: &str, whole: &str) -> Result<i64, String> {
-    let malformed = || format!("`{whole}` does not carry a `HH:MM:SS` time");
-    let (clock, fraction) = match time.split_once('.') {
-        Some((clock, fraction)) => (clock, Some(fraction)),
-        None => (time, None),
-    };
-
-    let mut fields = clock.split(':');
-    let hours = fields.next().unwrap_or("0");
-    let minutes = fields.next().unwrap_or("0");
-    let seconds = fields.next().unwrap_or("0");
-    if fields.next().is_some() {
-        return Err(malformed());
-    }
-
-    let field = |text: &str| text.parse::<i64>().map_err(|_| malformed());
-    let hours = field(hours)?;
-    let minutes = field(minutes)?;
-    let seconds = field(seconds)?;
-    if !(0..24).contains(&hours) || !(0..60).contains(&minutes) || !(0..60).contains(&seconds) {
-        return Err(format!("`{whole}` carries the invalid time `{time}`"));
-    }
-
-    let mut micros = 0i64;
-    if let Some(fraction) = fraction {
-        let digits: String = fraction.chars().take(6).collect();
-        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(malformed());
-        }
-        let value = digits.parse::<i64>().map_err(|_| malformed())?;
-        let missing = u32::try_from(6 - digits.len()).map_err(|_| malformed())?;
-        micros = value * 10i64.pow(missing);
-    }
-
-    Ok((hours * 3_600 + minutes * 60 + seconds) * MICROSECONDS_PER_SECOND + micros)
-}
-
-/// Converts a proleptic Gregorian civil date into days since the Unix epoch.
-///
-/// The conversion is the inverse of
-/// [`civil_from_days`](rurqe_core::calendar::civil_from_days), so a value the
-/// decoder renders is parsed back into the day count it was stored as.
-#[cfg(not(feature = "chrono"))]
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let month = i64::from(month);
-    let shifted_year = if month <= 2 { year - 1 } else { year };
-    let era = shifted_year.div_euclid(400);
-    let year_of_era = shifted_year - era * 400;
-    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-
-    era * 146_097 + day_of_era - 719_468
-}
-
-/// Describes a temporal value outside the range its column can hold.
-#[cfg(not(feature = "chrono"))]
-fn temporal_out_of_range(text: &str) -> String {
-    format!("`{text}` is out of the range of its temporal column")
-}
+mod temporal;
 
 /// Renders a `UUID` payload — 16 octets in network order — in its hyphenated form.
 #[cfg(not(feature = "uuid"))]
@@ -399,6 +207,10 @@ const MICROSECONDS_PER_SECOND: i64 = 1_000_000;
 /// Seconds in one day.
 #[cfg(not(feature = "chrono"))]
 const SECONDS_PER_DAY: i64 = 86_400;
+
+/// Microseconds in one day, the value `24:00:00` names.
+#[cfg(not(feature = "chrono"))]
+const MICROSECONDS_PER_DAY: i64 = SECONDS_PER_DAY * MICROSECONDS_PER_SECOND;
 
 /// Renders a `TIMESTAMP` payload, which holds microseconds since 2000-01-01.
 #[cfg(not(feature = "chrono"))]
@@ -689,6 +501,80 @@ mod tests {
 
         assert!(encode(&Type::DATE, "not-a-date", &mut BytesMut::new())
             .expect("a date column is encoded from text")
+            .is_err());
+    }
+
+    #[cfg(not(feature = "chrono"))]
+    #[test]
+    fn a_date_its_month_does_not_carry_is_refused() {
+        let accepts = |text: &str| {
+            encode(&Type::DATE, text, &mut BytesMut::new())
+                .expect("a date column is encoded from text")
+                .is_ok()
+        };
+
+        // An impossible day would otherwise linearise into the following month,
+        // so the value is refused exactly as the engine refuses it.
+        assert!(!accepts("2024-02-30"));
+        assert!(!accepts("2023-02-29"));
+        assert!(!accepts("1900-02-29"));
+        assert!(!accepts("2023-04-31"));
+        assert!(!accepts("2024-06-31"));
+        assert!(!accepts("2024-13-01"));
+        assert!(!accepts("2024-00-10"));
+        assert!(!accepts("2024-01-32"));
+        assert!(!accepts("2024-04-00"));
+
+        assert!(accepts("2024-02-29"));
+        assert!(accepts("2000-02-29"));
+        assert!(accepts("2024-04-30"));
+        assert!(accepts("2024-12-31"));
+    }
+
+    #[cfg(not(feature = "chrono"))]
+    #[test]
+    fn the_closing_midnight_belongs_to_the_following_day() {
+        let payload = |ty: &Type, text: &str| {
+            let mut out = BytesMut::new();
+            encode(ty, text, &mut out)
+                .expect("the column family is encoded from text")
+                .expect("the value is a temporal one");
+            out.to_vec()
+        };
+
+        // `24:00:00` is the one value of the 24th hour the engine accepts, and it
+        // names the midnight that closes the day it is written with.
+        let closing = payload(&Type::TIMESTAMP, "2024-01-02 24:00:00");
+        assert_eq!(
+            decode(&Type::TIMESTAMP, &closing),
+            Some(Ok("2024-01-03 00:00:00".to_owned()))
+        );
+        assert_eq!(closing, payload(&Type::TIMESTAMP, "2024-01-03 00:00:00"));
+
+        // A date column truncates the time part, so the closing midnight still
+        // selects the day that follows.
+        assert_eq!(
+            decode(&Type::DATE, &payload(&Type::DATE, "2024-01-02 24:00:00")),
+            Some(Ok("2024-01-03".to_owned()))
+        );
+        assert_eq!(
+            decode(&Type::DATE, &payload(&Type::DATE, "2024-01-02 23:59:59")),
+            Some(Ok("2024-01-02".to_owned()))
+        );
+
+        // The declared zone is subtracted after the rollover.
+        let zoned = payload(&Type::TIMESTAMPTZ, "2024-01-02 24:00:00+02:00");
+        assert_eq!(
+            decode(&Type::TIMESTAMPTZ, &zoned),
+            Some(Ok("2024-01-02T22:00:00+00:00".to_owned()))
+        );
+
+        // Any other value of the 24th hour is out of range.
+        assert!(encode(&Type::TIMESTAMP, "2024-01-02 24:00:01", &mut BytesMut::new())
+            .expect("a timestamp column is encoded from text")
+            .is_err());
+        assert!(encode(&Type::TIMESTAMP, "2024-01-02 24:00:00.5", &mut BytesMut::new())
+            .expect("a timestamp column is encoded from text")
             .is_err());
     }
 }
