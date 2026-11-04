@@ -17,12 +17,12 @@
 
 use std::collections::BTreeSet;
 use std::ops::Range;
-use std::path::{Component, Path};
-
 use toml_edit::{ImDocument, Item, TableLike};
 
+use self::paths::read_required_path;
 use super::{CodegenConfig, ConfigError, DEFAULT_SCHEMA, OverridePath};
 
+mod paths;
 /// The document-root key naming the database schema every catalog digest describes.
 const SCHEMA_KEY: &str = "schema";
 
@@ -433,99 +433,13 @@ impl CodegenConfig {
     }
 }
 
-/// Reads a key whose value is a non-empty string, trimmed of surrounding space.
-fn read_required_string(
-    contents: &str,
-    span: Option<Range<usize>>,
-    item: &Item,
-    key: &str,
-) -> Result<String, ConfigError> {
-    let value = item.as_str().ok_or_else(|| {
-        syntax_error(contents, span.clone(), format!("`{key}` must be a string"))
-    })?;
-    let value = value.trim();
-
-    if value.is_empty() {
-        return Err(syntax_error(
-            contents,
-            span,
-            format!("`{key}` requires a non-empty value"),
-        ));
-    }
-
-    Ok(value.to_owned())
-}
-
-/// Reads a key whose value is a path the document declares.
-///
-/// The value is read like any other string and then resolved against the
-/// directory holding `rurqe.toml`, so it is written as the plain relative path it
-/// resolves to, and [`validate_declared_path`] refuses a value that would place
-/// the artifact elsewhere.
-fn read_required_path(
-    contents: &str,
-    span: Option<Range<usize>>,
-    item: &Item,
-    key: &str,
-) -> Result<String, ConfigError> {
-    let value = read_required_string(contents, span.clone(), item, key)?;
-
-    validate_declared_path(contents, span, key, &value)?;
-
-    Ok(value)
-}
-
-/// Refuses a declared path that names its location through anything but a plain
-/// relative path.
-///
-/// A value the host reads as absolute or rooted replaces the configuration
-/// directory entirely, and a `..` segment rewrites the position the path has
-/// reached, so neither shape is accepted: the refusal covers the segment itself,
-/// a round trip such as `ddl/../schema` included.
-fn validate_declared_path(
-    contents: &str,
-    span: Option<Range<usize>>,
-    key: &str,
-    value: &str,
-) -> Result<(), ConfigError> {
-    let path = Path::new(value);
-
-    if matches!(
-        path.components().next(),
-        Some(Component::Prefix(_) | Component::RootDir)
-    ) {
-        return Err(syntax_error(
-            contents,
-            span,
-            format!(
-                "`{key}` must be a path relative to the directory holding the configuration \
-                 file; `{value}` is absolute and would discard it"
-            ),
-        ));
-    }
-
-    if path
-        .components()
-        .any(|component| component == Component::ParentDir)
-    {
-        return Err(syntax_error(
-            contents,
-            span,
-            format!(
-                "`{key}` must be a path without a `..` segment; `{value}` contains one, and \
-                 every such segment is refused, including a round trip that ends back inside \
-                 the directory holding the configuration file"
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
 /// Reads a document-root key naming one database schema.
 ///
 /// The name decides which catalog a digest describes, so a value that is not a
-/// string and a blank one are both refused where they are declared.
+/// string, a blank one, and one carrying a `.` are each refused where they are
+/// declared. The dot is refused because the override grammar reserves it as the
+/// separator of a `schema.table.column` path, so a schema whose name contains one
+/// could never be addressed by a `codegen.type_overrides` entry.
 fn read_schema_name(
     contents: &str,
     span: Option<Range<usize>>,
@@ -550,13 +464,17 @@ fn read_schema_name(
         ));
     }
 
+    validate_schema_name(contents, span, key, name)?;
+
     Ok(name.to_owned())
 }
 
 /// Reads the document-root `schemas` array naming the secondary schemas.
 ///
 /// Every entry is trimmed and has to be non-empty, and a name may appear once,
-/// because a repeated entry would introspect the same catalog twice. A rejected
+/// because a repeated entry would introspect the same catalog twice. A name
+/// carrying a `.` is refused exactly like one the primary-schema key declares,
+/// because the override grammar reserves the dot as a path separator. A rejected
 /// entry is reported at the entry itself and named by its index as well.
 fn read_schemas(
     contents: &str,
@@ -577,12 +495,15 @@ fn read_schemas(
     for (index, value) in array.iter().enumerate() {
         // The span of the entry itself, falling back to the key of the array.
         let entry_span = value.span().or_else(|| span.clone());
+        // The entry is named by its index wherever it is refused, because TOML
+        // records no position of its own for an element of an array.
+        let key = format!("{SCHEMAS_KEY}[{index}]");
 
         let raw = value.as_str().ok_or_else(|| {
             syntax_error(
                 contents,
                 entry_span.clone(),
-                format!("`{SCHEMAS_KEY}[{index}]` must be a database schema name string"),
+                format!("`{key}` must be a database schema name string"),
             )
         })?;
 
@@ -592,9 +513,11 @@ fn read_schemas(
             return Err(syntax_error(
                 contents,
                 entry_span,
-                format!("`{SCHEMAS_KEY}[{index}]` requires a database schema name"),
+                format!("`{key}` requires a database schema name"),
             ));
         }
+
+        validate_schema_name(contents, entry_span.clone(), &key, name)?;
 
         if !seen.insert(name.to_owned()) {
             return Err(syntax_error(
@@ -608,6 +531,35 @@ fn read_schemas(
     }
 
     Ok(names)
+}
+
+/// Refuses a schema name the override grammar could never address.
+///
+/// A `codegen.type_overrides` path is `table.column` or `schema.table.column`, so
+/// the grammar reserves `.` as the separator between its segments: a schema whose
+/// name contains one could never be named by an override, and
+/// [`validate_override_schemas`] would refuse every path that tried. The
+/// declaration is therefore refused at the key that names the schema, instead of
+/// leaving the mismatch for the operator to discover.
+fn validate_schema_name(
+    contents: &str,
+    span: Option<Range<usize>>,
+    key: &str,
+    name: &str,
+) -> Result<(), ConfigError> {
+    if !name.contains('.') {
+        return Ok(());
+    }
+
+    Err(syntax_error(
+        contents,
+        span,
+        format!(
+            "`{key}` names the schema `{name}`; a `.` separates the segments of an override \
+             path (`schema.table.column`), so a schema whose name contains one can never be \
+             addressed by `codegen.type_overrides`"
+        ),
+    ))
 }
 
 /// Validates an override path and answers the segments it addresses.

@@ -200,7 +200,11 @@ impl CodegenConfig {
     /// the diagnostic carries the position of both keys. `schemas` may neither
     /// repeat a name nor name the primary schema itself — the declared one, or
     /// the `public` default when neither key names one — because a secondary list
-    /// containing the primary schema would describe the same catalog twice.
+    /// containing the primary schema would describe the same catalog twice. No
+    /// declaration names a schema containing a `.` either: the override grammar
+    /// reserves the character as the separator of a `schema.table.column` path, so
+    /// such a name could never be addressed by a `codegen.type_overrides` entry,
+    /// and the declaration is refused where it is written.
     ///
     /// The artifact keys follow the same rules as every other key of the
     /// document: `root` and the `dir`, `checkpoint`, and `output` keys of their

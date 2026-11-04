@@ -188,6 +188,44 @@ fn schemas_with_duplicates_are_rejected() {
     assert!(matches!(&err, ConfigError::Syntax { line: 1, .. }), "{err}");
     assert!(err.to_string().contains("duplicate schema `auth`"), "{err}");
 }
+/// `.` separates the segments of an override path, so a schema whose name carries
+/// one could never be addressed by a `codegen.type_overrides` entry. The refusal
+/// lands on whichever declaration names the schema, and it quotes the trimmed name.
+#[test]
+fn a_schema_name_containing_a_dot_is_refused() {
+    for (contents, key, name) in [
+        ("primary_schema = \"app.v2\"\n", "`primary_schema`", "app.v2"),
+        ("schema = \"  app.v2  \"\n", "`schema`", "app.v2"),
+        (
+            "schemas = [\"auth\", \" billing.v2 \"]\n",
+            "`schemas[1]`",
+            "billing.v2",
+        ),
+    ] {
+        let err = CodegenConfig::parse(contents)
+            .expect_err("no override can ever address a schema name carrying a dot");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 1, .. }),
+            "the declaration is reported where it is written: {err}"
+        );
+
+        let message = err.to_string();
+        assert!(message.contains(key), "the key is named: {message}");
+        assert!(
+            message.contains(&format!("`{name}`")),
+            "the trimmed name is quoted: {message}"
+        );
+        assert!(
+            message.contains("schema.table.column"),
+            "the refusal names the separator it collides with: {message}"
+        );
+        assert!(
+            message.contains("codegen.type_overrides"),
+            "the refusal names what can never address the schema: {message}"
+        );
+    }
+}
 
 #[test]
 fn schema_entries_are_reported_at_their_own_position() {

@@ -187,6 +187,12 @@ invalid configuration at line 1, column 1: `primary_schema` requires a database 
 
 A value that is not a string at all is refused in its place, with `` `primary_schema` must be a database schema name string ``.
 
+A name containing a `.` is refused as well, and the same rule covers every declaration that names a schema — `primary_schema`, its legacy `schema` alias, and each entry of `schemas` — because the override grammar reserves the character as the separator of a `schema.table.column` path: a schema spelled that way could never be addressed by a `codegen.type_overrides` entry, so the mismatch is refused at the declaration instead of surfacing later as an override that never applies. The diagnostic names the declaration and the value:
+
+```text
+invalid configuration at line 1, column 1: `primary_schema` names the schema `app.v2`; a `.` separates the segments of an override path (`schema.table.column`), so a schema whose name contains one can never be addressed by `codegen.type_overrides`
+```
+
 ### The legacy `schema` key
 
 `schema` names the same setting under its older spelling, so a project that already declares it keeps working without an edit. The two keys are one setting rather than two, and declaring both is refused instead of ranked: the file would otherwise name two primary schemas without saying which one wins. The refusal sits on the legacy key — the declaration whose removal remedies the file — and it names the position of `primary_schema`, so both are located at once:
