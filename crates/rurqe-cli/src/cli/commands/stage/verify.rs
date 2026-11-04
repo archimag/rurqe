@@ -16,6 +16,7 @@ use crate::config::SchemaSelection;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::GoldenEquation;
 
+use super::commit::{refuse_cross_engine_scratch, refuse_scratch_over_project_file};
 use super::lock::CheckpointLock;
 use super::{boundary_dir, carry_recovery, load_stage, path_exists};
 
@@ -28,6 +29,14 @@ use super::{boundary_dir, carry_recovery, load_stage, path_exists};
 /// instead of an empty `public`; the selection is the one the surrounding
 /// commands resolve, and a SQLite scratch holds a single unnamed catalog that
 /// ignores it.
+///
+/// `database_url` names the database the project actually targets, and is read
+/// for its engine alone: the scratch target stands in for that engine, so a
+/// scratch database of another engine is refused before the section is taken
+/// instead of replaying the boundary in an engine that can never reproduce the
+/// checkpoint digest. The verification never connects to it, and an invocation
+/// that names no `--scratch-url` hands the very same database over as the scratch
+/// target.
 ///
 /// `scratch_url` names the scratch database both sides are materialised in; see
 /// [`GoldenEquation`] for its emptiness contract. A commit an interrupted process
@@ -51,9 +60,31 @@ pub(crate) fn verify_stage(
     base_stage_dir: Option<&Path>,
     migrations_dir: &Path,
     checkpoint_path: &Path,
+    database_url: Option<&str>,
     selection: &SchemaSelection,
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
+    // A scratch target the invocation named beside the project database has to
+    // speak the engine of that database: the checkpoint digest a verification
+    // compares against was recorded from a catalog introspected on the project
+    // engine, and the engine-neutral catalog still carries engine-resolved facts
+    // — PostgreSQL distinguishes an `INTEGER` from a `BIGINT`, while SQLite
+    // reports every integer as an integer — so a scratch database of another
+    // engine can never reproduce the digest and would report a diverged boundary
+    // instead of the substitution. The two guards are the ones a commit applies
+    // before it takes its own section: the cross-engine refusal, and the refusal
+    // of a scratch naming the project database a file-backed replay would delete
+    // once its side ends. Both run before the section is taken, so a refused
+    // verification writes no artifact and repairs no interrupted commit. An
+    // invocation that names no `--scratch-url` hands the very same database over
+    // as the scratch target, so the cross-engine guard compares one target with
+    // itself while the file guard still refuses a SQLite database the two sides
+    // would delete.
+    if let Some(database_url) = database_url {
+        refuse_cross_engine_scratch(database_url, scratch_url)?;
+        refuse_scratch_over_project_file(database_url, scratch_url)?;
+    }
+
     // The section guards the repair and the reads of the marker, the boundary,
     // and the tail; it is released below, before the equation materialises
     // anything, because a verification writes no workspace artifact beyond the

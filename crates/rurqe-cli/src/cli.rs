@@ -381,14 +381,22 @@ pub(crate) fn run_cli_with_config(
             let stage_dir = project.stage_dir(stage_dir);
             let migrations_dir = migrations_dir.unwrap_or_else(|| project.migrations_dir());
             let checkpoint_path = checkpoint_path.unwrap_or_else(|| project.checkpoint_path());
-            let url = resolve_equation_url(scratch_url.or(database_url))?;
+            // `--database-url` names the database the project really targets, and
+            // `--scratch-url` the target both sides are materialised in. The
+            // verification never connects to the project database, so the URL is
+            // handed over for its engine alone, which is what lets a scratch of
+            // another engine be refused exactly as a commit refuses it; an
+            // invocation that names no `--scratch-url` falls back to that very
+            // database as its scratch target.
+            let scratch = resolve_equation_url(scratch_url.or_else(|| database_url.clone()))?;
             verify_stage(
                 &stage_dir,
                 base_stage_dir.as_deref(),
                 &migrations_dir,
                 &checkpoint_path,
+                database_url.as_deref(),
                 &selection,
-                &url,
+                &scratch,
             )
         }
         CliCommand::StageCommit {

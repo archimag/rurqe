@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::target::DatabaseDialect;
+
 use super::equation::GoldenReport;
 
 /// Failure of the Golden Equation verification.
@@ -30,11 +32,21 @@ pub enum StageError {
         pruned_up_to_version: String,
     },
     /// The base stage catalog hash does not match the checkpoint hash.
+    ///
+    /// The digest a checkpoint records is engine-specific, because the
+    /// engine-neutral catalog still carries engine-resolved facts: PostgreSQL
+    /// distinguishes an `INTEGER` from a `BIGINT`, while SQLite reports every
+    /// integer as an integer. A boundary replayed in a scratch database of
+    /// another engine therefore cannot reproduce it, and the variant names the
+    /// engine the replay ran in, so the substitution is visible instead of
+    /// reading as a diverged project.
     BaseStageHashMismatch {
         /// The hash expected by the checkpoint.
         expected: String,
         /// The actual catalog hash of the replayed base stage.
         actual: String,
+        /// The engine of the scratch database the boundary was replayed in.
+        engine: DatabaseDialect,
     },
     /// Both sides of the equation describe different schemas.
     Diverged(Box<GoldenReport>),
@@ -70,9 +82,20 @@ impl fmt::Display for StageError {
                  to reproduce the boundary, but none was supplied; re-run `stage commit` to \
                  snapshot the boundary next to `checkpoint.toml`, or pass `--base-stage-dir`"
             ),
-            StageError::BaseStageHashMismatch { expected, actual } => write!(
+            StageError::BaseStageHashMismatch {
+                expected,
+                actual,
+                engine,
+            } => write!(
                 f,
-                "base stage catalog hash mismatch: expected {expected}, got {actual}"
+                "base stage catalog hash mismatch: expected {expected}, got {actual} in the \
+                 {engine} scratch database; the digest a checkpoint records is engine-specific, \
+                 so a boundary committed on one engine is never reproduced by a scratch target \
+                 of another, while a scratch of the same engine reaches this refusal only when \
+                 the recorded boundary diverged from its marker. Point `--scratch-url` at a \
+                 target of the engine the checkpoint was committed on, or pass `--database-url` \
+                 naming the project database so a cross-engine scratch is refused before the \
+                 boundary is replayed"
             ),
             StageError::Diverged(report) => {
                 writeln!(

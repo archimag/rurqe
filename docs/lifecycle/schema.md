@@ -183,11 +183,13 @@ cargo rurqe stage verify --scratch-url :memory:
 | Option | Effect |
 |---|---|
 | `--scratch-url <url>` | The target a verification builds both sides in. |
-| `--database-url <url>` | The fallback target when `--scratch-url` is not given. |
+| `--database-url <url>` | The database the project really targets. It is read for its engine, which decides whether a `--scratch-url` is accepted, and it is the scratch target itself when `--scratch-url` is not given. |
 | `--schema <name>` | The primary schema compared. The secondary schemas come from `schemas` in `rurqe.toml`. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The scratch target is always named explicitly, either with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is deliberately never consulted, because the verification creates and drops databases as the connected role and an implicit target routinely names the server that variable points at.
+
+A scratch target named beside `--database-url` has to speak the engine of that database. The digest a checkpoint records is engine-specific — PostgreSQL distinguishes an `INTEGER` from a `BIGINT`, while SQLite reports every integer as an integer — so a boundary can never reproduce a digest recorded on another engine, and the verification refuses the pair before it builds either side, exactly as a commit refuses it. Naming `--database-url` is what arms that refusal; a verification that names only `--scratch-url` knows no project engine, and a boundary whose digest does not match then reports the engine it was replayed in, so a substitution of engines stays visible instead of reading as a diverged project. A SQLite file named as the scratch target of its own database is refused as well, because a file-backed scratch is deleted once each side ends.
 
 The verification first repairs an interrupted commit inside the exclusive section of
 the marker and reads the marker, the tail, and the boundary snapshot there. The

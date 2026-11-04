@@ -5,6 +5,10 @@
 //! and hands the pair to the crash-safe swap inside the exclusive checkpoint
 //! section. Everything that reaches the server or the disk at length is preparation
 //! outside that section, because none of it mutates a workspace artifact.
+//!
+//! The two guards that decide whether a scratch target may stand in for the
+//! project database are shared with `stage verify`, so a commit and a
+//! verification refuse the same scratch target for the same reason.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -109,7 +113,7 @@ pub(crate) fn commit_stage(
     // file naming the sealed database would be deleted once the replay ends.
     if let Some(scratch_url) = scratch_url {
         refuse_cross_engine_scratch(database_url, scratch_url)?;
-        refuse_scratch_over_sealed_file(database_url, scratch_url)?;
+        refuse_scratch_over_project_file(database_url, scratch_url)?;
     }
 
     let boundary = boundary_dir(checkpoint_path);
@@ -393,15 +397,23 @@ impl ParityScratch {
     }
 }
 
-/// Refuses a parity scratch that addresses another engine than the sealed database.
+/// Refuses a scratch target that addresses another engine than the project database.
 ///
-/// The gate replays the declarative stage in the scratch target and compares the
-/// catalog it produces with the live one, so both have to speak the same engine: a
-/// PostgreSQL scratch cannot reproduce a SQLite catalog, and a SQLite scratch never
-/// reaches the server a PostgreSQL commit seals. A value either classifier rejects
-/// is passed through, because the sandbox gate reports it with the redaction it
-/// mandates instead of a second parser deciding what the string addresses.
-fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<(), CliError> {
+/// A scratch target stands in for the engine of the database the project really
+/// targets: a commit replays the declarative stage in it and compares the
+/// resulting catalog with the live one, while a verification materialises both
+/// sides of the golden equation in it and compares the replayed boundary against
+/// a checkpoint recorded on the project engine. A PostgreSQL scratch can never
+/// reproduce a SQLite catalog and a SQLite scratch never reaches the server a
+/// PostgreSQL project lives on, so both commands refuse the pair before either
+/// side is read — which is why the guard lives here and is shared with the
+/// verification instead of being restated beside it. A value either classifier
+/// rejects is passed through, because the sandbox reports it with the redaction
+/// it mandates instead of a second parser deciding what the string addresses.
+pub(super) fn refuse_cross_engine_scratch(
+    database_url: &str,
+    scratch_url: &str,
+) -> Result<(), CliError> {
     let Ok(live) = DatabaseTarget::parse(database_url) else {
         return Ok(());
     };
@@ -414,43 +426,48 @@ fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<
     }
 
     Err(CliError::message(format!(
-        "the scratch URL `{}` addresses {} while this commit seals a {} database; the parity \
-         gate replays the declarative stage in the scratch target, so `--scratch-url` has to \
-         name a {} target — a `postgres://` URL for PostgreSQL, a SQLite path or `:memory:` \
-         for SQLite",
+        "the scratch URL `{}` addresses {} while the project database `{}` is {}; the scratch \
+         target stands in for the engine the project really targets, so `--scratch-url` has to \
+         name a {} target — a `postgres://` URL for PostgreSQL, a SQLite path or `:memory:` for \
+         SQLite",
         redact_database_url(scratch_url),
         scratch.dialect(),
+        redact_database_url(database_url),
         live.dialect(),
         live.dialect(),
     )))
 }
 
-/// Refuses a SQLite scratch naming the very file the commit seals.
+/// Refuses a SQLite scratch naming the very file the project database lives in.
 ///
-/// A file-backed SQLite parity scratch is deleted once its replay ends, so a
-/// `--scratch-url` pointing at the sealed database would remove the database the
-/// commit is anchoring as soon as the gate finished with it. The declared
-/// locations are resolved before they are compared, so two spellings of one file
-/// collide while two distinct files never do. A value the classifier rejects is
-/// passed through, because the sandbox gate reports it with the redaction it
-/// mandates instead of a second parser deciding what the string addresses.
-fn refuse_scratch_over_sealed_file(database_url: &str, scratch_url: &str) -> Result<(), CliError> {
-    let Ok(DatabaseTarget::SqliteFile(sealed)) = DatabaseTarget::parse(database_url) else {
+/// A file-backed SQLite scratch is deleted once its side ends, so a
+/// `--scratch-url` pointing at the project database would remove the database a
+/// commit is anchoring — or the one a verification describes — as soon as the
+/// materialisation finished with it. The guard is shared with the verification
+/// for exactly that reason, and its declared locations are resolved before they
+/// are compared, so two spellings of one file collide while two distinct files
+/// never do. A value the classifier rejects is passed through, because the
+/// sandbox reports it with the redaction it mandates instead of a second parser
+/// deciding what the string addresses.
+pub(super) fn refuse_scratch_over_project_file(
+    database_url: &str,
+    scratch_url: &str,
+) -> Result<(), CliError> {
+    let Ok(DatabaseTarget::SqliteFile(project)) = DatabaseTarget::parse(database_url) else {
         return Ok(());
     };
     let Ok(DatabaseTarget::SqliteFile(scratch)) = DatabaseTarget::parse(scratch_url) else {
         return Ok(());
     };
 
-    if resolved_sqlite_file(&sealed) != resolved_sqlite_file(&scratch) {
+    if resolved_sqlite_file(&project) != resolved_sqlite_file(&scratch) {
         return Ok(());
     }
 
     Err(CliError::message(format!(
-        "the scratch URL `{}` names the SQLite database this commit seals; the parity gate replays \
-         the declarative stage in the scratch target and deletes it once the replay ends, so \
-         `--scratch-url` has to name a disposable file (or `:memory:`) instead of the database \
-         being anchored",
+        "the scratch URL `{}` names the SQLite database the project targets; the scratch target \
+         is replayed into and deleted once each side ends, so `--scratch-url` has to name a \
+         disposable file (or `:memory:`) instead of the database itself",
         redact_database_url(scratch_url)
     )))
 }
@@ -547,7 +564,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        parity_scratch_url, refuse_scratch_over_sealed_file, stage_parity_failure, ParityScratch,
+        parity_scratch_url, refuse_scratch_over_project_file, stage_parity_failure, ParityScratch,
     };
     use crate::drift::SchemaDiff;
 
@@ -677,17 +694,17 @@ mod tests {
             std::env::temp_dir().join("rurqe-parity-scratch.db").display()
         );
 
-        let error = refuse_scratch_over_sealed_file(&sealed, &sealed)
+        let error = refuse_scratch_over_project_file(&sealed, &sealed)
             .expect_err("the sealed file cannot be its own scratch");
         assert!(
             error
                 .to_string()
-                .contains("names the SQLite database this commit seals"),
+                .contains("names the SQLite database the project targets"),
             "got {error}"
         );
 
         assert!(
-            refuse_scratch_over_sealed_file(&sealed, &scratch).is_ok(),
+            refuse_scratch_over_project_file(&sealed, &scratch).is_ok(),
             "a distinct scratch file stays accepted"
         );
     }

@@ -11,6 +11,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 use crate::config::SchemaSelection;
 use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
 use crate::introspect::DEFAULT_SCHEMA;
+use crate::target::{detect_dialect, DatabaseDialect};
 
 use super::error::StageError;
 use super::sandbox::{SandboxKind, Script};
@@ -158,9 +159,14 @@ impl<'a> GoldenEquation<'a> {
         &self,
         scratch_url: &str,
     ) -> Result<(SchemaCatalog, Option<String>), StageError> {
+        // The engine the scratch target addresses is read from the URL the
+        // invocation named, so a boundary digest is always attributed to the
+        // engine that really produced it — the one fact a comparison against an
+        // engine-implicit checkpoint cannot recover afterwards.
+        let engine = detect_dialect(Some(scratch_url));
         let mut sandbox = SandboxKind::open(scratch_url, &self.schemas)?;
 
-        let replay = match self.replay_tail(&mut sandbox) {
+        let replay = match self.replay_tail(&mut sandbox, engine) {
             Ok(()) => materialised_side(&mut sandbox),
             Err(error) => Err(error),
         };
@@ -193,9 +199,18 @@ impl<'a> GoldenEquation<'a> {
     /// A committed checkpoint is verified against the boundary catalog before a
     /// single tail script runs, so a snapshot that drifted from its marker is
     /// rejected with [`StageError::BaseStageHashMismatch`] instead of being
-    /// replayed into a divergence report. The sandbox is left holding the
-    /// replayed state, so the caller introspects it once the tail has landed.
-    fn replay_tail(&self, sandbox: &mut SandboxKind) -> Result<(), StageError> {
+    /// replayed into a divergence report. The refusal carries `engine`, the engine
+    /// the scratch target addresses, because a catalog digest records
+    /// engine-resolved facts: a boundary committed on one engine is never
+    /// reproduced by a scratch database of another, and the diagnostic has to name
+    /// the substitution instead of the divergence it merely looks like. The
+    /// sandbox is left holding the replayed state, so the caller introspects it
+    /// once the tail has landed.
+    fn replay_tail(
+        &self,
+        sandbox: &mut SandboxKind,
+        engine: DatabaseDialect,
+    ) -> Result<(), StageError> {
         if let Some(base) = self.base {
             apply_scripts(sandbox, &stage_scripts(base))?;
 
@@ -208,6 +223,7 @@ impl<'a> GoldenEquation<'a> {
                     return Err(StageError::BaseStageHashMismatch {
                         expected: checkpoint.schema_hash().to_hex(),
                         actual: boundary.schema_hash(),
+                        engine,
                     });
                 }
             }

@@ -5,6 +5,7 @@ use rurqe_migrate::checksum::Checksum;
 use rurqe_migrate::stage::StageScript;
 
 use crate::drift::TableDiff;
+use crate::target::DatabaseDialect;
 
 const USERS: &str = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
 
@@ -207,15 +208,28 @@ fn base_stage_hash_mismatch_is_rejected() {
         .expect_err("mismatched base stage hash must be rejected");
 
     match &error {
-        StageError::BaseStageHashMismatch { expected, actual } => {
+        StageError::BaseStageHashMismatch {
+            expected,
+            actual,
+            engine,
+        } => {
             assert_eq!(expected, &Checksum::of(b"wrong_hash").to_hex());
             assert_ne!(expected, actual);
+            assert_eq!(
+                *engine,
+                DatabaseDialect::Sqlite,
+                "the refusal names the engine the boundary was replayed in"
+            );
         }
         other => panic!("expected BaseStageHashMismatch, got {other:?}"),
     }
     assert!(error
         .to_string()
         .contains("base stage catalog hash mismatch"));
+    assert!(
+        error.to_string().contains("SQLite scratch database"),
+        "the diagnostic names the scratch database the boundary was replayed in: {error}"
+    );
 }
 
 #[test]

@@ -44,6 +44,7 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
         None,
         &migrations_dir,
         &checkpoint_path,
+        None,
         &selection(),
         ":memory:",
     )
@@ -110,6 +111,7 @@ fn a_concurrent_command_never_preempts_a_live_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
+        None,
         &selection(),
         ":memory:",
     )
@@ -152,6 +154,7 @@ fn a_concurrent_command_never_preempts_a_live_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
+        None,
         &selection(),
         ":memory:",
     )
@@ -210,6 +213,7 @@ fn a_failed_verification_reports_the_interrupted_commit_it_repaired() {
         None,
         &migrations_dir,
         &checkpoint_path,
+        None,
         &selection(),
         ":memory:",
     )

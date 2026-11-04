@@ -231,6 +231,7 @@ fn a_verification_takes_over_the_section_of_a_crashed_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
+        None,
         &selection(),
         ":memory:",
     )

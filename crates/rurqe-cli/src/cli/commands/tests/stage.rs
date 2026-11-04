@@ -8,7 +8,7 @@ use crate::driver::SqliteMigrationBackend;
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 
-use super::super::{commit_stage, initialise_stage};
+use super::super::{commit_stage, initialise_stage, verify_stage};
 use super::fixtures::{apply_live_ddl, directory_names, selection, version, workspace};
 
 #[test]
@@ -478,5 +478,69 @@ fn a_cross_engine_scratch_target_is_refused_before_the_stage_is_read() {
     assert!(
         !dir.join("checkpoint.lock").exists(),
         "a refused commit enters no section"
+    );
+}
+
+#[test]
+fn a_verification_refuses_a_cross_engine_scratch_before_the_stage_is_read() {
+    let dir = workspace("verify-cross-engine-scratch");
+    // The declarative stage is absent on purpose: a guard that ran after the stage
+    // was read would report the missing directory instead of the scratch target.
+    let stage_dir = dir.join("schema");
+    let migrations_dir = dir.join("migrations");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    let error = verify_stage(
+        &stage_dir,
+        None,
+        &migrations_dir,
+        &checkpoint_path,
+        Some(":memory:"),
+        &selection(),
+        "postgres://db.internal:5432/scratch",
+    )
+    .expect_err("a PostgreSQL scratch cannot stand in for a SQLite project");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("SQLite"),
+        "the diagnostic names the project engine, got {message}"
+    );
+    assert!(
+        message.contains("PostgreSQL"),
+        "the diagnostic names the scratch engine, got {message}"
+    );
+    assert!(
+        message.contains("--scratch-url"),
+        "the diagnostic names the flag that redirects the scratch, got {message}"
+    );
+
+    // The guards stand in front of every artifact write and of the checkpoint
+    // section, so a refused verification leaves nothing behind either.
+    assert!(
+        !checkpoint_path.exists(),
+        "a refused verification writes no checkpoint"
+    );
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "a refused verification enters no section"
+    );
+
+    // The very same scratch under a SQLite project passes both guards, so the
+    // missing stage — not the scratch target — is what the verification reports.
+    let error = verify_stage(
+        &stage_dir,
+        None,
+        &migrations_dir,
+        &checkpoint_path,
+        Some(":memory:"),
+        &selection(),
+        ":memory:",
+    )
+    .expect_err("the declarative stage is absent");
+
+    assert!(
+        error.to_string().contains("does not exist"),
+        "a scratch of the project engine reaches the stage read, got {error}"
     );
 }
