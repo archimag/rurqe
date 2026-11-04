@@ -21,9 +21,9 @@ use crate::query::BuildError;
 /// enclosing statement, so its parameters continue the placeholder numbering of
 /// the outer query instead of starting over:
 ///
-/// text
+/// ```text
 /// SELECT "id" FROM "users" WHERE ("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
-/// 
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Subquery {
     // The statement is boxed because it may itself hold a predicate over a

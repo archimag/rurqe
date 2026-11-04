@@ -115,12 +115,47 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// [`order_by`](GroupedQuery::order_by) — or aggregates computed over each
     /// group, which is what this method takes:
     ///
-    /// text
-    /// let query = select_from(Order)
-    ///     .group_by(OrderUserId)
-    ///     .select((OrderUserId, Expr::count_all()))
-    ///     .order_by_expr_desc(Expr::count_all());
-    /// 
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table!(
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// );
+    ///
+    /// fn main() {
+    ///     let built = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .group_by(OrderUserId)
+    ///         .select((OrderUserId, Expr::count_all()))
+    ///         .order_by_expr_desc(Expr::count_all())
+    ///         .build()
+    ///         .expect("valid grouped query");
+    ///
+    ///     assert_eq!(
+    ///         built.sql,
+    ///         "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+    ///          ORDER BY COUNT(*) DESC"
+    ///     );
+    /// }
+    /// ```
     pub fn order_by_expr<T, Scope, Marker, ExprD, P>(
         mut self,
         expression: Expr<T, Scope, Marker, ExprD>,

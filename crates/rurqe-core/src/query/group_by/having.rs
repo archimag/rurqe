@@ -29,7 +29,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// The clause exists only on a grouped query, so a statement that never
     /// recorded its grouping cannot reach it:
     ///
-    /// compile_fail
+    /// ```compile_fail
     /// use rurqe_core::dialect::Dialect;
     /// use rurqe_core::expr::Expr;
     /// use rurqe_core::query::SelectQuery;
@@ -53,14 +53,15 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// );
     ///
     /// fn main() {
-    ///     // Fails to compile: the query never grouped its rows, so it has no
-    ///     // `having` clause to record.
+    ///     // Fails to compile: the clause is recorded through the grouped
+    ///     // typestate that `group_by` produces, so a `SelectQuery` that never
+    ///     // grouped its rows has no `having` clause to call.
     ///     let _ = SelectQuery::<MockDialect>::new()
     ///         .from::<Order>()
     ///         .select((OrderUserId,))
     ///         .having(Expr::count_all().gt(1i64));
     /// }
-    /// 
+    /// ```
     pub fn having<Scope, Aggr, ExprD, P>(
         mut self,
         predicate: Expr<bool, Scope, Aggr, ExprD>,
