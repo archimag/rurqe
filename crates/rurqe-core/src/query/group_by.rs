@@ -295,6 +295,21 @@ where
 /// per-row value the grouped query never reports and is rejected while the
 /// statement is built.
 ///
+/// The grouping coverage extends to the columns a window aggregate reads inside a
+/// composite operand. The walk collects them through every node the operand is
+/// built from — a scalar function call, an arithmetic combination, a `CASE`
+/// branch, a `CAST` — so `COALESCE(SUM("total"), $1) OVER (...)` keeps `"total"`
+/// subject to the grouping and the statement build reports it as
+/// [`BuildError::UngroupedColumn`](crate::query::BuildError::UngroupedColumn) when
+/// the clause does not group it. The walk stops at an aggregate nested inside the
+/// operand, which keeps `SUM(SUM("total")) OVER (...)` valid: the inner call
+/// collapses the groups before the window reads them.
+///
+/// The aggregation markers describe the operand only as far as its grouping
+/// behaviour, so the operand grammar is checked beside them while the statement is
+/// built: an operand that is not a function application is reported as
+/// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall).
+///
 /// ```
 /// use rurqe_core::dialect::{Dialect, SupportsWindowFunctions};
 /// use rurqe_core::expr::Expr;
@@ -402,12 +417,19 @@ where
 /// Derives the row item produced by a window expression over a constant operand
 /// in a `GROUP BY` query.
 ///
-/// An expression referencing no table — a literal, a raw SQL fragment such as
-/// `sql!(<i64> "COUNT(*)")` — is constant within a group, so a window evaluated
-/// over it reads no per-row value and stays projectable from a grouped query even
+/// An expression referencing no table — a raw SQL fragment such as
+/// `sql!(<i64> "COUNT(*)")` that spells the call itself, or a function call
+/// composed of constants — is constant within a group, so a window evaluated over
+/// it reads no per-row value and stays projectable from a grouped query even
 /// though nothing is aggregated. The pair of the empty operand scope and the
-/// [`NonAggregate`] marker states exactly that, and the two implementations stay
+/// [`NonAggregate`] marker records exactly that, and the two implementations stay
 /// disjoint because [`NonAggregate`] implements no [`AggregateMarker`].
+///
+/// The markers describe the grouping behaviour of the operand alone, so the pair
+/// also admits a value-shaped operand such as a literal at the type level; the
+/// statement build rejects that shape as
+/// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall),
+/// because `OVER (...)` attaches to a function application alone.
 ///
 /// The columns the specification partitions by and orders by are checked against
 /// the grouped columns exactly like for an aggregate operand.

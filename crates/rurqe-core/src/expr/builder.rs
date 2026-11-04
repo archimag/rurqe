@@ -150,10 +150,28 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// keeps requiring a dialect that renders the modifier even when the
     /// expression it is evaluated over is dialect-neutral.
     ///
+    /// SQL attaches an `OVER (...)` clause to a function application alone: the
+    /// engine evaluates the function once per row of the partition, so the grammar
+    /// admits an aggregate call — `SUM("total") OVER (...)` — a scalar function
+    /// call over a column, which `Expr::column_function` builds, and a raw fragment
+    /// trusted to spell such a call, and nothing else. This method is defined on
+    /// every expression while the operand markers describe only its grouping
+    /// behaviour, so the shape is checked while the statement is built: a column
+    /// reference, a bound value, a row value, a subquery, or a computed expression
+    /// names a value rather than a call and is reported as
+    /// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall)
+    /// before a single character of the statement is rendered.
+    ///
     /// This expression travels on as the operand of the produced window: its scope
     /// and its aggregation marker are recorded beside the merged markers, so a
     /// grouped query rejects a window evaluated over a per-row expression while
-    /// keeping one evaluated over an aggregate or a constant.
+    /// keeping one evaluated over an aggregate or a call composed of constants.
+    /// The columns a window aggregate reads stay subject to that grouping as well,
+    /// including the ones it reads inside a composite operand —
+    /// `COALESCE(SUM("total"), $1) OVER (...)` keeps `"total"` covered by the
+    /// `GROUP BY` clause — while an aggregate nested inside the operand collapses
+    /// the groups before the window reads them, which is what keeps
+    /// `SUM(SUM("total")) OVER (...)` valid.
     pub fn over<WinScope, WinCols, WinD>(
         self,
         window: crate::query::WindowSpec<WinScope, WinCols, WinD>,
@@ -556,7 +574,9 @@ impl Expr<(), ()> {
     /// expression: a constant whose scope is fixed to `()`.
     ///
     /// `name` is the SQL name of the function as the engine adapter writes it,
-    /// and the produced call takes the column as its only argument.
+    /// and the produced call takes the column as its only argument. The built node
+    /// is a function application, so [`Expr::over`] accepts it as the operand of a
+    /// window expression.
     #[doc(hidden)]
     pub fn column_function<C: Column>(name: &'static str) -> Expr<C::RustType, C::Table> {
         Expr::new(ExprKind::Function {

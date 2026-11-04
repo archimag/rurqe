@@ -493,6 +493,16 @@ type WindowExprMarker<T, Scope, Cols, D, OperandScope, OperandAggr> =
 /// group before the window runs, which leaves the operand with one value per group
 /// only when it aggregates those rows or reads no table at all; the two markers
 /// are what the grouped projection rule checks to tell those cases apart.
+///
+/// The markers describe the grouping behaviour of the operand and never the
+/// shape it renders. `OVER (...)` attaches to a function application alone,
+/// so an operand naming a value rather than a call is reported as
+/// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall)
+/// while the statement is built, before a single character of it is rendered.
+/// A window aggregate reads the rows the statement produced, so the grouping
+/// has to cover the columns it collects — including the ones it collects
+/// inside a composite operand — while an aggregate nested inside the operand
+/// collapses the groups first and stops that coverage.
 pub struct WindowExpr<
     T,
     Scope = (),
@@ -550,6 +560,13 @@ impl<T, Scope, Cols, D, OperandScope, OperandAggr>
     /// of both sides, and for `OperandScope` / `OperandAggr` describing the operand
     /// the window evaluates over, which is exactly what the `over` builders of the
     /// expressions and of `LAG` / `LEAD` arrange for.
+    ///
+    /// The markers state the grouping behaviour of the operand and nothing
+    /// about the node it renders, so a caller wrapping an arbitrary `kind`
+    /// leaves the operand grammar to the statement build: an operand that is
+    /// not a function application is reported as
+    /// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall)
+    /// before the statement is rendered.
     pub(crate) fn of_window<WinScope, WinCols>(
         kind: WindowExprKind,
         window: WindowSpec<WinScope, WinCols, D>,
@@ -582,6 +599,11 @@ impl<T> WindowExpr<T, ()> {
     /// The window must reference no table and require no dialect capability, so a
     /// specification partitioned or ordered by a column is wrapped through the
     /// `over` builders instead.
+    ///
+    /// The kind is wrapped as it stands, so the operand grammar is checked
+    /// while the statement is built: a kind naming a value rather than a call
+    /// is reported as
+    /// [`BuildError::WindowOperandNotCall`](crate::query::BuildError::WindowOperandNotCall).
     pub fn from_expr(kind: ExprKind, window: WindowSpec<()>) -> Self {
         Self::of_window(WindowExprKind::Expr(kind), window)
     }
@@ -655,6 +677,12 @@ impl<T, Aggr> WindowFn<T, Aggr> {
     /// all three. The builder carries no operand of its own and states that with
     /// the empty operand scope, while the operand marker `Aggr` travels on: a
     /// function without an operand reads nothing that a grouping could collapse.
+    ///
+    /// The named builders `row_number`, `rank`, and `dense_rank` state a
+    /// function application, so the window they produce carries an operand
+    /// the grammar accepts. A builder created from a raw kind through
+    /// `WindowFn::new` renders whatever shape that kind names, which the
+    /// statement build checks like any other operand.
     pub fn over<WinScope, WinCols, WinD>(
         self,
         window: WindowSpec<WinScope, WinCols, WinD>,
