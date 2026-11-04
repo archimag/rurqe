@@ -26,10 +26,12 @@ the calling binary and yields a fallible collection:
 
 The single optional argument names a `rurqe.toml`, resolved against the manifest
 directory of the crate being compiled. The filesystem decides what the path is: a
-file is the configuration, while a directory, a path naming nothing, and a
-configuration the strict parser rejects each stop the compilation with an error
-naming the path and the remedy. Only a file declares an artifact layout, so the
-macro refuses a path that declares none instead of guessing at one.
+file is the configuration, while a directory, a path naming nothing, a candidate
+the discovery walk cannot classify — an entry that is not a regular file, or one
+whose state cannot be determined — and a configuration the strict parser rejects
+each stop the compilation with an error naming the path and the remedy. Only a
+file declares an artifact layout, so the macro refuses a path that declares none
+instead of guessing at one.
 
 - A call without an argument climbs the ancestors of the manifest directory for a
   `rurqe.toml` and reads the artifacts that file declares.
@@ -66,7 +68,12 @@ longer matches the baked snapshot, or a tail whose applied scripts produce
 another catalog, is reported by the final catalog check once the scripts
 have run.
 
-Four artifacts are baked, and each one is optional on its own:
+Four artifacts are baked, and each one is optional on its own. Optional here means
+absent, and nothing else: a path that names nothing switches the step it feeds off,
+while a path the macro cannot inspect and a path naming something that is not a
+regular file stop the compilation with an error naming the path, because reading
+either state as absence would drop an artifact from the binary without a
+diagnostic.
 
 | Artifact | Baked as | Enables |
 |---|---|---|
