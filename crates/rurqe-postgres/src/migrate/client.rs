@@ -15,6 +15,13 @@
 //! a commit the driver refuses rolls the transaction back as well, so the runner
 //! never hands a connection carrying an abandoned transaction to the next step.
 //!
+//! A step never opens on a session the adapter cannot vouch for either. The
+//! application shares this session, so a transaction it left open through the raw
+//! handle is invisible to the bookkeeping of the connection and would simply
+//! enclose the step: the backend returns such a session to an idle state before
+//! it opens a block and before it runs an autocommit script, so the leaked work
+//! is discarded while the step's own work proceeds.
+//!
 //! The advisory lock is session-scoped, exactly as it is for the standalone
 //! backend: it belongs to the connection the caller holds, so it is taken once per
 //! run and released when the run finishes, and a release the server never
@@ -58,6 +65,12 @@ use super::{
 /// [`with_schemas`](Self::with_schemas) adds the secondary ones, so the digest
 /// describes the schemas the project declares instead of an unrelated `public`
 /// catalog.
+///
+/// The session a step runs on is the session the application shares, so the
+/// adapter proves it idle before it opens a block or runs an autocommit script: a
+/// transaction the application left open through the raw handle is rolled back
+/// instead of enclosing the step, while a transaction a guard of the connection
+/// holds stays untouched and makes the step nest inside a savepoint of it.
 pub struct PgConnectionMigrationBackend<'c, B: BorrowMut<postgres::Client>> {
     connection: &'c mut PgConnection<B>,
     selection: SchemaSelection,
@@ -152,6 +165,13 @@ impl<B: BorrowMut<postgres::Client>> MigrationBackend for PgConnectionMigrationB
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let selection = self.selection.clone();
+        // A step never joins a transaction the application left open through the
+        // raw handle: the repair rolls such a session back first, while a session
+        // the bookkeeping records as open belongs to a block of this connection —
+        // the caller's own transaction or a nested savepoint — and stays intact.
+        self.connection
+            .repair_idle_session()
+            .map_err(backend_failure)?;
         // The guard of the connection decides whether this step opens a
         // transaction or nests inside a savepoint of the one the caller holds, so
         // the adapter never issues its own control statement.
@@ -164,9 +184,14 @@ impl<B: BorrowMut<postgres::Client>> MigrationBackend for PgConnectionMigrationB
     }
 
     fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
-        // The statement runs on the session as it stands, so a caller sitting
-        // inside a transaction keeps it there: a script marked non-transactional
-        // belongs to a connection that is not already inside one.
+        // A script runs in autocommit, so the session is proven idle first: a
+        // transaction the application left open through the raw handle is rolled
+        // back instead of enclosing the script. A caller sitting inside a
+        // transaction of its own keeps it there, because the bookkeeping records
+        // the block and the repair leaves it untouched.
+        self.connection
+            .repair_idle_session()
+            .map_err(backend_failure)?;
         self.connection
             .client_mut()
             .batch_execute(sql)

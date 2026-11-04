@@ -20,7 +20,9 @@
 //! own checkout instead of returning it to the pool, and a transaction handle
 //! dropped without a terminal call poisons the connection it borrows, and so does
 //! an entry whose `BEGIN` the driver refused or whose future was dropped before
-//! the transaction opened.
+//! the transaction opened. An owned connection is covered too: a typed entry
+//! repairs a session a raw driver handle left inside a transaction before its
+//! block opens, so the block never joins the abandoned work.
 
 // A skipped scenario reports itself to the operator running the tests, which is
 // the one place the workspace-wide printing ban is lifted for this file.
@@ -1375,6 +1377,83 @@ mod async_connection {
         assert!(
             connection.is_poisoned(),
             "the connection stays poisoned after the refused commit"
+        );
+    }
+}
+
+/// The owned connection repairs a session a raw driver handle left inside a
+/// transaction before its typed block opens.
+#[cfg(feature = "postgres")]
+mod owned_connection {
+    use postgres::NoTls;
+    use rurqe_postgres::{PgConnection, PgError};
+
+    use crate::support;
+
+    /// Connects to the server the scenario names.
+    fn connect(url: &str) -> PgConnection {
+        let client =
+            postgres::Client::connect(url, NoTls).expect("the test server accepts the connection");
+        PgConnection::new(client)
+    }
+
+    /// Resets `table` to an empty fixture through the raw handle.
+    fn reset(connection: &mut PgConnection, table: &str) {
+        let setup = format!(
+            "DROP TABLE IF EXISTS {table}; \
+             CREATE TABLE {table} (id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)"
+        );
+        connection
+            .client_mut()
+            .batch_execute(&setup)
+            .expect("the fixture is created");
+    }
+
+    /// Counts the rows of `table` and reports their summed amount.
+    fn totals(connection: &mut PgConnection, table: &str) -> (i64, i64) {
+        let sql = format!("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM {table}");
+        connection
+            .transaction(|tx| -> Result<(i64, i64), PgError> {
+                let row = tx.client_mut().query_one(&sql, &[])?;
+                Ok((row.get::<_, i64>(0), row.get::<_, i64>(1)))
+            })
+            .expect("the counting block commits")
+    }
+
+    #[test]
+    fn a_leaked_transaction_is_repaired_at_the_next_entry() {
+        let Some(url) = support::database_url("PgConnection leaked transaction reset") else {
+            return;
+        };
+        let mut connection = connect(&url);
+        reset(&mut connection, "rurqe_tx_owned");
+
+        // The raw handle is the supported escape hatch, so the leak this scenario
+        // produces is the ordinary one: a `BEGIN` the caller issued itself and
+        // never closed.
+        {
+            let client = connection.client_mut();
+            client
+                .batch_execute("BEGIN")
+                .expect("the manual transaction opens");
+            client
+                .batch_execute("INSERT INTO rurqe_tx_owned (id, amount) VALUES (1, 100)")
+                .expect("the leaked row is written");
+            // The handle leaves the session inside the transaction it never closed.
+        }
+
+        connection
+            .transaction(|tx| -> Result<(), PgError> {
+                tx.client_mut()
+                    .batch_execute("INSERT INTO rurqe_tx_owned (id, amount) VALUES (2, 200)")?;
+                Ok(())
+            })
+            .expect("the block commits on the session the entry repaired");
+
+        assert_eq!(
+            totals(&mut connection, "rurqe_tx_owned"),
+            (1, 200),
+            "the repair rolled the leaked transaction back, so only the block's row persists"
         );
     }
 }

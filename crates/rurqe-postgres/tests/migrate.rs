@@ -614,6 +614,110 @@ mod client_backend {
             .get::<_, i64>(0);
         assert_eq!(rows, 2, "the enclosing transaction kept the caller's work");
     }
+
+    /// A step never encloses a transaction the application left open through the
+    /// raw handle: the backend repairs the session before it opens the block, so
+    /// the leaked row is discarded while the step's own work commits.
+    #[test]
+    fn a_step_repairs_a_leaked_transaction() {
+        let Some(mut connection) = fixture(
+            "PgConnectionMigrationBackend leaked transaction",
+            "rurqe_client_leak",
+        ) else {
+            return;
+        };
+
+        connection
+            .client_mut()
+            .batch_execute("CREATE TABLE leaked_rows (id INTEGER PRIMARY KEY)")
+            .expect("the fixture table is created");
+        connection
+            .client_mut()
+            .batch_execute("BEGIN")
+            .expect("the manual transaction opens");
+        connection
+            .client_mut()
+            .batch_execute("INSERT INTO leaked_rows (id) VALUES (1)")
+            .expect("the leaked row is written");
+
+        {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_leak");
+            let mut step = backend.begin().expect("the step opens its transaction");
+            step.execute("CREATE TABLE committed_rows (id INTEGER PRIMARY KEY);")
+                .expect("the step's script applies");
+            step.commit().expect("the step commits its own script");
+        }
+
+        let survived = connection
+            .client_mut()
+            .query_one(
+                "SELECT to_regclass('rurqe_client_leak.committed_rows') IS NOT NULL",
+                &[],
+            )
+            .expect("the catalog answers")
+            .get::<_, bool>(0);
+        assert!(survived, "the step committed its own script");
+
+        let leaked = connection
+            .client_mut()
+            .query_one("SELECT COUNT(*) FROM rurqe_client_leak.leaked_rows", &[])
+            .expect("the fixture table is readable")
+            .get::<_, i64>(0);
+        assert_eq!(leaked, 0, "the repair rolled the leaked row back");
+    }
+
+    /// A non-transactional script runs in autocommit on a proven session, so a
+    /// transaction the application left open through the raw handle is rolled
+    /// back instead of enclosing the script.
+    #[test]
+    fn a_non_transactional_script_repairs_a_leaked_transaction() {
+        let Some(mut connection) = fixture(
+            "PgConnectionMigrationBackend non-transactional leak",
+            "rurqe_client_auto",
+        ) else {
+            return;
+        };
+
+        connection
+            .client_mut()
+            .batch_execute("CREATE TABLE leaked_rows (id INTEGER PRIMARY KEY)")
+            .expect("the fixture table is created");
+        connection
+            .client_mut()
+            .batch_execute("BEGIN")
+            .expect("the manual transaction opens");
+        connection
+            .client_mut()
+            .batch_execute("INSERT INTO leaked_rows (id) VALUES (1)")
+            .expect("the leaked row is written");
+
+        let script = "CREATE TABLE script_rows (id INTEGER);";
+        {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_auto");
+            backend
+                .execute_non_transactional(script)
+                .expect("the autocommit script applies");
+        }
+
+        let survived = connection
+            .client_mut()
+            .query_one(
+                "SELECT to_regclass('rurqe_client_auto.script_rows') IS NOT NULL",
+                &[],
+            )
+            .expect("the catalog answers")
+            .get::<_, bool>(0);
+        assert!(survived, "the autocommit script committed its own DDL");
+
+        let leaked = connection
+            .client_mut()
+            .query_one("SELECT COUNT(*) FROM rurqe_client_auto.leaked_rows", &[])
+            .expect("the fixture table is readable")
+            .get::<_, i64>(0);
+        assert_eq!(leaked, 0, "the repair rolled the leaked row back");
+    }
 }
 
 /// Migration scenarios driven through the backend that owns its session.
