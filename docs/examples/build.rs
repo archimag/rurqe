@@ -35,6 +35,11 @@ const GENERATED_SCHEMA_MODULE: &str = "generated_schema_module.rs";
 /// The fixture carrying the module the code generator emits.
 const SCHEMA_MODULE_FIXTURE: &str = "generated/schema_module.rs";
 
+/// The fixture tree the embedded-migration example bakes: the configuration it
+/// hands to `embed_migrations!` and the migration scripts that configuration
+/// names.
+const EXAMPLE_FIXTURES: &str = "tests/fixtures";
+
 /// The environment variable naming the directory the build script writes into.
 const OUT_DIR: &str = "OUT_DIR";
 
@@ -194,6 +199,11 @@ fn declare_inputs() {
     // The generated-module fixture is copied into the wrapper above, so an edit
     // to it has to rebuild the module the compilation test includes.
     println!("cargo:rerun-if-changed={SCHEMA_MODULE_FIXTURE}");
+    // The embedded-migration example bakes the configuration of this directory
+    // and the migration scripts that configuration names. A build script is the
+    // only place that can register a directory's membership, so a script added
+    // there or removed from it rebuilds the target that carries it.
+    println!("cargo:rerun-if-changed={EXAMPLE_FIXTURES}");
     let mut files: BTreeSet<&str> = BTreeSet::new();
     for &(file, _, _) in FRAGMENTS {
         files.insert(file);
