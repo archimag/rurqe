@@ -34,9 +34,9 @@ pub use stage::{GoldenEquation, GoldenReport, StageError};
 /// The class of a line the toolchain writes for the operator.
 ///
 /// The class is the only parameter of the crate's single write point: it selects
-/// the shape of the line, while the destination is declared once in
-/// [`operator_channel`], so a `tracing` event and a report line cannot end up in
-/// different streams.
+/// both the shape of the line and the stream it leaves on — a report travels to
+/// [`report_channel`], a failure to [`failure_channel`] beside the diagnostics
+/// of the process — so no command declares a destination of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageClass {
     /// A line of the report a command produced: what the command did.
@@ -45,30 +45,55 @@ pub enum MessageClass {
     Failure,
 }
 
-/// The destination every line the toolchain writes for the operator goes to.
+/// The destination every line of a command's report goes to.
 ///
-/// The sink [`install_diagnostics`] installs and the report [`run`] prints both
-/// reach this function, so the process declares the destination of its
-/// operator-facing output in one place: an application that embeds this crate
-/// redirects its reports and its diagnostics together, instead of chasing the
-/// two write paths the crate used to keep apart.
-pub fn operator_channel() -> io::Stderr {
+/// A report is the result a command produced — the status table, the drift
+/// verdict, the prune listing, the help text — so it travels on standard output:
+/// a pipeline can grep it, a shell can redirect it into a file, and a CI step
+/// records it as the output of a successful run.
+pub fn report_channel() -> io::Stdout {
+    io::stdout()
+}
+
+/// The destination every failure line and every diagnostic goes to.
+///
+/// The failure [`run`] reports and the sink [`install_diagnostics`] installs
+/// both reach this function, so the process declares the destination of its
+/// diagnostic output in one place: an application that embeds this crate
+/// redirects its failures and its notices together, while the reports a command
+/// returns stay separate from them.
+pub fn failure_channel() -> io::Stderr {
     io::stderr()
 }
 
 /// Writes one line of operator output with the shape its `class` declares.
 ///
 /// This is the only place the crate formats a line for the operator, so a report
-/// line and a failure that ended the process travel the same code path. `writer`
-/// stays a parameter, which is what lets a test observe the exact bytes a line
-/// produces — and an embedding application route the channel somewhere other
-/// than the process stream — without capturing a file descriptor. The lines
-/// carry neither a level nor a target, matching the compact sink
-/// [`install_diagnostics`] installs on the same destination.
+/// line and a failure that ended the process have one shape, whatever stream
+/// they leave on. `writer` stays a parameter, which is what lets a test observe
+/// the exact bytes a line produces — and an embedding application route a line
+/// somewhere other than the process stream — without capturing a file
+/// descriptor. The stream itself is [`emit_message`]'s decision, and the sink
+/// [`install_diagnostics`] installs on [`failure_channel`] carries neither a
+/// level nor a target either.
 pub fn write_message(writer: &mut impl Write, class: MessageClass, line: &str) -> io::Result<()> {
     match class {
         MessageClass::Report => writeln!(writer, "{line}"),
         MessageClass::Failure => writeln!(writer, "Error: {line}"),
+    }
+}
+
+/// Writes one line of operator output to the stream its `class` declares.
+///
+/// The routing lives here and nowhere else: a report leaves the crate on
+/// standard output, so a pipeline can grep it and a CI step can record it,
+/// while a failure leaves it on standard error beside the diagnostics of the
+/// `tracing` sink. [`write_message`] stays the single place that formats a
+/// line, so the class decides both its shape and its stream.
+pub fn emit_message(class: MessageClass, line: &str) -> io::Result<()> {
+    match class {
+        MessageClass::Report => write_message(&mut report_channel(), class, line),
+        MessageClass::Failure => write_message(&mut failure_channel(), class, line),
     }
 }
 
@@ -116,13 +141,14 @@ impl std::fmt::Display for InstallRefusal {
 /// sink, or whether a subscriber an embedding application installed first was
 /// kept in place.
 pub fn try_install_default_subscriber() -> Result<(), InstallRefusal> {
-    // The sink and every report share one destination: the channel is declared
-    // once, so a `tracing` event cannot diverge from the operator output the
-    // commands return.
+    // The sink and every failure line share one destination: the channel is
+    // declared once, so a `tracing` event cannot diverge from the failure the
+    // process reports, while the report a command produced stays on standard
+    // output.
     let sink = tracing_subscriber::fmt::Subscriber::builder()
         .compact()
         .with_max_level(tracing::Level::WARN)
-        .with_writer(operator_channel as fn() -> io::Stderr)
+        .with_writer(failure_channel as fn() -> io::Stderr)
         .with_target(false)
         .finish();
 
@@ -142,8 +168,9 @@ pub fn try_install_default_subscriber() -> Result<(), InstallRefusal> {
 /// reaches the operator.
 ///
 /// The sink writes to standard error at `WARN` and above — the destination
-/// [`operator_channel`] declares for the reports a command returns — so both
-/// classes of operator output share one stream and one format. Installation
+/// [`failure_channel`] declares for the failure a command ends on — so the
+/// diagnostics and the failures of the process share one stream and one format,
+/// while the report of a command leaves on standard output. Installation
 /// happens once per process and is idempotent: a repeated call keeps the sink
 /// the first call put in place.
 ///
@@ -208,27 +235,27 @@ where
 /// Main CLI execution entry point for standalone and Cargo subcommand binaries.
 ///
 /// The report of a command and the failure that ends the process are written
-/// here, at the process boundary, through [`write_message`] into the single
-/// [`operator_channel`], so the command implementations stay callable as a
-/// library without writing to a stream of their own and the binary keeps no
-/// second write path. The diagnostic sink the notices of the crate travel
-/// through is installed here for the same reason: the binary is the application
-/// the `tracing` facade delegates the sink to. The arguments are converted to
-/// UTF-8 on the same boundary — see [`arguments_to_utf8`] — so an argument the
-/// platform can represent but Unicode cannot is reported on that channel instead
-/// of panicking during collection.
+/// here, at the process boundary, each on the stream its class declares: a
+/// report on [`report_channel`], so a pipeline can grep it and a CI step can
+/// record it, and a failure on [`failure_channel`], beside the diagnostics of
+/// the process. The command implementations stay callable as a library without
+/// writing to a stream of their own, and the binary keeps one routing point —
+/// [`emit_message`] — instead of a destination per command. The diagnostic sink
+/// the notices of the crate travel through is installed here for the same
+/// reason: the binary is the application the `tracing` facade delegates the
+/// sink to. The arguments are converted to UTF-8 on the same boundary — see
+/// [`arguments_to_utf8`] — so an argument the platform can represent but
+/// Unicode cannot is reported on the failure stream instead of panicking during
+/// collection.
 pub fn run() {
     install_diagnostics();
 
-    let mut channel = operator_channel();
     match arguments_to_utf8(std::env::args_os()).and_then(run_cli) {
         // A stream that is already closed is not a failure the toolchain can
         // report anywhere else: the lines have nowhere left to go.
-        Ok(output) => {
-            let _ = output.write_into(&mut channel);
-        }
+        Ok(output) => output.print(),
         Err(err) => {
-            let _ = write_message(&mut channel, MessageClass::Failure, &err.to_string());
+            let _ = emit_message(MessageClass::Failure, &err.to_string());
             std::process::exit(1);
         }
     }

@@ -4,10 +4,13 @@
 //! none of them writes to a stream of its own: a command returns the lines it
 //! produced, and the process entry point of the binary prints them. Diagnostics
 //! about the environment travel through the `tracing` facade instead. Both
-//! classes reach the operator through the single channel the crate root declares
-//! in [`operator_channel`](crate::operator_channel), so an application embedding
-//! this crate — or a test — redirects the reports and the diagnostics from one
-//! place.
+//! classes reach the operator through the two channels the crate root declares:
+//! a report leaves on [`report_channel`](crate::report_channel), so a pipeline
+//! can grep it, while a failure and the environment diagnostics travel on
+//! [`failure_channel`](crate::failure_channel) and through the `tracing` facade
+//! respectively. An application embedding this crate — or a test — redirects a
+//! report and a diagnostic from one place each, without either one capturing
+//! the stream of the other.
 
 /// The lines a command of the toolchain produced for the user.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -68,8 +71,9 @@ impl CommandOutput {
     /// Writes every line to `writer` with the shape the crate's channel declares.
     ///
     /// The report is assembled here and formatted by
-    /// [`write_message`](crate::write_message), so a report line and a diagnostic
-    /// leave the crate through one code path instead of two independent ones.
+    /// [`write_message`](crate::write_message), so a report line and a failure
+    /// line have one shape even though
+    /// [`emit_message`](crate::emit_message) sends them to different streams.
     /// Keeping the writer a parameter is what lets an embedding application — or
     /// a test — observe the exact bytes of a report without capturing the process
     /// stream.
@@ -80,17 +84,19 @@ impl CommandOutput {
         Ok(())
     }
 
-    /// Writes every line of the report to the operator channel of the crate.
+    /// Writes every line of the report to the report channel of the crate.
     ///
-    /// The destination is [`operator_channel`](crate::operator_channel) — the
-    /// same stream the `tracing` sink of
-    /// [`install_diagnostics`](crate::install_diagnostics) writes to — so the
-    /// operator-facing output of the process is redirected from a single place.
+    /// The destination is [`report_channel`](crate::report_channel) — standard
+    /// output, which a pipeline can grep and a CI step can record — while the
+    /// failure of a command and the `tracing` sink of
+    /// [`install_diagnostics`](crate::install_diagnostics) stay on
+    /// [`failure_channel`](crate::failure_channel). The result of a run is
+    /// therefore redirected from one place and its diagnostics from another.
     /// This is the only place the crate writes a report, and the process entry
     /// point [`run`](crate::run) reaches it.
     pub fn print(&self) {
         // A closed stream is not a failure the crate can report anywhere else:
         // the lines have nowhere left to go.
-        let _ = self.write_into(&mut crate::operator_channel());
+        let _ = self.write_into(&mut crate::report_channel());
     }
 }

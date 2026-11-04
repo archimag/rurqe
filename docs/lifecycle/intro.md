@@ -98,6 +98,11 @@ the command line: an application bakes the artifacts into its own binary and app
 them through the connection it already holds, while the command line runs the same
 protocol over the artifacts the project configuration declares.
 
+A command prints its report on standard output — the applied scripts, the
+status table, the drift verdict, the help text — and writes a failure or an
+environment notice on standard error. The result of a run can therefore be
+grepped or redirected while the reason a run failed stays on the terminal.
+
 ### Sequential migrations
 
 A directory of versioned and repeatable scripts applied in order. A versioned

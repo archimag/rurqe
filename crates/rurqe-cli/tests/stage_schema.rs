@@ -180,13 +180,25 @@ fn run_binary(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("the shipped CLI binary runs")
 }
 
-/// The text a spawned command wrote to its operator channel.
+/// The report a spawned command wrote on standard output.
 ///
-/// A command reports what it did and the failure that ended it through the one
-/// channel `rurqe_cli::operator_channel` declares, which is standard error.
+/// A command reports what it did on the stream `rurqe_cli::report_channel`
+/// declares, which is standard output, so the report of a successful run is
+/// read here.
 fn binary_report(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The failure a spawned command wrote on standard error.
+///
+/// The failure that ended a command and every diagnostic of the crate travel
+/// on the stream `rurqe_cli::failure_channel` declares, which is standard
+/// error, so the reason a scenario skipped is recognised from the text read
+/// here.
+fn binary_failure(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
+
 /// Runs `stage verify` over a project, selecting `schema` when one is named.
 fn stage_verify(
     scratch_url: &str,
@@ -630,14 +642,14 @@ fn stage_commit_and_verify_cover_every_declared_schema() {
             checkpoint.as_str(),
         ],
     );
-    let report = binary_report(&output);
-    if is_createdb_missing(&report) || is_transport_refused(&report) {
-        eprintln!("skipping the PostgreSQL scenario: {report}");
+    let failure = binary_failure(&output);
+    if is_createdb_missing(&failure) || is_transport_refused(&failure) {
+        eprintln!("skipping the PostgreSQL scenario: {failure}");
         return;
     }
     assert!(
         output.status.success(),
-        "the summed catalog is committed: {report}"
+        "the summed catalog is committed: {failure}"
     );
 
     // The snapshot carries both tables together with the schema each lives in,
@@ -680,15 +692,17 @@ fn stage_commit_and_verify_cover_every_declared_schema() {
             url.as_str(),
         ],
     );
-    let report = binary_report(&output);
-    if is_createdb_missing(&report) || is_transport_refused(&report) {
-        eprintln!("skipping the PostgreSQL scenario: {report}");
+    let failure = binary_failure(&output);
+    if is_createdb_missing(&failure) || is_transport_refused(&failure) {
+        eprintln!("skipping the PostgreSQL scenario: {failure}");
         return;
     }
     assert!(
         output.status.success(),
-        "the summed catalog satisfies the equation: {report}"
+        "the summed catalog satisfies the equation: {failure}"
     );
+
+    let report = binary_report(&output);
     assert!(
         report.contains("Golden equation holds"),
         "the verification certifies the summed catalog: {report}"
@@ -723,18 +737,18 @@ fn stage_commit_and_verify_cover_every_declared_schema() {
             url.as_str(),
         ],
     );
-    let report = binary_report(&output);
-    if is_createdb_missing(&report) || is_transport_refused(&report) {
-        eprintln!("skipping the PostgreSQL scenario: {report}");
+    let failure = binary_failure(&output);
+    if is_createdb_missing(&failure) || is_transport_refused(&failure) {
+        eprintln!("skipping the PostgreSQL scenario: {failure}");
         return;
     }
 
     assert!(
         !output.status.success(),
-        "a selection that dropped a schema cannot certify the boundary: {report}"
+        "a selection that dropped a schema cannot certify the boundary: {failure}"
     );
     assert!(
-        report.contains("base stage catalog hash mismatch"),
-        "the refusal names the boundary the narrow selection missed: {report}"
+        failure.contains("base stage catalog hash mismatch"),
+        "the refusal names the boundary the narrow selection missed: {failure}"
     );
 }

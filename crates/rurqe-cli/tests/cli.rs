@@ -985,6 +985,63 @@ fn the_single_binary_dispatches_every_subcommand() {
     }
 }
 
+/// A successful command answers on standard output while a failure answers on
+/// standard error, so the report of a run is redirected or piped without
+/// dragging the diagnostics of the process along.
+#[test]
+fn reports_leave_on_stdout_and_failures_on_stderr() {
+    let workspace = temp_workspace("streams");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+
+    // The report of a successful command is the result a pipeline asked for, so
+    // it leaves on standard output and standard error stays empty.
+    let output = run_binary_in(&workspace, &["codegen", "--database-url", "app.db"]);
+    assert!(
+        output.status.success(),
+        "`codegen` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        report.contains("Generated schema to"),
+        "the report of a successful command leaves on stdout: {report}"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "a successful command reports nothing on stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The failure of a command is the diagnostic a pipeline must not swallow,
+    // so it stays on standard error and stdout carries no report at all.
+    let output = run_binary_in(&workspace, &["prune", "--before", "1"]);
+    assert!(
+        !output.status.success(),
+        "pruning a project without a checkpoint fails"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a failing command leaves stdout empty: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let failure = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        failure.starts_with("Error: "),
+        "the failure channel keeps its marker: {failure}"
+    );
+    assert!(
+        failure.contains("checkpoint.toml"),
+        "the failure names the missing artifact: {failure}"
+    );
+}
+
 /// The declarative definition of the `users` table used by the layout regressions.
 const CONVENTIONAL_USERS: &str =
     "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
@@ -1015,8 +1072,12 @@ fn the_built_in_conventions_place_every_artifact_under_rurqe() {
             "app.db",
         ],
     );
-    let report = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(output.status.success(), "`stage commit` failed: {report}");
+    assert!(
+        output.status.success(),
+        "`stage commit` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
 
     // The report and the filesystem agree on the one layout.
     for artifact in [
