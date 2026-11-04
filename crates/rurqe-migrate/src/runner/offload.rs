@@ -8,9 +8,12 @@
 //! runtime never starves while the connection works.
 //!
 //! The backend is moved into the blocking task and handed back together with the
-//! output, so a connection that cannot be shared across threads stays usable after
-//! the run. A panic inside the blocking task — which this crate never produces —
-//! surfaces as [`Error::Backend`] instead of unwinding the caller.
+//! outcome, so a connection that cannot be shared across threads stays usable after
+//! the run — a failed run returns it too, which keeps the follow-up the failure
+//! demands, `repair` or an inspection of the recorded history, on that very
+//! connection. Only a task that never returned hands nothing back: the backend is
+//! dropped inside it, and such a panic — which this crate never produces — surfaces
+//! as [`Error::Backend`] instead of unwinding the caller.
 //!
 //! A caller that hands over a script slice pays exactly one copy per call, because
 //! the `'static` bound of the blocking task requires an owned list and a slice is
@@ -37,8 +40,9 @@ impl Migrator {
     ///
     /// The run happens on a `spawn_blocking` thread, so no Tokio worker thread
     /// performs the blocking database I/O Conventions.md §3 forbids. The backend is
-    /// moved into the blocking task and handed back together with the report, so
-    /// the caller keeps the connection it migrated. A panic inside the task — which
+    /// moved into the blocking task and handed back together with the outcome — a
+    /// failed run returns it too — so the caller keeps the connection it migrated,
+    /// and only a task that never returned hands nothing back. Such a panic — which
     /// this crate never produces — surfaces as [`Error::Backend`] instead of
     /// unwinding the caller. Under `strict-async` this is the sanctioned runtime
     /// entry point, because it drives the guard-free core rather than the guarded
@@ -47,7 +51,7 @@ impl Migrator {
         &self,
         backend: B,
         migrations: &[Migration],
-    ) -> Result<(MigrationReport, B), Error> {
+    ) -> (Result<MigrationReport, Error>, Option<B>) {
         self.migrate_shared_async(backend, Arc::from(migrations))
             .await
     }
@@ -59,14 +63,14 @@ impl Migrator {
     /// a list; a caller that owns one — an embedded collection, whose scripts live
     /// behind an [`Arc`] — passes it here and pays no copy at all. Every other
     /// guarantee of the public entry point holds: the run happens on a
-    /// `spawn_blocking` thread, the backend comes back with the report, and a panic
-    /// inside the task surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller.
+    /// `spawn_blocking` thread, the backend comes back with the outcome whether the
+    /// run succeeded or failed, and a panic inside the task surfaces as
+    /// [`Error::Backend`] instead of unwinding the caller.
     pub(crate) async fn migrate_shared_async<B: MigrationBackend + Send + 'static>(
         &self,
         mut backend: B,
         migrations: Arc<[Migration]>,
-    ) -> Result<(MigrationReport, B), Error> {
+    ) -> (Result<MigrationReport, Error>, Option<B>) {
         let migrator = self.clone();
 
         let joined = tokio::task::spawn_blocking(move || {
@@ -75,12 +79,7 @@ impl Migrator {
         })
         .await;
 
-        match joined {
-            Ok((report, backend)) => report.map(|report| (report, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking migration task failed: {error}"
-            ))),
-        }
+        join_offloaded(joined, "migration")
     }
 
     /// Inspects the status of migrations against the database history on a
@@ -88,8 +87,9 @@ impl Migrator {
     ///
     /// The read runs on a `spawn_blocking` thread, so no Tokio worker thread
     /// performs the blocking database I/O Conventions.md §3 forbids. The backend is
-    /// moved into the blocking task and handed back together with the statuses, so
-    /// the caller keeps the connection it inspected. A panic inside the task — which
+    /// moved into the blocking task and handed back together with the outcome — a
+    /// failed read returns it too — so the caller keeps the connection it inspected,
+    /// and only a task that never returned hands nothing back. Such a panic — which
     /// this crate never produces — surfaces as [`Error::Backend`] instead of
     /// unwinding the caller. Under `strict-async` this is the sanctioned runtime
     /// entry point, because it drives the guard-free core rather than the guarded
@@ -98,7 +98,7 @@ impl Migrator {
         &self,
         backend: B,
         migrations: &[Migration],
-    ) -> Result<(Vec<MigrationStatus>, B), Error> {
+    ) -> (Result<Vec<MigrationStatus>, Error>, Option<B>) {
         self.status_shared_async(backend, Arc::from(migrations))
             .await
     }
@@ -108,14 +108,14 @@ impl Migrator {
     ///
     /// [`status_async`](Self::status_async) copies the slice it is handed into such a
     /// list; a caller that owns one passes it here and pays no copy. The read happens
-    /// on a `spawn_blocking` thread, the backend comes back with the statuses, and a
-    /// panic inside the task surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller.
+    /// on a `spawn_blocking` thread, the backend comes back with the outcome whether
+    /// the read succeeded or failed, and a panic inside the task surfaces as
+    /// [`Error::Backend`] instead of unwinding the caller.
     pub(crate) async fn status_shared_async<B: MigrationBackend + Send + 'static>(
         &self,
         mut backend: B,
         migrations: Arc<[Migration]>,
-    ) -> Result<(Vec<MigrationStatus>, B), Error> {
+    ) -> (Result<Vec<MigrationStatus>, Error>, Option<B>) {
         let migrator = self.clone();
 
         let joined = tokio::task::spawn_blocking(move || {
@@ -124,12 +124,7 @@ impl Migrator {
         })
         .await;
 
-        match joined {
-            Ok((statuses, backend)) => statuses.map(|statuses| (statuses, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking status task failed: {error}"
-            ))),
-        }
+        join_offloaded(joined, "status")
     }
 
     /// Records a baseline for a pre-existing database on a dedicated blocking
@@ -137,9 +132,10 @@ impl Migrator {
     ///
     /// The write runs on a `spawn_blocking` thread, so no Tokio worker thread
     /// performs the blocking database I/O Conventions.md §3 forbids. The backend is
-    /// moved into the blocking task and handed back together with the recorded
-    /// entry, so the caller keeps the connection it baselined. A panic inside the
-    /// task — which this crate never produces — surfaces as [`Error::Backend`]
+    /// moved into the blocking task and handed back together with the outcome — a
+    /// refused baseline returns it too — so the caller keeps the connection it
+    /// baselined, and only a task that never returned hands nothing back. Such a
+    /// panic — which this crate never produces — surfaces as [`Error::Backend`]
     /// instead of unwinding the caller. Under `strict-async` this is the sanctioned
     /// runtime entry point, because it drives the guard-free core rather than the
     /// guarded synchronous method.
@@ -148,7 +144,7 @@ impl Migrator {
         mut backend: B,
         version: MigrationVersion,
         description: &str,
-    ) -> Result<(SchemaHistoryEntry, B), Error> {
+    ) -> (Result<SchemaHistoryEntry, Error>, Option<B>) {
         let migrator = self.clone();
         let description = description.to_owned();
 
@@ -158,12 +154,7 @@ impl Migrator {
         })
         .await;
 
-        match joined {
-            Ok((entry, backend)) => entry.map(|entry| (entry, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking baseline task failed: {error}"
-            ))),
-        }
+        join_offloaded(joined, "baseline")
     }
 
     /// Repairs the schema history against updated script checksums and purges failed
@@ -171,17 +162,19 @@ impl Migrator {
     ///
     /// The repair runs on a `spawn_blocking` thread, so no Tokio worker thread
     /// performs the blocking database I/O Conventions.md §3 forbids. The backend is
-    /// moved into the blocking task and handed back together with the report, so the
-    /// caller keeps the connection it repaired. A panic inside the task — which this
-    /// crate never produces — surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller. Under `strict-async` this is the sanctioned runtime entry point,
+    /// moved into the blocking task and handed back together with the outcome — a
+    /// failed repair returns it too — so the caller keeps the connection it
+    /// repaired, and only a task that never returned hands nothing back. Such a
+    /// panic — which this crate never produces — surfaces as [`Error::Backend`]
+    /// instead of unwinding the caller. Under `strict-async` this is the sanctioned
+    /// runtime entry point,
     /// because it drives the guard-free core rather than the guarded synchronous
     /// method.
     pub async fn repair_async<B: MigrationBackend + Send + 'static>(
         &self,
         backend: B,
         migrations: &[Migration],
-    ) -> Result<(RepairReport, B), Error> {
+    ) -> (Result<RepairReport, Error>, Option<B>) {
         self.repair_shared_async(backend, Arc::from(migrations))
             .await
     }
@@ -191,14 +184,14 @@ impl Migrator {
     ///
     /// [`repair_async`](Self::repair_async) copies the slice it is handed into such a
     /// list; a caller that owns one passes it here and pays no copy. The repair runs
-    /// on a `spawn_blocking` thread, the backend comes back with the report, and a
-    /// panic inside the task surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller.
+    /// on a `spawn_blocking` thread, the backend comes back with the outcome whether
+    /// the repair succeeded or failed, and a panic inside the task surfaces as
+    /// [`Error::Backend`] instead of unwinding the caller.
     pub(crate) async fn repair_shared_async<B: MigrationBackend + Send + 'static>(
         &self,
         mut backend: B,
         migrations: Arc<[Migration]>,
-    ) -> Result<(RepairReport, B), Error> {
+    ) -> (Result<RepairReport, Error>, Option<B>) {
         let migrator = self.clone();
 
         let joined = tokio::task::spawn_blocking(move || {
@@ -207,15 +200,30 @@ impl Migrator {
         })
         .await;
 
-        match joined {
-            Ok((report, backend)) => report.map(|report| (report, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking repair task failed: {error}"
-            ))),
-        }
+        join_offloaded(joined, "repair")
     }
 }
 
+/// Joins an offloaded lifecycle task, handing the backend back with its outcome.
+///
+/// The blocking task returns the outcome of a guard-free core together with the
+/// backend it drove, so a lifecycle failure keeps the connection usable for the
+/// follow-up that failure demands. Only a task that never returned — a panic
+/// inside it, or a cancellation — hands nothing back, because the backend is
+/// dropped inside it; the join error then travels as [`Error::Backend`] named
+/// after `context`, the operation the caller asked for.
+pub(crate) fn join_offloaded<T, B>(
+    joined: Result<(Result<T, Error>, B), tokio::task::JoinError>,
+    context: &str,
+) -> (Result<T, Error>, Option<B>) {
+    match joined {
+        Ok((outcome, backend)) => (outcome, Some(backend)),
+        Err(error) => (
+            Err(Error::Backend(format!("blocking {context} task failed: {error}"))),
+            None,
+        ),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,9 +259,10 @@ mod tests {
         let runtime = runtime();
         let migrations = sample();
 
-        let (report, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations))
-            .expect("the blocking run succeeds");
+        let (outcome, backend) = runtime
+            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        let report = outcome.expect("the blocking run succeeds");
+        let backend = backend.expect("the backend is handed back with the report");
 
         assert_eq!(report.applied_count, 2);
         assert_eq!(
@@ -271,13 +280,14 @@ mod tests {
         let runtime = runtime();
         let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-        let (entry, backend) = runtime
+        let (outcome, backend) = runtime
             .block_on(Migrator::new().baseline_async(
                 InMemoryBackend::new(),
                 version.clone(),
                 "legacy baseline",
-            ))
-            .expect("the blocking baseline succeeds");
+            ));
+        let entry = outcome.expect("the blocking baseline succeeds");
+        let backend = backend.expect("the backend is handed back with the entry");
 
         assert_eq!(entry.kind, MigrationKind::Baseline);
         assert_eq!(
@@ -288,7 +298,7 @@ mod tests {
         assert_eq!(backend.history[0].kind, MigrationKind::Baseline);
         assert!(backend.history[0].success);
 
-        let refused =
+        let (refused, _) =
             runtime.block_on(Migrator::new().baseline_async(backend, version, "too late"));
 
         match refused {
@@ -316,9 +326,10 @@ mod tests {
         let fixed =
             vec![Migration::parse("V1__broken.sql", "SELECT 1;").expect("a valid script name")];
 
-        let (report, backend) = runtime
-            .block_on(Migrator::new().repair_async(backend, &fixed))
-            .expect("the blocking repair succeeds");
+        let (outcome, backend) = runtime
+            .block_on(Migrator::new().repair_async(backend, &fixed));
+        let report = outcome.expect("the blocking repair succeeds");
+        let backend = backend.expect("the backend is handed back with the report");
 
         assert_eq!(report.removed_failed_entries, 1);
         assert!(report.updated_checksums.is_empty());
@@ -333,13 +344,15 @@ mod tests {
         let runtime = runtime();
         let migrations = sample();
 
-        let (_, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations))
-            .expect("the blocking run succeeds");
+        let (outcome, backend) = runtime
+            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        outcome.expect("the blocking run succeeds");
+        let backend = backend.expect("the backend is handed back with the report");
 
-        let (statuses, backend) = runtime
-            .block_on(Migrator::new().status_async(backend, &migrations))
-            .expect("the blocking status read succeeds");
+        let (outcome, backend) =
+            runtime.block_on(Migrator::new().status_async(backend, &migrations));
+        let statuses = outcome.expect("the blocking status read succeeds");
+        let backend = backend.expect("the backend is handed back with the statuses");
 
         assert_eq!(statuses.len(), 2);
         assert!(statuses
@@ -356,16 +369,17 @@ mod tests {
                 .expect("a valid script name"),
         ];
 
-        let (_, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &stage))
-            .expect("the stage migration applies");
+        let (outcome, backend) = runtime
+            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &stage));
+        outcome.expect("the stage migration applies");
+        let backend = backend.expect("the backend is handed back with the report");
 
         let tail = vec![
             Migration::parse("V2__tail.sql", "CREATE TABLE orders (id INTEGER);")
                 .expect("a valid script name"),
         ];
 
-        let refused = runtime
+        let (refused, _) = runtime
             .block_on(Migrator::with_checkpoint(boundary("2")).migrate_async(backend, &tail));
 
         match refused {
@@ -417,9 +431,10 @@ mod tests {
             Ok(_) => panic!("`strict-async` must refuse a synchronous run inside a runtime"),
         }
 
-        let (report, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations))
-            .expect("the blocking wrapper runs the guard-free core");
+        let (outcome, backend) = runtime
+            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        let report = outcome.expect("the blocking wrapper runs the guard-free core");
+        let backend = backend.expect("the backend is handed back with the report");
 
         assert_eq!(report.applied_count, 2);
         assert_eq!(backend.history.len(), 2);

@@ -262,8 +262,12 @@ asynchronous runtime, where the reactor starves for the length of the run.
   told apart from inside the thread, so the refusal applies there as well. Only
   the asynchronous counterparts are sanctioned, and the feature leaves them
   untouched: they run the same work on a blocking thread of the pool.
+- The backend is handed back with the outcome. A run that fails returns it as
+  well, so the follow-up the failure demands — `repair` to clear the recorded
+  attempt, or an inspection of the recorded history — runs on the very connection
+  that failed, and only a task that never returned hands nothing back.
 - A panic inside the task never unwinds the caller. It surfaces as a backend
-  error, and the backend itself is handed back on success alone.
+  error, and the backend it drove is dropped inside the task that panicked.
 
 Runtime detection is available with the `tokio` feature. A build without it cannot
 observe a runtime at all, so neither the warning nor the refusal ever triggers

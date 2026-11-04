@@ -149,9 +149,11 @@ fn migrate_async_hands_the_backend_back() {
         .build()
         .expect("build tokio runtime");
 
-    let (report, backend) = runtime
-        .block_on(embedded().migrate_async(InMemoryBackend::new()))
-        .expect("the blocking run succeeds");
+    let (outcome, backend) = runtime
+        .block_on(embedded().migrate_async(InMemoryBackend::new()));
+
+    let report = outcome.expect("the blocking run succeeds");
+    let backend = backend.expect("the backend is handed back with the report");
 
     assert_eq!(report.applied_count, 2);
     assert_eq!(report.applied_scripts.len(), 2);
@@ -167,13 +169,14 @@ fn status_async_reports_the_applied_scripts() {
         .expect("build tokio runtime");
 
     let embedded = embedded();
-    let (_, backend) = runtime
-        .block_on(embedded.migrate_async(InMemoryBackend::new()))
-        .expect("the blocking run succeeds");
+    let (outcome, backend) = runtime
+        .block_on(embedded.migrate_async(InMemoryBackend::new()));
+    outcome.expect("the blocking run succeeds");
+    let backend = backend.expect("the backend is handed back with the report");
 
-    let (statuses, backend) = runtime
-        .block_on(embedded.status_async(backend))
-        .expect("the blocking status read succeeds");
+    let (outcome, backend) = runtime.block_on(embedded.status_async(backend));
+    let statuses = outcome.expect("the blocking status read succeeds");
+    let backend = backend.expect("the backend is handed back with the statuses");
 
     assert_eq!(statuses.len(), 2);
     assert_eq!(
@@ -199,11 +202,17 @@ fn migrate_async_surfaces_a_backend_failure() {
     let embedded =
         EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
 
-    let error = runtime
-        .block_on(embedded.migrate_async(backend))
-        .expect_err("the failing script aborts the run");
+    let (outcome, handed) = runtime.block_on(embedded.migrate_async(backend));
 
-    assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+    match outcome {
+        Err(Error::MigrationExecutionFailed { .. }) => {}
+        Err(other) => panic!("expected MigrationExecutionFailed, got {other:?}"),
+        Ok(_) => panic!("the failing script aborts the run"),
+    }
+    assert!(
+        handed.is_some(),
+        "a failed run still hands the healthy connection back"
+    );
 }
 
 #[test]
@@ -215,13 +224,15 @@ fn baseline_async_records_the_baseline_and_hands_the_backend_back() {
 
     let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-    let (entry, backend) = runtime
+    let (outcome, backend) = runtime
         .block_on(embedded().baseline_async(
             InMemoryBackend::new(),
             version.clone(),
             "legacy baseline",
-        ))
-        .expect("the blocking baseline succeeds");
+        ));
+
+    let entry = outcome.expect("the blocking baseline succeeds");
+    let backend = backend.expect("the backend is handed back with the entry");
 
     assert_eq!(entry.kind, MigrationKind::Baseline);
     assert_eq!(
@@ -259,9 +270,10 @@ fn repair_async_purges_the_failed_entry_of_a_broken_script() {
     let fixed =
         EmbeddedMigrations::new(&[("V1__broken.sql", "SELECT 1;")]).expect("valid migrations");
 
-    let (report, backend) = runtime
-        .block_on(fixed.repair_async(backend))
-        .expect("the blocking repair succeeds");
+    let (outcome, backend) = runtime.block_on(fixed.repair_async(backend));
+
+    let report = outcome.expect("the blocking repair succeeds");
+    let backend = backend.expect("the backend is handed back with the report");
 
     assert_eq!(report.removed_failed_entries, 1);
     assert!(report.updated_checksums.is_empty());
@@ -280,9 +292,11 @@ fn migrate_async_runs_the_guard_free_core_inside_a_runtime() {
         .build()
         .expect("build tokio runtime");
 
-    let (report, backend) = runtime
-        .block_on(embedded().migrate_async(InMemoryBackend::new()))
-        .expect("the blocking run succeeds under `strict-async`");
+    let (outcome, backend) = runtime
+        .block_on(embedded().migrate_async(InMemoryBackend::new()));
+
+    let report = outcome.expect("the blocking run succeeds under `strict-async`");
+    let backend = backend.expect("the backend is handed back with the report");
 
     assert_eq!(report.applied_count, 2);
     assert_eq!(backend.history.len(), 2);
@@ -300,9 +314,11 @@ fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
 
     let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-    let (entry, backend) = runtime
-        .block_on(embedded().baseline_async(InMemoryBackend::new(), version, "legacy baseline"))
-        .expect("the blocking baseline succeeds under `strict-async`");
+    let (outcome, backend) = runtime
+        .block_on(embedded().baseline_async(InMemoryBackend::new(), version, "legacy baseline"));
+
+    let entry = outcome.expect("the blocking baseline succeeds under `strict-async`");
+    let backend = backend.expect("the backend is handed back with the entry");
 
     assert_eq!(entry.kind, MigrationKind::Baseline);
     assert_eq!(backend.history.len(), 1);

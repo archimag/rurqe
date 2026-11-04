@@ -43,7 +43,7 @@
 //!
 //! `cold_start_async` (available with the `tokio` feature) is the sanctioned path
 //! for an asynchronous startup: it applies the stage on a dedicated blocking
-//! thread and hands the backend back together with the report, exactly like the
+//! thread and hands the backend back together with the outcome, exactly like the
 //! `*_async` wrappers of [`EmbeddedMigrations`](crate::embedded::EmbeddedMigrations).
 //!
 //! The implementation is split by responsibility: the `script` module holds the

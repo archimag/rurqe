@@ -74,6 +74,8 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::Migration;
+#[cfg(feature = "tokio")]
+use crate::runner::join_offloaded;
 use crate::runner::{
     LockGuard, MigrationBackend, MigrationReport, MigrationStatus, Migrator, RepairReport,
 };
@@ -94,7 +96,9 @@ use crate::version::MigrationVersion;
 /// to the matching [`Migrator`] wrapper, so the offload mechanics live in a single
 /// place, while [`migrate_async`](Self::migrate_async) runs the collection's own
 /// guard-free lifecycle core — cold start, tail, and final catalog check — on the
-/// dedicated blocking thread.
+/// dedicated blocking thread. Each counterpart hands the backend back together
+/// with the outcome, so a failure keeps the connection usable for the follow-up
+/// it demands.
 ///
 /// The synchronous methods report such a call through `warn_if_in_tokio_runtime`
 /// and keep running, which is the default behaviour. Compiling this crate with the
@@ -108,17 +112,17 @@ use crate::version::MigrationVersion;
 ///
 /// A script name identifies one migration, so a collection refuses two entries
 /// sharing one script name: one run would otherwise apply two different bodies
-    /// under a single recorded identity.
-    ///
-    /// A baked checkpoint and a baked snapshot that anchor different catalogs are
-    /// refused the same way, because the disagreement is decidable from the
-    /// artifacts alone: the cold-start marker lands at the higher of the newest
-    /// versioned migration and the pruned boundary, so a tail rising no higher
-    /// than that boundary puts the marker exactly at it — where the boundary
-    /// check measures it against the checkpoint hash. A snapshot anchoring
-    /// another digest is therefore refused at construction with
-    /// [`Error::IncoherentArtifacts`] instead of initialising a target every
-    /// later run rejects.
+/// under a single recorded identity.
+///
+/// A baked checkpoint and a baked snapshot that anchor different catalogs are
+/// refused the same way, because the disagreement is decidable from the
+/// artifacts alone: the cold-start marker lands at the higher of the newest
+/// versioned migration and the pruned boundary, so a tail rising no higher
+/// than that boundary puts the marker exactly at it — where the boundary
+/// check measures it against the checkpoint hash. A snapshot anchoring
+/// another digest is therefore refused at construction with
+/// [`Error::IncoherentArtifacts`] instead of initialising a target every
+/// later run rejects.
 ///
 /// A collection assembled from the full project artifacts —
 /// [`from_artifacts`](Self::from_artifacts) — carries the project checkpoint, the
@@ -482,12 +486,13 @@ impl EmbeddedMigrations {
     /// runs off the runtime's worker threads.
     ///
     /// The backend is moved into the blocking task and handed back together with
-    /// the report, so a connection that cannot be shared across threads stays
-    /// usable after the run. The collection itself is shared with the task instead
-    /// of copied, so a binary carrying the whole DDL of a project pays one pointer
-    /// per artifact on every invocation. A panic inside the blocking task — which
-    /// this crate never produces — surfaces as [`Error::Backend`] instead of
-    /// unwinding the caller.
+    /// the outcome: a successful run returns it with the report, a failed run
+    /// returns it with the error, and only a task that never returned hands nothing
+    /// back — the backend is dropped inside it, and a panic there, which this crate
+    /// never produces, surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller. The collection itself is shared with the task instead of copied, so a
+    /// binary carrying the whole DDL of a project pays one pointer per artifact on
+    /// every invocation.
     ///
     /// The task runs the guard-free core of the lifecycle, so it never trips the
     /// `strict-async` refusal: a blocking-pool thread is exactly where this work
@@ -496,7 +501,7 @@ impl EmbeddedMigrations {
     pub async fn migrate_async<B: MigrationBackend + Send + 'static>(
         &self,
         mut backend: B,
-    ) -> Result<(MigrationReport, B), Error> {
+    ) -> (Result<MigrationReport, Error>, Option<B>) {
         let embedded = self.clone();
 
         let joined = tokio::task::spawn_blocking(move || {
@@ -505,12 +510,7 @@ impl EmbeddedMigrations {
         })
         .await;
 
-        match joined {
-            Ok((report, backend)) => report.map(|report| (report, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking migration task failed: {error}"
-            ))),
-        }
+        join_offloaded(joined, "migration")
     }
 
     /// Inspects the status of embedded migrations against the database history.
@@ -532,17 +532,17 @@ impl EmbeddedMigrations {
     /// Delegates to the shared offload entry point of [`Migrator`], which owns the
     /// mechanics, so this wrapper and the runner counterpart cannot drift apart, and
     /// hands over the scripts this collection already shares instead of copying them.
-    ///
     /// The backend is moved into the blocking task and handed back with the
-    /// statuses, so the caller keeps the connection it inspected. A panic inside
-    /// the blocking task surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller. Like [`migrate_async`](Self::migrate_async), the task runs the
-    /// guard-free core of the lifecycle.
+    /// outcome — a failed read returns it too — so the caller keeps the connection
+    /// it inspected, and only a task that never returned hands nothing back. Such a
+    /// panic surfaces as [`Error::Backend`] instead of unwinding the caller. Like
+    /// [`migrate_async`](Self::migrate_async), the task runs the guard-free core of
+    /// the lifecycle.
     #[cfg(feature = "tokio")]
     pub async fn status_async<B: MigrationBackend + Send + 'static>(
         &self,
         backend: B,
-    ) -> Result<(Vec<MigrationStatus>, B), Error> {
+    ) -> (Result<Vec<MigrationStatus>, Error>, Option<B>) {
         Migrator::new()
             .status_shared_async(backend, Arc::clone(&self.migrations))
             .await
@@ -569,8 +569,9 @@ impl EmbeddedMigrations {
     /// never performs the blocking database I/O Conventions.md §3 forbids.
     ///
     /// The backend is moved into the blocking task and handed back together with
-    /// the report, so the caller keeps the connection it repaired. A panic inside
-    /// the blocking task — which this crate never produces — surfaces as
+    /// the outcome — a failed repair returns it too — so the caller keeps the
+    /// connection it repaired, and only a task that never returned hands nothing
+    /// back. Such a panic — which this crate never produces — surfaces as
     /// [`Error::Backend`] instead of unwinding the caller. Under `strict-async` this
     /// is the sanctioned runtime entry point, because it drives the guard-free core
     /// rather than the guarded synchronous method.
@@ -578,7 +579,7 @@ impl EmbeddedMigrations {
     pub async fn repair_async<B: MigrationBackend + Send + 'static>(
         &self,
         backend: B,
-    ) -> Result<(RepairReport, B), Error> {
+    ) -> (Result<RepairReport, Error>, Option<B>) {
         Migrator::new()
             .repair_shared_async(backend, Arc::clone(&self.migrations))
             .await
@@ -609,8 +610,9 @@ impl EmbeddedMigrations {
     /// never performs the blocking database I/O Conventions.md §3 forbids.
     ///
     /// The backend is moved into the blocking task and handed back together with
-    /// the recorded entry, so the caller keeps the connection it baselined. A panic
-    /// inside the blocking task — which this crate never produces — surfaces as
+    /// the outcome — a refused baseline returns it too — so the caller keeps the
+    /// connection it baselined, and only a task that never returned hands nothing
+    /// back. Such a panic — which this crate never produces — surfaces as
     /// [`Error::Backend`] instead of unwinding the caller. Under `strict-async` this
     /// is the sanctioned runtime entry point, because it drives the guard-free core
     /// rather than the guarded synchronous method.
@@ -620,7 +622,7 @@ impl EmbeddedMigrations {
         backend: B,
         version: MigrationVersion,
         description: &str,
-    ) -> Result<(SchemaHistoryEntry, B), Error> {
+    ) -> (Result<SchemaHistoryEntry, Error>, Option<B>) {
         Migrator::new()
             .baseline_async(backend, version, description)
             .await

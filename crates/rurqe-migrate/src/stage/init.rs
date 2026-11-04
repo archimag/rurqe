@@ -2,6 +2,8 @@
 
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
+#[cfg(feature = "tokio")]
+use crate::runner::join_offloaded;
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
 use crate::sleeper::guard_blocking_entry;
 
@@ -214,10 +216,11 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
 /// This is the asynchronous counterpart of [`cold_start`]: the stage is applied on
 /// a dedicated blocking thread, so the runtime's worker threads stay free for as
 /// long as the DDL takes. The backend is moved into the blocking task and handed
-/// back together with the report, so a connection that cannot be shared across
-/// threads stays usable after the run. A panic inside the blocking task — which
-/// this crate never produces — surfaces as [`Error::Backend`] instead of unwinding
-/// the caller.
+/// back together with the outcome — a failed cold start returns it too — so a
+/// connection that cannot be shared across threads stays usable after the run, and
+/// only a task that never returned hands nothing back. Such a panic — which this
+/// crate never produces — surfaces as [`Error::Backend`] instead of unwinding the
+/// caller.
 ///
 /// The task runs the guard-free core of the lifecycle, so it never trips the
 /// `strict-async` refusal: a blocking-pool thread is exactly where this work
@@ -227,7 +230,7 @@ pub async fn cold_start_async<B: MigrationBackend + Send + 'static>(
     mut backend: B,
     stage: &DeclarativeStage,
     marker: &StageMarker,
-) -> Result<(ColdStartReport, B), Error> {
+) -> (Result<ColdStartReport, Error>, Option<B>) {
     let stage = stage.clone();
     let marker = marker.clone();
 
@@ -237,12 +240,7 @@ pub async fn cold_start_async<B: MigrationBackend + Send + 'static>(
     })
     .await;
 
-    match joined {
-        Ok((report, backend)) => report.map(|report| (report, backend)),
-        Err(error) => Err(Error::Backend(format!(
-            "blocking cold start task failed: {error}"
-        ))),
-    }
+    join_offloaded(joined, "cold start")
 }
 
 /// Writes `entry` in a transaction of its own.

@@ -437,13 +437,15 @@ fn cold_start_async_initialises_the_database() {
         .build()
         .expect("build tokio runtime");
 
-    let (report, backend) = runtime
+    let (outcome, backend) = runtime
         .block_on(cold_start_async(
             InMemoryBackend::new(),
             &stage(),
             &marker(),
-        ))
-        .expect("the blocking cold start succeeds");
+        ));
+
+    let report = outcome.expect("the blocking cold start succeeds");
+    let backend = backend.expect("the backend is handed back with the report");
 
     assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
     assert_eq!(report.installed_rank, Some(1));
@@ -472,11 +474,18 @@ fn cold_start_async_surfaces_a_diverged_stage_digest() {
         .build()
         .expect("build tokio runtime");
 
-    let error = runtime
-        .block_on(cold_start_async(backend, &stage(), &changed))
-        .expect_err("a diverged stage cannot masquerade as a cold start");
+    let (outcome, backend) = runtime
+        .block_on(cold_start_async(backend, &stage(), &changed));
 
-    assert!(matches!(error, Error::InvalidStage { .. }), "got {error:?}");
+    match outcome {
+        Err(Error::InvalidStage { .. }) => {}
+        Err(other) => panic!("expected InvalidStage, got {other:?}"),
+        Ok(_) => panic!("a diverged stage cannot masquerade as a cold start"),
+    }
+    assert!(
+        backend.is_some(),
+        "a rejected cold start still hands the backend back"
+    );
 }
 
 /// Under `strict-async` the synchronous entry point refuses to block a
@@ -502,9 +511,11 @@ fn cold_start_is_refused_inside_a_runtime_under_strict_async() {
         );
         assert!(!backend.locked);
 
-        let (report, backend) = cold_start_async(InMemoryBackend::new(), &stage(), &marker())
-            .await
-            .expect("the sanctioned runtime path initialises the database");
+        let (outcome, backend) = cold_start_async(InMemoryBackend::new(), &stage(), &marker())
+            .await;
+
+        let report = outcome.expect("the sanctioned runtime path initialises the database");
+        let backend = backend.expect("the backend is handed back with the report");
 
         assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
         assert_eq!(report.installed_rank, Some(1));
