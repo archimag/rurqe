@@ -663,3 +663,167 @@ fn an_agreeing_snapshot_initialises_the_boundary_target() {
         Some("2".to_owned())
     );
 }
+
+/// A backend that records every interaction with the run lock, so a test can
+/// assert that one span covers the whole embedded lifecycle.
+#[derive(Debug, Default)]
+struct SpanObservingBackend {
+    inner: InMemoryBackend,
+    acquires: usize,
+    releases: usize,
+    /// Every recorded backend interaction and whether the run lock was held.
+    interactions: Vec<(&'static str, bool)>,
+}
+
+impl SpanObservingBackend {
+    fn record(&mut self, interaction: &'static str) {
+        self.interactions.push((interaction, self.inner.locked));
+    }
+}
+
+impl MigrationBackend for SpanObservingBackend {
+    type Transaction<'a>
+        = InMemoryTransaction<'a>
+    where
+        Self: 'a;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.record("ensure");
+        self.inner.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.record("read");
+        self.inner.read_history()
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.record("catalog");
+        self.inner.catalog_checksum()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        self.record("begin");
+        self.inner.begin()
+    }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        self.acquires += 1;
+        self.inner.acquire_lock()
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        self.releases += 1;
+        self.inner.release_lock()
+    }
+}
+
+/// The run lock is taken once at entry and released once when the run returns, so
+/// neither the cold start nor the final comparison sits in a window a concurrent
+/// lifecycle operation could exploit. The history is read once on a warm target and
+/// twice when the cold start ran, because the marker the cold start records has to
+/// be visible to the tail.
+#[test]
+fn the_whole_lifecycle_runs_inside_one_lock_span() {
+    let catalog = SchemaCatalog::default();
+    let snapshot = catalog.to_lock();
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[(
+            "R__audit.sql",
+            "CREATE VIEW audit AS SELECT id FROM users;",
+        )],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("valid artifacts");
+
+    let mut backend = SpanObservingBackend::default();
+    backend.inner.catalog_checksum = Some(catalog.checksum());
+
+    let cold = embedded
+        .migrate(&mut backend)
+        .expect("the database is cold started");
+    assert!(cold.cold_start.is_some());
+
+    assert_eq!(backend.acquires, 1, "one acquire covers the whole run");
+    assert_eq!(backend.releases, 1, "one release when the run returns");
+    assert!(
+        backend.interactions.iter().all(|entry| entry.1),
+        "every backend interaction runs inside the lock: {:?}",
+        backend.interactions
+    );
+    assert_eq!(
+        backend
+            .interactions
+            .iter()
+            .filter(|entry| entry.0 == "read")
+            .count(),
+        2,
+        "the probe reads the history and the cold start makes the tail re-read it"
+    );
+    assert!(
+        !backend.inner.locked,
+        "the run releases the lock when it returns"
+    );
+
+    backend.interactions.clear();
+
+    let warm = embedded
+        .migrate(&mut backend)
+        .expect("the initialised target is accepted again");
+
+    assert!(warm.cold_start.is_none());
+    assert_eq!(backend.acquires, 2, "the warm run takes the lock once as well");
+    assert_eq!(backend.releases, 2);
+    assert!(
+        backend.interactions.iter().all(|entry| entry.1),
+        "every backend interaction runs inside the lock: {:?}",
+        backend.interactions
+    );
+    assert_eq!(
+        backend
+            .interactions
+            .iter()
+            .filter(|entry| entry.0 == "read")
+            .count(),
+        1,
+        "a warm run classifies the tail against the probe read alone"
+    );
+    assert!(
+        !backend.inner.locked,
+        "the run releases the lock when it returns"
+    );
+}
+
+/// The script checks moved into the tail's guarded span keep their place: a list a
+/// lifecycle run cannot apply is still refused before any script executes, and the
+/// refusal releases the run lock.
+#[test]
+fn duplicate_versions_are_rejected_when_the_run_starts() {
+    let embedded = EmbeddedMigrations::new(&[
+        ("V7__users.sql", "CREATE TABLE users (id INTEGER);"),
+        ("V7__orders.sql", "CREATE TABLE orders (id INTEGER);"),
+    ])
+    .expect("assembling the list needs no version to be unique");
+
+    let mut backend = InMemoryBackend::new();
+    let error = embedded
+        .migrate(&mut backend)
+        .expect_err("two scripts of one version cannot be applied in order");
+
+    assert_eq!(
+        error,
+        Error::DuplicateMigrationVersion {
+            version: "7".to_owned(),
+            first: "V7__users.sql".to_owned(),
+            second: "V7__orders.sql".to_owned(),
+        }
+    );
+    assert!(
+        backend.history.is_empty(),
+        "no script of the refused run was applied"
+    );
+    assert!(!backend.locked, "the refused run releases the run lock");
+}

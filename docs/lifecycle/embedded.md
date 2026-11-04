@@ -133,11 +133,18 @@ before it serves:
 ```
 
 `migrate` performs the whole guarded lifecycle, and every step of it is switched on
-by the artifact that was baked:
+by the artifact that was baked. The run holds the exclusive run lock of the backend
+from the first history probe to the final catalog comparison: one lock spans the
+probe, the cold start, the tail, and the comparison, so a concurrent lifecycle
+operation on the same database can neither initialise, drop, nor advance the schema
+at any point of the run.
 
-1. The history table is ensured under the run lock of the backend. A database that
-   never ran a migration has none yet, and creating it is a schema write, so the
-   creation happens under the same lock an applying run takes.
+1. The run lock is taken once at entry, and the history table is ensured under it. A
+   database that never ran a migration has none yet, and creating it is a schema
+   write, so the creation happens under the lock the whole run holds. The history is
+   then read once: a target that already carries history is classified from that
+   read, while a target the cold start initialised is read once more, because the
+   cold start records its own marker.
 2. A target carrying no recorded history at all is initialised from the declarative
    stage when the collection bakes one. The cold start records a single marker
    instead of the DDL of the stage, and the marker sits at the newest version the
@@ -157,10 +164,10 @@ by the artifact that was baked:
 5. The catalog the run produced is compared against the digest the baked
    `schema.lock` anchors, and a divergence is reported as
    `Error::SchemaHashMismatch` instead of being accepted as up to date. The
-   digest is read under the same exclusive run lock as every other backend
-   interaction of the run, so a concurrent lifecycle operation on the same
-   database can neither drop nor advance the schema between the commit of the
-   tail and the comparison.
+   comparison reads the catalog inside the span the run opened at entry, so the
+   schema cannot move between the commit of the tail and the digest read: a
+   divergence describes the scripts the run applied, never damage a concurrent
+   lifecycle operation could have caused.
 
 A backend that cannot introspect itself reports no catalog, which leaves the
 anchored digest unverified rather than rejecting a schema the backend never

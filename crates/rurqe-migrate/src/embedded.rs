@@ -80,7 +80,7 @@ use crate::runner::{
     LockGuard, MigrationBackend, MigrationReport, MigrationStatus, Migrator, RepairReport,
 };
 use crate::sleeper::guard_blocking_entry;
-use crate::stage::init::cold_start_core;
+use crate::stage::init::cold_start_guarded;
 use crate::stage::{DeclarativeStage, StageMarker, StageScript};
 use crate::version::MigrationVersion;
 
@@ -319,6 +319,15 @@ impl EmbeddedMigrations {
     /// Runs the embedded lifecycle: the cold start, the migration tail, and the
     /// final catalog check.
     ///
+    /// The whole lifecycle runs inside one exclusive span: the run lock is taken
+    /// before the history is probed and released only when the run returns, so a
+    /// concurrent lifecycle operation can neither initialise, drop, nor advance
+    /// the schema at any point of the run — between the probe and the cold start,
+    /// between the cold start and the tail, or between the commit of the tail and
+    /// the final catalog comparison. The span also means the metadata table is
+    /// ensured once per run, and the history is read once, twice when the cold
+    /// start recorded its marker.
+    ///
     /// * An empty target is initialised from the baked declarative stage when the
     ///   collection carries one, exactly like [`cold_start`](crate::cold_start): the
     ///   stage marker sits at the newest version the collection declares, and it
@@ -331,11 +340,11 @@ impl EmbeddedMigrations {
     ///   advanced by a partial tail.
     /// * A baked `schema.lock` snapshot anchors the digest the catalog the run
     ///   produced is compared against once every script has been applied; a
-    ///   divergence is reported as [`Error::SchemaHashMismatch`]. The digest is
-    ///   read under the same exclusive run lock as the other backend
-    ///   interactions of the lifecycle, so a concurrent lifecycle operation can
-    ///   neither drop nor advance the schema between the commit of the tail and
-    ///   the comparison.
+    ///   divergence is reported as [`Error::SchemaHashMismatch`]. The comparison
+    ///   reads the catalog inside the span the run opened at entry, so the schema
+    ///   cannot move between the commit of the tail and the digest read, and a
+    ///   divergence describes the scripts this run applied rather than damage a
+    ///   concurrent lifecycle operation could have caused.
     ///
     /// A collection built by [`new`](Self::new) or
     /// [`from_migrations`](Self::from_migrations) carries none of those artifacts,
@@ -358,46 +367,54 @@ impl EmbeddedMigrations {
         let mut report = MigrationReport::default();
         let mut cold_start_time = 0;
 
-        if let Some(stage) = self.cold_start_stage(backend)? {
-            let marker = self.stage_marker(stage)?;
-            let cold = cold_start_core(backend, stage, &marker)?;
-            cold_start_time = cold.total_time_ms;
-            if cold.installed_rank.is_some() {
-                report.cold_start = Some(cold);
+        // The whole lifecycle runs inside one exclusive span: the probe, the cold
+        // start, the tail, and the final comparison all observe the same history
+        // and the same schema under the same lock.
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
+        let history = guard.read_history()?;
+
+        // An empty target is initialised from the baked stage; a target that
+        // already carries history is advanced by the tail alone, so a cold start
+        // never overwrites it.
+        let cold_start_stage = if history.is_empty() {
+            self.stage.as_deref()
+        } else {
+            None
+        };
+
+        let history = match cold_start_stage {
+            Some(stage) => {
+                let marker = self.stage_marker(stage)?;
+                let cold = cold_start_guarded(&mut guard, stage, &marker, &history)?;
+                cold_start_time = cold.total_time_ms;
+                if cold.installed_rank.is_some() {
+                    report.cold_start = Some(cold);
+                }
+                // The cold start recorded its own marker, so the tail classifies
+                // the scripts against the history it left behind.
+                guard.read_history()?
             }
-        }
+            None => history,
+        };
 
         let migrator = match &self.checkpoint {
             Some(checkpoint) => Migrator::with_checkpoint(checkpoint.clone()),
             None => Migrator::new(),
         };
-        let tail = migrator.migrate_core(backend, &self.migrations)?;
+        // The script checks run with the tail, exactly where the classic lifecycle
+        // runs them, so the embedded lifecycle keeps reporting a malformed list
+        // after the cold start rather than before it.
+        migrator.validate_scripts(&self.migrations)?;
+        let tail = migrator.migrate_guarded(&mut guard, &self.migrations, &history)?;
 
         report.applied_scripts = tail.applied_scripts;
         report.applied_count = tail.applied_count;
         report.total_time_ms = tail.total_time_ms + cold_start_time;
 
-        self.verify_catalog(backend)?;
+        self.verify_catalog_guarded(&mut guard)?;
 
         Ok(report)
-    }
-
-    /// The stage an empty target is initialised from.
-    ///
-    /// `None` when the collection bakes no stage, and when the target already
-    /// carries history: an initialised database is advanced by the tail alone, so a
-    /// cold start never overwrites it.
-    fn cold_start_stage<'a, B: MigrationBackend>(
-        &'a self,
-        backend: &mut B,
-    ) -> Result<Option<&'a DeclarativeStage>, Error> {
-        let Some(stage) = &self.stage else {
-            return Ok(None);
-        };
-        if !history_is_empty(backend)? {
-            return Ok(None);
-        }
-        Ok(Some(stage))
     }
 
     /// Builds the marker the cold start of this collection records.
@@ -451,21 +468,24 @@ impl EmbeddedMigrations {
 
     /// Compares the catalog the run produced against the baked digest.
     ///
-    /// The digest is read under the exclusive run lock, exactly like the other
-    /// backend interactions of the lifecycle, so a concurrent `clean` or
-    /// `migrate` cannot drop or advance the schema between the commit of the
-    /// tail and the comparison. A collection that bakes no digest returns
-    /// before the lock is taken.
+    /// The caller holds the exclusive run lock for the whole lifecycle, so the
+    /// digest is read inside the very span that probed the history, initialised
+    /// the target, and applied the tail: a concurrent `clean` or `migrate` cannot
+    /// drop or advance the schema between the commit of the tail and the
+    /// comparison. A collection that bakes no digest returns before the catalog is
+    /// read.
     ///
     /// A backend able to introspect itself reports the digest of the catalog it
     /// really holds; one that cannot reports nothing, which leaves the anchor
     /// unverified instead of rejecting a schema the backend never described.
-    fn verify_catalog<B: MigrationBackend>(&self, backend: &mut B) -> Result<(), Error> {
+    fn verify_catalog_guarded<B: MigrationBackend>(
+        &self,
+        guard: &mut LockGuard<'_, B>,
+    ) -> Result<(), Error> {
         let Some(expected) = self.schema_hash else {
             return Ok(());
         };
 
-        let mut guard = LockGuard::acquire(backend)?;
         let Some(actual) = guard.catalog_checksum()? else {
             return Ok(());
         };
@@ -689,18 +709,6 @@ fn validate_artifact_coherence(
         snapshot_hash: snapshot.to_hex(),
         checkpoint_hash: checkpoint.schema_hash().to_hex(),
     })
-}
-
-/// Whether the target database carries no recorded history at all.
-///
-/// The metadata table is created on demand, so the read is a schema write and
-/// happens under the same run lock the lifecycle operations take. The guard is
-/// dropped before the lifecycle continues, so the cold start that follows acquires
-/// the lock on its own.
-fn history_is_empty<B: MigrationBackend>(backend: &mut B) -> Result<bool, Error> {
-    let mut guard = LockGuard::acquire(backend)?;
-    guard.ensure_schema_history_table()?;
-    Ok(guard.read_history()?.is_empty())
 }
 
 impl Deref for EmbeddedMigrations {
