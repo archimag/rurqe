@@ -28,7 +28,9 @@ pub struct Checksum([u8; CHECKSUM_LEN]);
 impl Checksum {
     /// Computes the SHA-256 digest of `bytes`.
     pub fn of(bytes: &[u8]) -> Self {
-        Self(sha256(bytes))
+        let mut hasher = ChecksumHasher::new();
+        hasher.update(bytes);
+        hasher.finalize()
     }
 
     /// Decodes a hexadecimal digest produced by [`Checksum::to_hex`].
@@ -71,6 +73,51 @@ impl Checksum {
             hex.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
         }
         hex
+    }
+}
+
+/// An incremental SHA-256 hasher producing a [`Checksum`].
+///
+/// A digest whose input is assembled in several pieces — the scripts of a
+/// declarative stage, for instance — is fed to the hasher piece by piece
+/// instead of being concatenated into one buffer first, so the input text is
+/// never copied only to be digested.
+///
+/// ```
+/// use rurqe_migrate::ChecksumHasher;
+///
+/// let mut hasher = ChecksumHasher::new();
+/// hasher.update(b"CREATE TABLE users ();");
+/// hasher.update(b"\n");
+///
+/// assert_eq!(hasher.finalize().to_hex().len(), 64);
+/// ```
+pub struct ChecksumHasher {
+    hasher: Sha256,
+}
+
+impl ChecksumHasher {
+    /// Creates a hasher that holds no input yet.
+    pub fn new() -> Self {
+        Self {
+            hasher: Sha256::new(),
+        }
+    }
+
+    /// Feeds the next piece of the hashed input.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+
+    /// Finishes the digest and consumes the hasher.
+    pub fn finalize(self) -> Checksum {
+        Checksum(digest_of(self.hasher.finalize().as_slice()))
+    }
+}
+
+impl Default for ChecksumHasher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -251,5 +298,18 @@ mod tests {
 
         assert_eq!(Checksum::from_hex(&uppercase), Ok(checksum));
         assert_eq!(checksum.to_hex(), uppercase.to_lowercase());
+    }
+
+    #[test]
+    fn incremental_hasher_matches_a_one_shot_digest() {
+        let data = b"The quick brown fox jumps over the lazy dog";
+
+        let mut hasher = ChecksumHasher::new();
+        for chunk in data.chunks(7) {
+            hasher.update(chunk);
+        }
+
+        assert_eq!(hasher.finalize(), Checksum::of(data));
+        assert_eq!(ChecksumHasher::default().finalize(), Checksum::of(b""));
     }
 }

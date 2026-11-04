@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::checksum::Checksum;
+use crate::checksum::{Checksum, ChecksumHasher};
 use crate::error::Error;
 use crate::migration::parse_script_attributes;
 use crate::scripts::{compare_script_names, sql_scripts};
@@ -112,17 +112,20 @@ impl DeclarativeStage {
     /// reordering the directory never changes the digest while any edit of a
     /// script does. The digest anchors a cold start: a database initialised from
     /// a diverged stage is rejected instead of being silently overwritten.
+    ///
+    /// The hasher is fed one piece at a time, so the DDL text of the stage is
+    /// never concatenated into a second buffer to be digested.
     pub fn checksum(&self) -> Checksum {
-        let mut digest = String::new();
+        let mut hasher = ChecksumHasher::new();
 
         for script in &self.scripts {
-            digest.push_str(&script.name);
-            digest.push('\n');
-            digest.push_str(&script.sql);
-            digest.push('\n');
+            hasher.update(script.name().as_bytes());
+            hasher.update(b"\n");
+            hasher.update(script.sql().as_bytes());
+            hasher.update(b"\n");
         }
 
-        Checksum::of(digest.as_bytes())
+        hasher.finalize()
     }
 }
 
@@ -140,5 +143,23 @@ mod tests {
 
         let names: Vec<&str> = stage.scripts().iter().map(StageScript::name).collect();
         assert_eq!(names, vec!["1_init.sql", "2_users.sql", "10_orders.sql"]);
+    }
+
+    #[test]
+    fn checksum_digests_names_and_bodies_in_application_order() {
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("2_users.sql", "CREATE TABLE users (id INTEGER);"),
+            StageScript::new("1_init.sql", "CREATE SCHEMA app;"),
+        ]);
+
+        let mut joined = String::new();
+        for script in stage.scripts() {
+            joined.push_str(script.name());
+            joined.push('\n');
+            joined.push_str(script.sql());
+            joined.push('\n');
+        }
+
+        assert_eq!(stage.checksum(), Checksum::of(joined.as_bytes()));
     }
 }
