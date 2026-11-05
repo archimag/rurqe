@@ -141,7 +141,8 @@ impl Checkpoint {
     /// that recorded no version at all — one holding only repeatable scripts —
     /// sits below every boundary and is refused with no recorded version. A
     /// target sitting exactly at the boundary is measured against
-    /// [`Checkpoint::schema_hash`] through the stage marker it recorded, while
+    /// [`Checkpoint::schema_hash`] through the stage marker recorded at that same
+    /// version, while
     /// a target above it has already been advanced past the boundary by the
     /// tail.
     pub fn validate_history(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
@@ -167,10 +168,19 @@ impl Checkpoint {
     }
 
     /// Measures the stage marker recorded at the boundary against the anchored digest.
+    ///
+    /// Only a marker recorded at [`Checkpoint::pruned_up_to_version`] describes the
+    /// boundary schema. A target initialised from an earlier stage keeps that stage's
+    /// marker after the tail advanced it to the boundary, and the digest such a marker
+    /// carries names the schema the target was initialised from rather than the
+    /// boundary, so measuring it would refuse a database the outdated-target remedy had
+    /// just brought to the boundary. A history holding no marker at the boundary
+    /// therefore leaves this measurement to the live catalog the backend reports.
     fn validate_stage_marker(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
         let recorded = history
             .iter()
             .filter(|entry| entry.success && entry.script == STAGE_SCRIPT)
+            .filter(|entry| entry.version.as_ref() == Some(&self.pruned_up_to_version))
             .max_by_key(|entry| entry.installed_rank);
 
         let Some(recorded) = recorded else {
@@ -704,6 +714,20 @@ mod tests {
     #[test]
     fn a_stage_marker_above_the_boundary_is_not_measured() {
         let history = vec![entry(1, "3", STAGE_SCRIPT, &other_digest(), true)];
+
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
+    }
+
+    /// A target initialised from a stage below the boundary and then advanced to it by
+    /// the tail keeps the marker of the stage it was really initialised from. That
+    /// marker's digest names the older schema, so measuring it would refuse exactly the
+    /// database the outdated-target remedy had just brought to the boundary.
+    #[test]
+    fn a_stage_marker_recorded_below_the_boundary_is_not_measured() {
+        let history = vec![
+            entry(1, "1", STAGE_SCRIPT, &other_digest(), true),
+            entry(2, "2", "V2__orders.sql", &script_digest(), true),
+        ];
 
         assert_eq!(boundary("2").validate_history(&history), Ok(()));
     }
