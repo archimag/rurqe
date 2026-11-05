@@ -13,6 +13,7 @@
 //! rebuilds resolves the same declaration the chapter documents.
 
 use rurqe::postgres::prelude::*;
+use rurqe::postgres::PgRefusalExt;
 use rurqe_examples::example_pool;
 use rurqe_examples::markers::*;
 
@@ -225,6 +226,39 @@ async fn main() -> Result<()> {
     }
     // ANCHOR_END: server_refusal
 
+    // ANCHOR: constraint_refusal
+    // A refusal a constraint raised is classified by the constraint the server
+    // names, so a service maps the class onto its own error instead of parsing
+    // the rendered message. The trait is imported explicitly, because the
+    // classification is a capability of the engine that reported the refusal.
+    let refused = insert_into(User)
+        .values((
+            UserId::set(1i64),
+            UserName::set("root"),
+            UserEmail::set("root@example.com"),
+        ))
+        .execute(&pool)
+        .await;
+
+    let signup: Result<(), SignupError> = match &refused {
+        Err(error) if error.is_unique_violation("users_email_key") => Err(SignupError::EmailTaken),
+        Err(error) => match error.violation() {
+            Some(violation) => Err(SignupError::Rejected(violation.kind)),
+            None => Err(SignupError::Unavailable),
+        },
+        Ok(_) => Ok(()),
+    };
+    // ANCHOR_END: constraint_refusal
+    // The class the server reported is read where the service maps the refusal
+    // onto its own error, so the value the classification produced is consumed
+    // rather than merely constructed.
+    match &signup {
+        Err(SignupError::Rejected(kind)) => {
+            println!("the server classified the refusal as {kind:?}");
+        }
+        other => println!("signup: {other:?}"),
+    }
+
     // ANCHOR: nullable_equality
     let localised = select_from(Setting)
         .select((SettingId, SettingLocale))
@@ -267,4 +301,15 @@ fn assemble_bulk_insert() -> Result<(), EmptyRows> {
     ])?;
     // ANCHOR_END: values_many
     Ok(())
+}
+
+/// The failure a signup maps a refused insert onto.
+#[derive(Debug)]
+enum SignupError {
+    /// The email the signup proposed is already taken.
+    EmailTaken,
+    /// A constraint of another class refused the row.
+    Rejected(ConstraintViolationKind),
+    /// The statement failed for a reason no constraint describes.
+    Unavailable,
 }

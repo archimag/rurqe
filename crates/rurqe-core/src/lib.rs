@@ -27,13 +27,13 @@ pub use expr::{
 };
 pub use nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
 pub use query::{
-    cte, cte_named, dense_rank, lag, lead, rank, row_number, BuildError, BuiltQuery, Cte,
-    DerivedTable, ExecutableQuery, ExecutionError, GroupBy, GroupByInScope, IsolationLevel,
-    LagLeadFn, LockUnavailable, Locked, LockedQuery, NoLock, OrderDirection, PartitionBy, Query,
-    QueryBackend, QueryBackendExt, QueryTerminals, RowClause, SelectQuery, SelectTarget,
-    SelectTargetInScope, Selection, SelectionInScope, TailClosed, TerminalBackend,
-    TransactionBackend, TransactionContext, Window, WindowExpr, WindowExprKind, WindowFn,
-    WindowSpec,
+    cte, cte_named, dense_rank, lag, lead, rank, row_number, BuildError, BuiltQuery,
+    ConstraintViolation, ConstraintViolationKind, Cte, DerivedTable, ExecutableQuery,
+    ExecutionError, GroupBy, GroupByInScope, IsolationLevel, LagLeadFn, LockUnavailable, Locked,
+    LockedQuery, NoLock, OrderDirection, PartitionBy, Query, QueryBackend, QueryBackendExt,
+    QueryTerminals, RowClause, SelectQuery, SelectTarget, SelectTargetInScope, Selection,
+    SelectionInScope, TailClosed, TerminalBackend, TransactionBackend, TransactionContext, Window,
+    WindowExpr, WindowExprKind, WindowFn, WindowSpec,
 };
 pub use row::{FromRow, FromSqlValue, RowDecodeError};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

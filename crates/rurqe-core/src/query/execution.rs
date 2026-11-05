@@ -32,7 +32,7 @@ mod sync;
 mod terminal;
 
 pub use self::asynchronous::{AsyncQueryBackend, AsyncQueryBackendExt};
-pub use self::error::ExecutionError;
+pub use self::error::{ConstraintViolation, ConstraintViolationKind, ExecutionError};
 pub use self::sync::{QueryBackend, QueryBackendExt};
 pub use self::terminal::{QueryTerminals, TerminalBackend};
 

@@ -37,13 +37,20 @@ pub use self::dialect::{
 #[cfg(feature = "rusqlite")]
 pub use self::backend::SqliteConnection;
 
+/// Classification of the constraint refusals a SQLite statement reports.
+///
+/// The trait is imported explicitly at the point of use, because the
+/// classification is a capability of the engine that reported the refusal.
+#[cfg(feature = "rusqlite")]
+pub use self::backend::SqliteRefusalExt;
+
 /// An `r2d2` pool of SQLite connections.
 #[cfg(feature = "r2d2")]
 pub use self::backend::{SqlitePool, SqlitePoolError};
 
 /// Re-export of the underlying `rusqlite` crate for adapter users.
 #[cfg(feature = "rusqlite")]
-pub use ::rusqlite;
+pub use rusqlite;
 
 /// Catalog introspection of a live SQLite database.
 ///

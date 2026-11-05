@@ -132,3 +132,52 @@ impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
         }
     }
 }
+
+/// The class of a constraint the database refused a statement for.
+///
+/// The enumeration is `#[non_exhaustive]`: it names the constraint classes the
+/// shared vocabulary recognises, and an engine that reports a further class
+/// adds a variant instead of a second classification type, so a match written
+/// outside this crate carries a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConstraintViolationKind {
+    /// A uniqueness constraint — a primary key or a unique index — was violated.
+    Unique,
+    /// A foreign key constraint was violated.
+    ForeignKey,
+    /// A check constraint was violated.
+    Check,
+    /// A `NOT NULL` constraint was violated.
+    NotNull,
+    /// An exclusion constraint was violated.
+    Exclusion,
+}
+
+/// A refusal the database reported for a violated constraint.
+///
+/// The value is built from the description the engine recorded, so every field
+/// carries what the engine itself named rather than a rendering of its message.
+/// A field the engine does not report stays `None`: SQLite, for instance, names
+/// the columns of the refused row in its message but never the name of the
+/// constraint, and it reports no SQLSTATE at all.
+///
+/// The classification is produced by the adapter of the engine that reported
+/// the refusal, because the codes a refusal is classified by are a property of
+/// the engine rather than of the shared error type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintViolation {
+    /// The class of the violated constraint.
+    pub kind: ConstraintViolationKind,
+    /// The SQLSTATE of the refusal, when the engine reports one.
+    pub sql_state: Option<String>,
+    /// The name of the violated constraint, when the engine reports one.
+    pub constraint: Option<String>,
+    /// The relation the violated constraint belongs to, when the engine reports
+    /// one.
+    pub table: Option<String>,
+    /// The column the violated constraint covers, when the engine reports one.
+    pub column: Option<String>,
+    /// The explanation the engine attached to the refusal, when it sent one.
+    pub detail: Option<String>,
+}

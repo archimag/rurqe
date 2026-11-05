@@ -458,13 +458,13 @@ pub mod prelude {
 
     pub use rurqe_core::{
         cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, BinaryOp,
-        BuildError, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect,
-        ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, FunctionOperand,
-        GroupBy, IntoExpr, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend,
-        QueryBackendExt, QueryTerminals, RowDecodeError, SelectQuery, SelectTarget, Selection,
-        SqlArrayElement, SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict,
-        SupportsReturning, Table, TableInScope, TerminalBackend, ToSqlVal, Window, WindowExpr,
-        WindowExprKind, WindowFn, WindowSpec,
+        BuildError, BuiltQuery, Column, ColumnBelongsTo, ConstraintViolation,
+        ConstraintViolationKind, Cte, DerivedTable, Dialect, ExecutableQuery, ExecutionError, Expr,
+        ExprKind, FromRow, FromSqlValue, FunctionOperand, GroupBy, IntoExpr, IsolationLevel,
+        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, QueryTerminals,
+        RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible,
+        SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
+        TerminalBackend, ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
     };
 
     pub use rurqe_core::query::NullsOrder;

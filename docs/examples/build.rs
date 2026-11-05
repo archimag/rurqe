@@ -440,6 +440,13 @@ const FRAGMENTS: &[Fragment] = &[
     },
     Fragment {
         file: "crud.rs",
+        anchor: "constraint_refusal",
+        binding: "refused",
+        terminal: Terminal::Inspected,
+        chapters: &["core/errors.md"],
+    },
+    Fragment {
+        file: "crud.rs",
         anchor: "update",
         binding: "updated",
         terminal: Terminal::Executed,

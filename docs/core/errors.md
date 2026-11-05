@@ -139,6 +139,39 @@ INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3)
 
 The accessor reports `None` for a failure that never reached the server: a value that does not decode, an unreadable catalog, a poisoned connection, an abandoned checkout, and a pool refusal carry no server description. A poison record keeps the failure it was written for reachable through `source()`, so the description of a refusal behind a poison is read from that cause.
 
+## Matching a constraint refusal
+
+A refusal a constraint raised is classified by the code the engine reported, never by the message it renders. The classification is a shared vocabulary — `ConstraintViolation`, whose `kind` is `Unique`, `ForeignKey`, `Check`, `NotNull`, or `Exclusion` — and each engine adapter exposes it through an extension trait imported at the point of use:
+
+| Engine | Trait | Import |
+|---|---|---|
+| PostgreSQL | `PgRefusalExt` | `use rurqe::postgres::PgRefusalExt;` |
+| SQLite | `SqliteRefusalExt` | `use rurqe::sqlite::SqliteRefusalExt;` |
+
+The traits stay out of the preludes, because the classification is a capability of the engine that reported the refusal.
+
+| Method | Answer |
+|---|---|
+| `violation()` | the `ConstraintViolation` the engine described, or `None` when the refusal is not a constraint violation |
+| `sql_state()` | the SQLSTATE of the refusal, on PostgreSQL |
+| `extended_code()` | the extended result code of the refusal, on SQLite |
+| `is_unique_violation(constraint)` / `is_unique_violation()` | whether the refusal violated a uniqueness constraint; PostgreSQL matches the name, SQLite matches the class alone |
+| `is_foreign_key_violation(constraint)` / `is_foreign_key_violation()` | whether the refusal violated a foreign key constraint; the same asymmetry |
+
+The PostgreSQL methods take the constraint name, because the server reports it: `is_unique_violation("users_email_key")` matches a declared uniqueness constraint, and the same call matches the index name of a unique index, a partial unique index included. The SQLite methods take no name: SQLite names the columns of the refused row in its message but never the name of the constraint, so `constraint` stays `None` and a caller matches the class alone. Matching by constraint name is a PostgreSQL capability.
+
+PostgreSQL is classified by the five standard constraint SQLSTATEs — `23505`, `23503`, `23514`, `23502`, and `23P01` — and SQLite by its extended result codes. A refusal outside those classes reports `None` from `violation()` while its raw code stays reachable: a trigger raising an exception (`P0001` on PostgreSQL) keeps its SQLSTATE through `sql_state()`, and the description the engine sent stays reachable through the original driver error.
+
+A service maps the class onto its own error at the boundary instead of inspecting the message:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:constraint_refusal}}
+```
+
+```sql
+INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3)
+```
+
 ## Migrations
 
 `rurqe::migrate::Error` is the failure surface of the lifecycle:

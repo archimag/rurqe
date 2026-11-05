@@ -3,6 +3,12 @@
 #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
 pub mod types;
 
+// The classification of a constraint refusal reads the description the server
+// sent, which both adapters record through the same `PgError`, so the module is
+// compiled with the binding layer it classifies.
+#[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
+pub mod refusal;
+
 #[cfg(feature = "tokio-postgres")]
 pub mod async_conn;
 
