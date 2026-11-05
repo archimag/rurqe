@@ -40,7 +40,9 @@ pub(super) fn date_octets(text: &str, out: &mut BytesMut) -> Result<(), String> 
     // that follows.
     let (days, _, _) = parse_civil(trimmed)?;
 
-    let days = days - POSTGRES_EPOCH_DAYS;
+    let days = days
+        .checked_sub(POSTGRES_EPOCH_DAYS)
+        .ok_or_else(|| temporal_out_of_range(trimmed))?;
     let days = i32::try_from(days).map_err(|_| temporal_out_of_range(trimmed))?;
 
     out.extend_from_slice(&days.to_be_bytes());
@@ -61,8 +63,11 @@ fn parse_civil(text: &str) -> Result<(i64, i64, i64), String> {
     let mut micros = parse_time(time, trimmed)?;
     if micros == MICROSECONDS_PER_DAY {
         // The midnight `24:00:00` names closes the day it is written with, so
-        // the value belongs to the day that follows.
-        days += 1;
+        // the value belongs to the day that follows. The addition is checked,
+        // because a day count at the end of its range has no next day.
+        days = days
+            .checked_add(1)
+            .ok_or_else(|| temporal_out_of_range(trimmed))?;
         micros = 0;
     }
 
@@ -145,7 +150,7 @@ fn parse_date(date: &str, whole: &str) -> Result<i64, String> {
         return Err(format!("`{whole}` carries the invalid date `{date}`"));
     }
 
-    Ok(days_from_civil(year, month, day))
+    days_from_civil(year, month, day).ok_or_else(|| temporal_out_of_range(whole))
 }
 
 /// Number of days in `month` of `year`, in the proleptic Gregorian calendar.
@@ -220,16 +225,21 @@ fn parse_time(time: &str, whole: &str) -> Result<i64, String> {
 /// The conversion is the inverse of
 /// [`civil_from_days`](rurqe_core::calendar::civil_from_days), so a value the
 /// decoder renders is parsed back into the day count it was stored as.
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+///
+/// Returns `None` when the day count is not representable, which a civil year
+/// far outside the span the count covers names.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
     let month = i64::from(month);
-    let shifted_year = if month <= 2 { year - 1 } else { year };
+    let shifted_year = if month <= 2 { year.checked_sub(1)? } else { year };
     let era = shifted_year.div_euclid(400);
     let year_of_era = shifted_year - era * 400;
     let shifted_month = if month > 2 { month - 3 } else { month + 9 };
     let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
 
-    era * 146_097 + day_of_era - 719_468
+    let days = era.checked_mul(146_097)?;
+    let days = days.checked_add(day_of_era)?;
+    days.checked_sub(719_468)
 }
 
 /// Describes a temporal value outside the range its column can hold.

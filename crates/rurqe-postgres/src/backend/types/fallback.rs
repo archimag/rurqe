@@ -577,4 +577,30 @@ mod tests {
             .expect("a timestamp column is encoded from text")
             .is_err());
     }
+
+    #[cfg(not(feature = "chrono"))]
+    #[test]
+    fn a_year_beyond_the_representable_range_is_refused() {
+        let refuses = |ty: &Type, text: &str| {
+            encode(ty, text, &mut BytesMut::new())
+                .expect("the column family is encoded from text")
+                .is_err()
+        };
+
+        // The day count of a civil year this large overflows the arithmetic
+        // that linearises the date, so the value is refused instead of
+        // wrapping into a day count the column would accept.
+        assert!(refuses(&Type::DATE, "999999999999999999-01-01"));
+        assert!(refuses(&Type::TIMESTAMP, "999999999999999999-01-01"));
+        assert!(refuses(&Type::TIMESTAMPTZ, "999999999999999999-01-01T00:00:00Z"));
+        assert!(refuses(&Type::DATE, "30000000000000000-01-01"));
+
+        // A day count that fits the linearisation but not the payload of the
+        // column is refused by the octet conversion, not written wrapped.
+        assert!(refuses(&Type::DATE, "100000000-01-01"));
+        assert!(refuses(&Type::TIMESTAMP, "100000000-01-01"));
+
+        // The midnight that closes the day still needs a day to move to.
+        assert!(refuses(&Type::TIMESTAMP, "999999999999999999-12-31 24:00:00"));
+    }
 }
