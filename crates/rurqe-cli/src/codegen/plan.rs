@@ -397,15 +397,8 @@ mod tests {
         // Both sections declare the very same table name, so the markers are
         // equal; only the section they are registered in keeps them apart.
         let catalog = SchemaCatalog::new(vec![
-            table(
-                "users",
-                vec![ColumnDef::new("id", TypeKind::Int64, false)],
-            ),
-            table(
-                "users",
-                vec![ColumnDef::new("id", TypeKind::Int64, false)],
-            )
-            .with_schema("auth"),
+            table("users", vec![ColumnDef::new("id", TypeKind::Int64, false)]),
+            table("users", vec![ColumnDef::new("id", TypeKind::Int64, false)]).with_schema("auth"),
         ]);
 
         let plan = build_plan(&catalog, &CodegenOptions::default())
@@ -422,7 +415,6 @@ mod tests {
         assert_eq!(auth.section.tables.len(), 1);
         assert_eq!(auth.section.tables[0].ident, "Users");
     }
-
 
     #[test]
     fn a_schema_marker_colliding_with_a_primary_table_is_rejected() {

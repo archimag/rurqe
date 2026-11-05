@@ -413,7 +413,9 @@ pub struct SqliteConnectionMigrationTransaction<'a> {
 impl<'a> SqliteConnectionMigrationTransaction<'a> {
     fn current(&mut self) -> Result<&mut ClientStep<'a>, Error> {
         self.step.as_mut().ok_or_else(|| {
-            Error::Backend(String::from("sqlite migration transaction already finished"))
+            Error::Backend(String::from(
+                "sqlite migration transaction already finished",
+            ))
         })
     }
 
@@ -483,7 +485,9 @@ impl MigrationTransaction for SqliteConnectionMigrationTransaction<'_> {
 
     fn commit(mut self) -> Result<(), Error> {
         let step = self.step.take().ok_or_else(|| {
-            Error::Backend(String::from("sqlite migration transaction already finished"))
+            Error::Backend(String::from(
+                "sqlite migration transaction already finished",
+            ))
         })?;
 
         match step {
@@ -496,7 +500,9 @@ impl MigrationTransaction for SqliteConnectionMigrationTransaction<'_> {
 
     fn rollback(mut self) -> Result<(), Error> {
         let step = self.step.take().ok_or_else(|| {
-            Error::Backend(String::from("sqlite migration transaction already finished"))
+            Error::Backend(String::from(
+                "sqlite migration transaction already finished",
+            ))
         })?;
 
         match step {
@@ -516,7 +522,9 @@ impl Drop for SqliteConnectionMigrationTransaction<'_> {
 
         let outcome = match step {
             ClientStep::Transaction(transaction) => transaction.rollback(),
-            ClientStep::Savepoint(connection) => connection.execute_batch(&rollback_savepoint_sql()),
+            ClientStep::Savepoint(connection) => {
+                connection.execute_batch(&rollback_savepoint_sql())
+            }
         };
 
         if let Err(err) = outcome {

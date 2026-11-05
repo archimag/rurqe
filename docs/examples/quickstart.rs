@@ -60,7 +60,10 @@ async fn main() -> Result<()> {
         .fetch_all(&pool)
         .await?;
     for row in &named {
-        println!("#{} <{}> / {}", row.user_id, row.contact_email, row.user_email);
+        println!(
+            "#{} <{}> / {}",
+            row.user_id, row.contact_email, row.user_email
+        );
     }
     // ANCHOR_END: named_rows
 
@@ -119,4 +122,3 @@ table!(
     }
 );
 // ANCHOR_END: fallback
-

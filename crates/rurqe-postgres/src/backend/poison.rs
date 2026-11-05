@@ -259,7 +259,10 @@ mod tests {
         }
 
         assert!(cell.is_poisoned());
-        assert_eq!(cell.poison_reason().as_deref(), Some(super::ABANDONED_BLOCK));
+        assert_eq!(
+            cell.poison_reason().as_deref(),
+            Some(super::ABANDONED_BLOCK)
+        );
     }
 
     #[test]

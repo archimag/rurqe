@@ -89,8 +89,9 @@ pub(crate) fn prune_migrations(
             output.line(format!("would prune {}", path.display()));
             continue;
         }
-        std::fs::remove_file(path)
-            .map_err(|error| CliError::message(format!("failed to remove `{}`: {error}", path.display())))?;
+        std::fs::remove_file(path).map_err(|error| {
+            CliError::message(format!("failed to remove `{}`: {error}", path.display()))
+        })?;
         output.line(format!("pruned {}", path.display()));
     }
 

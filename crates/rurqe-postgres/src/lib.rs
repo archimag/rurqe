@@ -15,7 +15,7 @@ pub mod migrate;
 pub use dialect::{Pg14, Pg15, Pg16, PgVersion, Postgres};
 pub use expressions::{
     plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayElements, PgArrayExpressions, PgJson,
-    PgJsonb, PgJsonbExpressions, PgJsonbValue, PgJsonExpressions, PgJsonValue, PgRegexExpressions,
+    PgJsonExpressions, PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue, PgRegexExpressions,
     PgTextSearchExpressions, PgTextSearchValue, PgTextValue,
 };
 

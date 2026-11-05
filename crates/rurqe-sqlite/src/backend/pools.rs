@@ -125,7 +125,9 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
     /// before this block opens its own.
     pub fn transaction<T, F>(&self, f: F) -> Result<T, SqlitePoolError>
     where
-        F: FnOnce(&mut SqliteConnection<&mut ::rusqlite::Connection>) -> Result<T, ::rusqlite::Error>,
+        F: FnOnce(
+            &mut SqliteConnection<&mut ::rusqlite::Connection>,
+        ) -> Result<T, ::rusqlite::Error>,
     {
         let mut pooled = self.get()?;
         SqliteConnection::borrowed(&mut pooled)
@@ -243,13 +245,18 @@ mod tests {
             tx.execute_batch("INSERT INTO account (balance) VALUES (20)")?;
             Err::<(), _>(::rusqlite::Error::InvalidQuery)
         });
-        assert!(rolled_back.is_err(), "a failing block reports its own error");
+        assert!(
+            rolled_back.is_err(),
+            "a failing block reports its own error"
+        );
 
         let count = pool
             .transaction(|tx| {
-                tx.query_row("SELECT count(*) FROM account", ::rusqlite::params![], |row| {
-                    row.get::<_, i64>(0)
-                })
+                tx.query_row(
+                    "SELECT count(*) FROM account",
+                    ::rusqlite::params![],
+                    |row| row.get::<_, i64>(0),
+                )
             })
             .expect("the counting block commits");
         assert_eq!(count, 1, "the rolled back insert stayed out of the table");
@@ -281,9 +288,11 @@ mod tests {
 
         let count = pool
             .transaction(|tx| {
-                tx.query_row("SELECT count(*) FROM account", ::rusqlite::params![], |row| {
-                    row.get::<_, i64>(0)
-                })
+                tx.query_row(
+                    "SELECT count(*) FROM account",
+                    ::rusqlite::params![],
+                    |row| row.get::<_, i64>(0),
+                )
             })
             .expect("the counting block commits");
         assert_eq!(count, 1, "only the enclosing insert survived");

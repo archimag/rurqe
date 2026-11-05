@@ -109,7 +109,10 @@ fn parse_offset(zone: &str, whole: &str) -> Result<i64, String> {
         None => (false, zone.strip_prefix('+').ok_or_else(|| malformed())?),
     };
 
-    let digits: String = digits.chars().filter(|character| *character != ':').collect();
+    let digits: String = digits
+        .chars()
+        .filter(|character| *character != ':')
+        .collect();
     if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(malformed());
     }
@@ -230,7 +233,11 @@ fn parse_time(time: &str, whole: &str) -> Result<i64, String> {
 /// far outside the span the count covers names.
 fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
     let month = i64::from(month);
-    let shifted_year = if month <= 2 { year.checked_sub(1)? } else { year };
+    let shifted_year = if month <= 2 {
+        year.checked_sub(1)?
+    } else {
+        year
+    };
     let era = shifted_year.div_euclid(400);
     let year_of_era = shifted_year - era * 400;
     let shifted_month = if month > 2 { month - 3 } else { month + 9 };

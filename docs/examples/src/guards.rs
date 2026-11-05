@@ -16,7 +16,5 @@
 //! lists.
 
 #![doc = include_str!("../guards/mutations.rs")]
-
 #![doc = include_str!("../guards/queries.rs")]
-
 #![doc = include_str!("../guards/sqlite_gates.rs")]

@@ -53,9 +53,8 @@ fn seeded(table: &str) -> Pool {
             .build(SqliteConnectionManager::memory())
             .expect("a one-connection in-memory pool builds"),
     );
-    let setup = format!(
-        "CREATE TABLE {table} (id INTEGER NOT NULL PRIMARY KEY, balance INTEGER NOT NULL)"
-    );
+    let setup =
+        format!("CREATE TABLE {table} (id INTEGER NOT NULL PRIMARY KEY, balance INTEGER NOT NULL)");
     pool.transaction(|connection| connection.execute_batch(&setup))
         .expect("the fixture block commits");
     pool
@@ -164,8 +163,7 @@ fn a_nested_block_rolls_back_only_itself() {
     let pool = seeded("rurqe_pool_nested");
 
     pool.transaction(|connection| -> Result<()> {
-        connection
-            .execute_batch("INSERT INTO rurqe_pool_nested (id, balance) VALUES (1, 100)")?;
+        connection.execute_batch("INSERT INTO rurqe_pool_nested (id, balance) VALUES (1, 100)")?;
 
         let nested = connection.transaction(|nested| -> Result<()> {
             nested.execute_batch("INSERT INTO rurqe_pool_nested (id, balance) VALUES (2, 200)")?;
@@ -192,11 +190,13 @@ fn the_connection_returns_to_the_pool_after_every_ending() {
     .expect("the committing block returns its connection");
 
     let rejected = pool.transaction(|connection| -> Result<()> {
-        connection
-            .execute_batch("INSERT INTO rurqe_pool_return (id, balance) VALUES (2, 200)")?;
+        connection.execute_batch("INSERT INTO rurqe_pool_return (id, balance) VALUES (2, 200)")?;
         Err(Error::InvalidQuery)
     });
-    assert!(rejected.is_err(), "the failing block reports its own failure");
+    assert!(
+        rejected.is_err(),
+        "the failing block reports its own failure"
+    );
 
     let unwound = catch_unwind(AssertUnwindSafe(|| {
         pool.transaction(|connection| -> Result<()> {

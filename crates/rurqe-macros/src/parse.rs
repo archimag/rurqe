@@ -351,8 +351,8 @@ fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
 
 /// The Rust primitive type names, which name a type wherever they are spelled.
 const PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "bool", "char", "f32", "f64", "i128", "i16", "i32", "i64", "i8", "isize", "str", "u128",
-    "u16", "u32", "u64", "u8", "usize",
+    "bool", "char", "f32", "f64", "i128", "i16", "i32", "i64", "i8", "isize", "str", "u128", "u16",
+    "u32", "u64", "u8", "usize",
 ];
 
 /// Rejects a trailing alias spelled as a Rust type.

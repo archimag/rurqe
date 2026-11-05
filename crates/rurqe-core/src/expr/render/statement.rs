@@ -273,7 +273,6 @@ impl<'a> StatementRef<'a> {
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
     ) -> Result<(), RawSqlError> {
-
         sql.push_str("SELECT ");
         self.render_projections::<D>(sql, params, relations)?;
 

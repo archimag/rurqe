@@ -337,8 +337,8 @@ impl<M: ManageConnection<Connection = postgres::Client>> QueryBackend for PgPool
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
         let mut connection = self.get()?;
-        let rows = fetch_raw_limited_sync(&mut connection, query, limit)
-            .map_err(PgPoolError::Query);
+        let rows =
+            fetch_raw_limited_sync(&mut connection, query, limit).map_err(PgPoolError::Query);
         connection.mark_idle();
         rows
     }

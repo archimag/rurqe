@@ -149,8 +149,7 @@ fn migrate_async_hands_the_backend_back() {
         .build()
         .expect("build tokio runtime");
 
-    let (outcome, backend) = runtime
-        .block_on(embedded().migrate_async(InMemoryBackend::new()));
+    let (outcome, backend) = runtime.block_on(embedded().migrate_async(InMemoryBackend::new()));
 
     let report = outcome.expect("the blocking run succeeds");
     let backend = backend.expect("the backend is handed back with the report");
@@ -169,8 +168,7 @@ fn status_async_reports_the_applied_scripts() {
         .expect("build tokio runtime");
 
     let embedded = embedded();
-    let (outcome, backend) = runtime
-        .block_on(embedded.migrate_async(InMemoryBackend::new()));
+    let (outcome, backend) = runtime.block_on(embedded.migrate_async(InMemoryBackend::new()));
     outcome.expect("the blocking run succeeds");
     let backend = backend.expect("the backend is handed back with the report");
 
@@ -224,12 +222,11 @@ fn baseline_async_records_the_baseline_and_hands_the_backend_back() {
 
     let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-    let (outcome, backend) = runtime
-        .block_on(embedded().baseline_async(
-            InMemoryBackend::new(),
-            version.clone(),
-            "legacy baseline",
-        ));
+    let (outcome, backend) = runtime.block_on(embedded().baseline_async(
+        InMemoryBackend::new(),
+        version.clone(),
+        "legacy baseline",
+    ));
 
     let entry = outcome.expect("the blocking baseline succeeds");
     let backend = backend.expect("the backend is handed back with the entry");
@@ -256,8 +253,7 @@ fn repair_async_purges_the_failed_entry_of_a_broken_script() {
     // carries the failed entry has to come from the blocking path.
     let mut backend = InMemoryBackend::new();
     backend.failure_script = Some("BOOM".to_owned());
-    let broken =
-        EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
+    let broken = EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
 
     let error = broken
         .migrate(&mut backend)
@@ -292,8 +288,7 @@ fn migrate_async_runs_the_guard_free_core_inside_a_runtime() {
         .build()
         .expect("build tokio runtime");
 
-    let (outcome, backend) = runtime
-        .block_on(embedded().migrate_async(InMemoryBackend::new()));
+    let (outcome, backend) = runtime.block_on(embedded().migrate_async(InMemoryBackend::new()));
 
     let report = outcome.expect("the blocking run succeeds under `strict-async`");
     let backend = backend.expect("the backend is handed back with the report");
@@ -314,8 +309,11 @@ fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
 
     let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-    let (outcome, backend) = runtime
-        .block_on(embedded().baseline_async(InMemoryBackend::new(), version, "legacy baseline"));
+    let (outcome, backend) = runtime.block_on(embedded().baseline_async(
+        InMemoryBackend::new(),
+        version,
+        "legacy baseline",
+    ));
 
     let entry = outcome.expect("the blocking baseline succeeds under `strict-async`");
     let backend = backend.expect("the backend is handed back with the entry");
@@ -436,7 +434,10 @@ fn a_baked_checkpoint_anchors_the_cold_start_marker() {
         .expect("the checkpoint accepts the database its own stage initialised");
 
     assert_eq!(
-        report.cold_start.expect("the cold start runs").stage_scripts,
+        report
+            .cold_start
+            .expect("the cold start runs")
+            .stage_scripts,
         vec!["users.sql"]
     );
 
@@ -649,7 +650,10 @@ fn an_agreeing_snapshot_initialises_the_boundary_target() {
         .expect("the target is initialised at the boundary");
 
     assert_eq!(
-        report.cold_start.expect("the cold start runs").stage_scripts,
+        report
+            .cold_start
+            .expect("the cold start runs")
+            .stage_scripts,
         vec!["users.sql"]
     );
     assert_eq!(report.applied_count, 0);
@@ -729,10 +733,7 @@ fn the_whole_lifecycle_runs_inside_one_lock_span() {
     let snapshot = catalog.to_lock();
 
     let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[(
-            "R__audit.sql",
-            "CREATE VIEW audit AS SELECT id FROM users;",
-        )],
+        tail: &[("R__audit.sql", "CREATE VIEW audit AS SELECT id FROM users;")],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
         schema_lock: Some(&snapshot),
@@ -775,7 +776,10 @@ fn the_whole_lifecycle_runs_inside_one_lock_span() {
         .expect("the initialised target is accepted again");
 
     assert!(warm.cold_start.is_none());
-    assert_eq!(backend.acquires, 2, "the warm run takes the lock once as well");
+    assert_eq!(
+        backend.acquires, 2,
+        "the warm run takes the lock once as well"
+    );
     assert_eq!(backend.releases, 2);
     assert!(
         backend.interactions.iter().all(|entry| entry.1),

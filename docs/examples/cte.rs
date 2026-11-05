@@ -110,4 +110,3 @@ async fn main() -> Result<()> {
     println!("{}", optional_report.len());
     Ok(())
 }
-

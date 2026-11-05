@@ -370,10 +370,7 @@ where
     /// because the grammar of every engine places the target column list before
     /// `DO UPDATE`. The bare `ON CONFLICT DO NOTHING` clause is the one form
     /// that needs no target.
-    pub fn do_update<A>(
-        self,
-        assignments: A,
-    ) -> InsertQuery<D, T, Values, Returning, HasConflict>
+    pub fn do_update<A>(self, assignments: A) -> InsertQuery<D, T, Values, Returning, HasConflict>
     where
         A: AssignmentSet<T> + AssignmentScope,
         <A as AssignmentScope>::Scope: ConflictUpdateScope<T>,

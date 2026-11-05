@@ -55,7 +55,9 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// Counts one allocation of the current thread while counting is armed.
 fn record_allocation() {
-    let armed = COUNTING.try_with(|counting| counting.get()).unwrap_or(false);
+    let armed = COUNTING
+        .try_with(|counting| counting.get())
+        .unwrap_or(false);
     if armed {
         let _ = ALLOCATIONS.try_with(|allocations| allocations.set(allocations.get() + 1));
     }
@@ -264,7 +266,9 @@ fn binary_octets_are_rejected_for_a_textual_column() {
 
     // The octets are valid UTF-8, so the server would accept them as text instead
     // of reporting the mismatch this binding is.
-    assert!(error.to_string().contains("cannot bind a SQL `bytes` value"));
+    assert!(error
+        .to_string()
+        .contains("cannot bind a SQL `bytes` value"));
     assert!(error.to_string().contains("text"));
     assert!(buffer.is_empty());
 }
@@ -272,14 +276,15 @@ fn binary_octets_are_rejected_for_a_textual_column() {
 #[test]
 fn a_boolean_is_rejected_for_a_textual_column() {
     let mut buffer = BytesMut::new();
-    let error = match SqlValParam(&SqlVal::Bool(true)).to_sql_checked(&Type::VARCHAR, &mut buffer)
-    {
+    let error = match SqlValParam(&SqlVal::Bool(true)).to_sql_checked(&Type::VARCHAR, &mut buffer) {
         Ok(_) => panic!("a boolean cannot fill a textual column"),
         Err(error) => error,
     };
 
     // `bool` writes a single octet, which no textual column can read.
-    assert!(error.to_string().contains("cannot bind a SQL `boolean` value"));
+    assert!(error
+        .to_string()
+        .contains("cannot bind a SQL `boolean` value"));
     assert!(error.to_string().contains("varchar"));
     assert!(buffer.is_empty());
 }
@@ -292,7 +297,9 @@ fn an_integer_is_rejected_for_a_binary_column() {
         Err(error) => error,
     };
 
-    assert!(error.to_string().contains("cannot bind a SQL `int64` value"));
+    assert!(error
+        .to_string()
+        .contains("cannot bind a SQL `int64` value"));
     assert!(error.to_string().contains("bytea"));
     assert!(buffer.is_empty());
 }

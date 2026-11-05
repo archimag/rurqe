@@ -164,7 +164,9 @@ fn a_reference_inside_the_schema_stays_schema_less() {
 
     let catalog = catalog_from_metadata(&tables, &[], &[], &fks, &[], &[]);
 
-    assert!(catalog.tables[0].foreign_keys[0].referenced_schema.is_none());
+    assert!(catalog.tables[0].foreign_keys[0]
+        .referenced_schema
+        .is_none());
 }
 
 #[test]
@@ -482,7 +484,10 @@ fn postgres_enum_metadata_assembly_maps_enum_columns() {
     assert_eq!(catalog.enums[0].variants, vec!["draft", "published"]);
 
     let status_col = &catalog.tables[0].columns[1];
-    assert_eq!(status_col.type_kind, TypeKind::Enum("post_status".to_owned()));
+    assert_eq!(
+        status_col.type_kind,
+        TypeKind::Enum("post_status".to_owned())
+    );
 }
 
 #[test]
@@ -765,7 +770,10 @@ fn same_named_objects_of_two_schemas_assemble_independently() {
     assert!(public.foreign_keys[0].referenced_schema.is_none());
     assert_eq!(auth.foreign_keys[0].referenced_columns, vec!["label"]);
     assert_eq!(auth.foreign_keys[0].on_update, ForeignKeyAction::Restrict);
-    assert_eq!(auth.foreign_keys[0].referenced_schema.as_deref(), Some("auth"));
+    assert_eq!(
+        auth.foreign_keys[0].referenced_schema.as_deref(),
+        Some("auth")
+    );
 
     assert_eq!(public.checks.len(), 1);
     assert_eq!(auth.checks.len(), 1);
@@ -778,7 +786,10 @@ fn same_named_objects_of_two_schemas_assemble_independently() {
     assert!(!public.indexes[0].unique);
     assert!(public.indexes[0].predicate.is_none());
     assert!(auth.indexes[0].unique);
-    assert_eq!(auth.indexes[0].predicate.as_deref(), Some("mood IS NOT NULL"));
+    assert_eq!(
+        auth.indexes[0].predicate.as_deref(),
+        Some("mood IS NOT NULL")
+    );
 
     assert_eq!(catalog.enums.len(), 2);
     let public_mood_type = catalog
@@ -883,7 +894,9 @@ fn a_single_schema_catalog_carries_no_schema_attribution() {
     );
 
     assert!(catalog.tables[0].schema.is_none());
-    assert!(catalog.tables[0].foreign_keys[0].referenced_schema.is_none());
+    assert!(catalog.tables[0].foreign_keys[0]
+        .referenced_schema
+        .is_none());
     assert!(catalog.enums[0].schema.is_none());
     assert!(catalog.views[0].schema.is_none());
     assert!(catalog.triggers[0].schema.is_none());

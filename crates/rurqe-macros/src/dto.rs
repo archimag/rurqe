@@ -241,7 +241,9 @@ mod tests {
             let error = expand(source).expect_err("the trailing declaration belongs to no field");
 
             assert!(
-                error.to_string().contains("unexpected tokens after the projection list"),
+                error
+                    .to_string()
+                    .contains("unexpected tokens after the projection list"),
                 "unexpected message: {error}"
             );
         }

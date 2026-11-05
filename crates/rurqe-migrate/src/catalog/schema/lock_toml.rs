@@ -545,9 +545,10 @@ pub(super) fn render_lock_toml(catalog: &SchemaCatalog) -> String {
 /// `(schema, name)` key, and each table's columns, checks, foreign keys, and
 /// indexes are sorted by name as well.
 pub(super) fn parse_lock_toml(contents: &str) -> Result<SchemaCatalog, Error> {
-    let mut file: LockFile = toml::from_str(contents).map_err(|error| Error::InvalidLockFormat {
-        message: error.to_string(),
-    })?;
+    let mut file: LockFile =
+        toml::from_str(contents).map_err(|error| Error::InvalidLockFormat {
+            message: error.to_string(),
+        })?;
 
     if file.version != LOCK_VERSION && file.version != LEGACY_LOCK_VERSION {
         return Err(Error::InvalidLockFormat {
@@ -1050,7 +1051,10 @@ definition = "EXECUTE FUNCTION touch()"
         let error = parse_lock_toml(snapshot).expect_err("an unsupported version is rejected");
 
         let message = error.to_string();
-        assert!(message.contains("unsupported schema lock version `3`"), "got: {message}");
+        assert!(
+            message.contains("unsupported schema lock version `3`"),
+            "got: {message}"
+        );
         assert!(message.contains("version = 5"), "got: {message}");
         assert!(message.contains("version = 4"), "got: {message}");
     }
@@ -1332,11 +1336,7 @@ definition = "EXECUTE FUNCTION touch()"
             vec![ColumnDef::new("id", TypeKind::Int64, false)],
             vec!["id".to_owned()],
         )
-        .with_index(IndexDef::new(
-            "idx_users_id",
-            vec!["id".to_owned()],
-            false,
-        ))]);
+        .with_index(IndexDef::new("idx_users_id", vec!["id".to_owned()], false))]);
 
         let lock = render_lock_toml(&catalog);
 

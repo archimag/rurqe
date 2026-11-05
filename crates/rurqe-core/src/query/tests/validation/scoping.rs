@@ -7,7 +7,9 @@
 //! it. The tests below pin both sides down.
 
 use super::{empty_ast, relation_statement};
-use crate::expr::{BinaryOp, DerivedAst, ExprKind, JoinAst, JoinKind, SelectAst, SetOpAst, SetOpKind};
+use crate::expr::{
+    BinaryOp, DerivedAst, ExprKind, JoinAst, JoinKind, SelectAst, SetOpAst, SetOpKind,
+};
 use crate::query::*;
 use crate::schema::TableRef;
 

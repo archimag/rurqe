@@ -425,9 +425,13 @@ mod tests {
     #[test]
     fn a_uuid_textual_value_encodes_into_its_octets() {
         let mut out = BytesMut::new();
-        encode(&Type::UUID, "00010203-0405-0607-0809-0a0b0c0d0e0f", &mut out)
-            .expect("a UUID column is encoded from text")
-            .expect("the value is a UUID");
+        encode(
+            &Type::UUID,
+            "00010203-0405-0607-0809-0a0b0c0d0e0f",
+            &mut out,
+        )
+        .expect("a UUID column is encoded from text")
+        .expect("the value is a UUID");
 
         assert_eq!(out.to_vec(), (0u8..16).collect::<Vec<u8>>());
         assert_eq!(
@@ -453,7 +457,10 @@ mod tests {
             .expect("a JSONB column is encoded from text")
             .expect("the document is text");
         assert_eq!(out.to_vec(), b"\x01{\"a\": 1}".to_vec());
-        assert_eq!(decode(&Type::JSONB, &out), Some(Ok("{\"a\": 1}".to_owned())));
+        assert_eq!(
+            decode(&Type::JSONB, &out),
+            Some(Ok("{\"a\": 1}".to_owned()))
+        );
     }
 
     #[cfg(not(feature = "chrono"))]
@@ -570,12 +577,20 @@ mod tests {
         );
 
         // Any other value of the 24th hour is out of range.
-        assert!(encode(&Type::TIMESTAMP, "2024-01-02 24:00:01", &mut BytesMut::new())
-            .expect("a timestamp column is encoded from text")
-            .is_err());
-        assert!(encode(&Type::TIMESTAMP, "2024-01-02 24:00:00.5", &mut BytesMut::new())
-            .expect("a timestamp column is encoded from text")
-            .is_err());
+        assert!(encode(
+            &Type::TIMESTAMP,
+            "2024-01-02 24:00:01",
+            &mut BytesMut::new()
+        )
+        .expect("a timestamp column is encoded from text")
+        .is_err());
+        assert!(encode(
+            &Type::TIMESTAMP,
+            "2024-01-02 24:00:00.5",
+            &mut BytesMut::new()
+        )
+        .expect("a timestamp column is encoded from text")
+        .is_err());
     }
 
     #[cfg(not(feature = "chrono"))]
@@ -592,7 +607,10 @@ mod tests {
         // wrapping into a day count the column would accept.
         assert!(refuses(&Type::DATE, "999999999999999999-01-01"));
         assert!(refuses(&Type::TIMESTAMP, "999999999999999999-01-01"));
-        assert!(refuses(&Type::TIMESTAMPTZ, "999999999999999999-01-01T00:00:00Z"));
+        assert!(refuses(
+            &Type::TIMESTAMPTZ,
+            "999999999999999999-01-01T00:00:00Z"
+        ));
         assert!(refuses(&Type::DATE, "30000000000000000-01-01"));
 
         // A day count that fits the linearisation but not the payload of the
@@ -601,6 +619,9 @@ mod tests {
         assert!(refuses(&Type::TIMESTAMP, "100000000-01-01"));
 
         // The midnight that closes the day still needs a day to move to.
-        assert!(refuses(&Type::TIMESTAMP, "999999999999999999-12-31 24:00:00"));
+        assert!(refuses(
+            &Type::TIMESTAMP,
+            "999999999999999999-12-31 24:00:00"
+        ));
     }
 }

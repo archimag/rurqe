@@ -148,8 +148,8 @@ fn the_asynchronous_lifecycle_stays_reachable_for_an_owned_backend() {
     /// Reports whether a value may cross a thread boundary.
     fn is_send<T: Send>(_: &T) {}
 
-    let embedded = EmbeddedMigrations::new(&[("V1__users.sql", CREATE_USERS)])
-        .expect("valid migrations");
+    let embedded =
+        EmbeddedMigrations::new(&[("V1__users.sql", CREATE_USERS)]).expect("valid migrations");
     let backend = rurqe::sqlite::migrate::SqliteMigrationBackend::new(
         Connection::open_in_memory().expect("the in-memory database opens"),
     );

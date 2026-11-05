@@ -447,8 +447,8 @@ mod client_backend {
     /// describes that schema alone.
     fn fixture(scenario: &str, schema: &str) -> Option<PgConnection> {
         let url = database_url(scenario)?;
-        let mut client = postgres::Client::connect(&url, NoTls)
-            .expect("the test server accepts the connection");
+        let mut client =
+            postgres::Client::connect(&url, NoTls).expect("the test server accepts the connection");
 
         client
             .batch_execute(&format!(
@@ -472,10 +472,16 @@ mod client_backend {
         };
 
         let migrations = vec![
-            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
-            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
+            Migration::parse(
+                "V1__users.sql",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
+            Migration::parse(
+                "V2__orders.sql",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
         ];
 
         let first = {
@@ -500,7 +506,10 @@ mod client_backend {
                 .expect("a second run finds nothing pending")
         };
 
-        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert_eq!(
+            second.applied_count, 0,
+            "an applied script never runs twice"
+        );
         assert!(second.applied_scripts.is_empty());
 
         let recorded = connection
@@ -573,16 +582,16 @@ mod client_backend {
             .batch_execute("CREATE TABLE outer_rows (id INTEGER PRIMARY KEY)")
             .expect("the fixture table is created");
 
-        let mut guard = TransactionGuard::begin(&mut connection)
-            .expect("the caller opens its own transaction");
+        let mut guard =
+            TransactionGuard::begin(&mut connection).expect("the caller opens its own transaction");
         guard
             .client_mut()
             .batch_execute("INSERT INTO outer_rows (id) VALUES (1)")
             .expect("the first row of the caller is written");
 
         {
-            let mut backend = PgConnectionMigrationBackend::new(&mut guard)
-                .with_schema("rurqe_client_nested");
+            let mut backend =
+                PgConnectionMigrationBackend::new(&mut guard).with_schema("rurqe_client_nested");
             let mut step = backend
                 .begin()
                 .expect("the step nests inside a savepoint of the caller");
@@ -595,7 +604,9 @@ mod client_backend {
             .client_mut()
             .batch_execute("INSERT INTO outer_rows (id) VALUES (2)")
             .expect("the second row of the caller is written");
-        guard.commit().expect("the caller commits its own transaction");
+        guard
+            .commit()
+            .expect("the caller commits its own transaction");
 
         let nested = connection
             .client_mut()
@@ -641,8 +652,8 @@ mod client_backend {
             .expect("the leaked row is written");
 
         {
-            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
-                .with_schema("rurqe_client_leak");
+            let mut backend =
+                PgConnectionMigrationBackend::new(&mut connection).with_schema("rurqe_client_leak");
             let mut step = backend.begin().expect("the step opens its transaction");
             step.execute("CREATE TABLE committed_rows (id INTEGER PRIMARY KEY);")
                 .expect("the step's script applies");
@@ -694,8 +705,8 @@ mod client_backend {
 
         let script = "CREATE TABLE script_rows (id INTEGER);";
         {
-            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
-                .with_schema("rurqe_client_auto");
+            let mut backend =
+                PgConnectionMigrationBackend::new(&mut connection).with_schema("rurqe_client_auto");
             backend
                 .execute_non_transactional(script)
                 .expect("the autocommit script applies");
@@ -781,10 +792,16 @@ mod standalone_backend {
         let mut backend = fixture(&url, schema);
 
         let migrations = vec![
-            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
-            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
+            Migration::parse(
+                "V1__users.sql",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
+            Migration::parse(
+                "V2__orders.sql",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
         ];
 
         let first = Migrator::new()
@@ -801,7 +818,10 @@ mod standalone_backend {
             .migrate(&mut backend, &migrations)
             .expect("a second run finds nothing pending");
 
-        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert_eq!(
+            second.applied_count, 0,
+            "an applied script never runs twice"
+        );
         assert!(second.applied_scripts.is_empty());
 
         let recorded = probe(&url, schema)
@@ -956,10 +976,16 @@ mod async_backend {
             .with_schema(schema);
 
         let migrations = vec![
-            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
-            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
-                .expect("a valid script name"),
+            Migration::parse(
+                "V1__users.sql",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
+            Migration::parse(
+                "V2__orders.sql",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
         ];
 
         let first = Migrator::new()
@@ -976,7 +1002,10 @@ mod async_backend {
             .migrate(&mut backend, &migrations)
             .expect("a second run finds nothing pending");
 
-        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert_eq!(
+            second.applied_count, 0,
+            "an applied script never runs twice"
+        );
         assert!(second.applied_scripts.is_empty());
 
         // The backend owns the session, so dropping it closes the connection and

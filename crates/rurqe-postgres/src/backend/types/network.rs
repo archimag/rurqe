@@ -245,7 +245,11 @@ mod tests {
             let mut out = BytesMut::new();
             encode_hardware(spelling, 6, &mut out).expect("the address is encodable");
 
-            assert_eq!(out.to_vec(), expected, "`{spelling}` names the same address");
+            assert_eq!(
+                out.to_vec(),
+                expected,
+                "`{spelling}` names the same address"
+            );
         }
     }
 

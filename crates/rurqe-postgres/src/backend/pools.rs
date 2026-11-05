@@ -139,7 +139,9 @@ mod deadpool_impl {
             let checkout = guard(object, Arc::new(PoisonCell::new()));
             let client = checkout.session()?;
             if let Err(failure) = crate::backend::async_conn::ensure_idle_async(client).await {
-                checkout.poison().mark(control_failure("ROLLBACK", &failure));
+                checkout
+                    .poison()
+                    .mark(control_failure("ROLLBACK", &failure));
                 return Err(failure);
             }
             Ok(checkout)
@@ -328,11 +330,7 @@ mod deadpool_impl {
     /// record of its own: a savepoint rollback the driver refuses is recorded on
     /// the cell the guard reads, which turns that failure into a destroyed
     /// connection rather than a diagnostic nobody acts on.
-    async fn run_transaction<T, E, F>(
-        mut checkout: Checkout,
-        begin: String,
-        f: F,
-    ) -> Result<T, E>
+    async fn run_transaction<T, E, F>(mut checkout: Checkout, begin: String, f: F) -> Result<T, E>
     where
         E: From<PgError>,
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,

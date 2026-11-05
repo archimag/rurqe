@@ -173,8 +173,12 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
         // references the implicit primary key of the parent table, so the name
         // is recovered from the introspected key columns by position.
         let referenced_column = if fk.to_column.is_empty() {
-            implicit_referenced_column(&primary_keys, &fk.referenced_table, constraint.columns.len())
-                .unwrap_or_default()
+            implicit_referenced_column(
+                &primary_keys,
+                &fk.referenced_table,
+                constraint.columns.len(),
+            )
+            .unwrap_or_default()
         } else {
             fk.to_column.clone()
         };

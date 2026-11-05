@@ -305,7 +305,9 @@ impl<'c, B: BorrowMut<postgres::Client>> PgConnectionMigrationTransaction<'c, B>
     /// The guard of the open block, or the failure of a repeated terminal call.
     fn guard_mut(&mut self) -> Result<&mut TransactionGuard<'c, PgConnection<B>>, Error> {
         self.guard.as_mut().ok_or_else(|| {
-            Error::Backend(String::from("postgres migration transaction already finished"))
+            Error::Backend(String::from(
+                "postgres migration transaction already finished",
+            ))
         })
     }
 
@@ -317,7 +319,9 @@ impl<'c, B: BorrowMut<postgres::Client>> PgConnectionMigrationTransaction<'c, B>
     /// Takes the guard out of a block that reached a terminal call.
     fn take_guard(&mut self) -> Result<TransactionGuard<'c, PgConnection<B>>, Error> {
         self.guard.take().ok_or_else(|| {
-            Error::Backend(String::from("postgres migration transaction already finished"))
+            Error::Backend(String::from(
+                "postgres migration transaction already finished",
+            ))
         })
     }
 

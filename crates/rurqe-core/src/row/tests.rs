@@ -118,8 +118,8 @@ fn out_of_range_values_report_invalid_representations() {
         RowDecodeError::InvalidValue { found: "int32", .. }
     ));
 
-    let error = i16::from_sql_value(&SqlVal::I64(i64::from(i32::MAX)))
-        .expect_err("overflow is rejected");
+    let error =
+        i16::from_sql_value(&SqlVal::I64(i64::from(i32::MAX))).expect_err("overflow is rejected");
     assert!(matches!(
         error,
         RowDecodeError::InvalidValue { found: "int64", .. }

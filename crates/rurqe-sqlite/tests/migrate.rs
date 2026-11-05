@@ -9,12 +9,12 @@
 
 use std::time::Duration;
 
-use rurqe_sqlite::SqliteConnection;
 use rurqe_sqlite::migrate::{self, SqliteConnectionMigrationBackend, SqliteMigrationBackend};
 use rurqe_sqlite::rurqe_migrate::error::Error;
 use rurqe_sqlite::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_sqlite::rurqe_migrate::{Checksum, Migration, MigrationKind, Migrator};
 use rurqe_sqlite::rusqlite;
+use rurqe_sqlite::SqliteConnection;
 
 /// A backend over a fresh in-memory database.
 fn backend() -> SqliteMigrationBackend {
@@ -224,7 +224,10 @@ fn a_failed_non_transactional_script_keeps_its_own_error() {
 
     // The rollback runs before the error is reported, so the connection stays
     // usable for recording the failed attempt.
-    assert!(!backend.is_poisoned(), "a successful rollback poisons nothing");
+    assert!(
+        !backend.is_poisoned(),
+        "a successful rollback poisons nothing"
+    );
     backend
         .connection()
         .execute_batch("CREATE TABLE users (id INTEGER NOT NULL);")
@@ -250,7 +253,10 @@ fn a_script_that_never_commits_is_reported_as_an_imbalance() {
         message.starts_with("non-transactional script left a transaction open"),
         "the imbalance is reported on its own: {message}"
     );
-    assert!(!backend.is_poisoned(), "a successful rollback poisons nothing");
+    assert!(
+        !backend.is_poisoned(),
+        "a successful rollback poisons nothing"
+    );
 
     let users: i64 = backend
         .connection()
@@ -280,8 +286,9 @@ fn scratch_database(label: &str) -> std::path::PathBuf {
 fn the_write_lock_excludes_a_second_runner_on_the_same_database() {
     let path = scratch_database("lock");
 
-    let mut first =
-        SqliteMigrationBackend::new(rusqlite::Connection::open(&path).expect("the first connection opens"));
+    let mut first = SqliteMigrationBackend::new(
+        rusqlite::Connection::open(&path).expect("the first connection opens"),
+    );
     let mut second = SqliteMigrationBackend::new(
         rusqlite::Connection::open(&path).expect("the second connection opens"),
     )
@@ -371,7 +378,10 @@ fn a_versioned_history_row_decodes_into_its_entry() {
     assert_eq!(entry.description, "add orders");
     assert_eq!(entry.kind, MigrationKind::Versioned);
     assert_eq!(entry.script, "V2_1__add_orders.sql");
-    assert_eq!(entry.checksum, Some(Checksum::of(b"CREATE TABLE orders ();")));
+    assert_eq!(
+        entry.checksum,
+        Some(Checksum::of(b"CREATE TABLE orders ();"))
+    );
     assert_eq!(entry.execution_time_ms, 12);
     assert!(entry.success);
 }
@@ -544,7 +554,9 @@ fn the_client_run_lock_nests_every_step_in_a_savepoint() {
         }
 
         {
-            let mut step = backend.begin().expect("a second step opens inside the lock");
+            let mut step = backend
+                .begin()
+                .expect("a second step opens inside the lock");
             step.execute("CREATE TABLE oops (;")
                 .expect_err("the broken statement fails");
             step.rollback().expect("the step is rolled back");

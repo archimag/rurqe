@@ -35,8 +35,8 @@ use std::path::Path;
 
 use rurqe_examples::anchors::{self, AnchorLine};
 use rurqe_examples::includes::{
-    Directive, book_source, example_directives, is_book_metadata, is_skipped_directory,
-    package_root, relative_chapter_files, sections, summary_entries,
+    book_source, example_directives, is_book_metadata, is_skipped_directory, package_root,
+    relative_chapter_files, sections, summary_entries, Directive,
 };
 use serde::Deserialize;
 
@@ -255,9 +255,8 @@ fn the_manifest_model_accepts_every_example_target_key() {
         edition = "2021"
         crate-type = ["bin"]
     "#;
-    let parsed: ExamplesManifest = toml::from_str(manifest).unwrap_or_else(|error| {
-        panic!("a whole `[[example]]` target table parses: {error}")
-    });
+    let parsed: ExamplesManifest = toml::from_str(manifest)
+        .unwrap_or_else(|error| panic!("a whole `[[example]]` target table parses: {error}"));
     let target = parsed
         .example
         .first()
@@ -508,7 +507,13 @@ fn every_include_addresses_a_known_file_and_a_declared_anchor() {
     let registered = registered_examples();
     let mut checked = 0usize;
 
-    for Directive { chapter, path, anchor, .. } in example_directives() {
+    for Directive {
+        chapter,
+        path,
+        anchor,
+        ..
+    } in example_directives()
+    {
         assert!(
             !anchor.is_empty(),
             "chapter {chapter} includes the whole file `examples/{path}` without naming an \
@@ -670,7 +675,9 @@ fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
                     });
                     continue;
                 };
-                let displaced = open_anchors.last().filter(|_| position + 1 != open_anchors.len());
+                let displaced = open_anchors
+                    .last()
+                    .filter(|_| position + 1 != open_anchors.len());
                 if let Some((open_name, open_line)) = displaced {
                     violations.push(AnchorViolation {
                         file: file_name.clone(),
@@ -850,9 +857,10 @@ fn check_chapter_fences(path: &Path, violations: &mut Vec<FenceViolation>) {
                     violations.push(FenceViolation {
                         chapter: chapter_display.clone(),
                         line: line_num,
-                        message: "unannotated code fence opening with no language tag (must specify \
+                        message:
+                            "unannotated code fence opening with no language tag (must specify \
                                   e.g. text, sql, toml, bash, rust,no_run)"
-                            .to_string(),
+                                .to_string(),
                     });
                 } else if tag == "rust" {
                     violations.push(FenceViolation {

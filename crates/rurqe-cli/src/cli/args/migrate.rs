@@ -86,7 +86,9 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError::message(format!("unknown option `{other}` for migrate")).into());
+                return Err(
+                    CliError::message(format!("unknown option `{other}` for migrate")).into(),
+                );
             }
         }
     }

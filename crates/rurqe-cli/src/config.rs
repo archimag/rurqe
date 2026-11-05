@@ -12,4 +12,4 @@
 //! `crate::config`, so the public surface of this crate is unchanged.
 
 pub use rurqe_migrate::introspect::SchemaSelection;
-pub use rurqe_project::{ConfigError, DEFAULT_CONFIG_PATH, ProjectConfig};
+pub use rurqe_project::{ConfigError, ProjectConfig, DEFAULT_CONFIG_PATH};

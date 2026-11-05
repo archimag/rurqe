@@ -82,8 +82,10 @@ impl Record {
         let from_bounds = bounds(params, quote! { ::rurqe::__core::row::FromSqlValue });
         let to_sql_bounds = bounds(params, quote! { ::rurqe::__core::expr::ToSqlVal });
         let array_bounds = bounds(params, quote! { ::rurqe::__core::expr::SqlArrayElement });
-        let multiset_bounds =
-            bounds(params, quote! { ::rurqe::__core::expr::SqlArrayElement + 'static });
+        let multiset_bounds = bounds(
+            params,
+            quote! { ::rurqe::__core::expr::SqlArrayElement + 'static },
+        );
 
         let mut field_defs = TokenStream::new();
         let mut field_reads = TokenStream::new();

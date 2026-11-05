@@ -1,6 +1,8 @@
 //! Parser of the `prune` command.
 
-use super::{parse_version, take_path, take_value, universal_flag, CliCommand, CliError, Interrupt};
+use super::{
+    parse_version, take_path, take_value, universal_flag, CliCommand, CliError, Interrupt,
+};
 
 /// Parses `prune`: drop migration scripts the checkpoint already folded in.
 pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
@@ -28,13 +30,16 @@ pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError::message(format!("unknown option `{other}` for prune")).into());
+                return Err(
+                    CliError::message(format!("unknown option `{other}` for prune")).into(),
+                );
             }
         }
     }
 
-    let before = before
-        .ok_or_else(|| CliError::message("missing required `--before` argument for prune".to_owned()))?;
+    let before = before.ok_or_else(|| {
+        CliError::message("missing required `--before` argument for prune".to_owned())
+    })?;
 
     Ok(CliCommand::Prune {
         config,

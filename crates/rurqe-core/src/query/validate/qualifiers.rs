@@ -636,9 +636,7 @@ fn walk_qualifiers(
                 walk_qualifiers(&branch.result, relations, outer_relations, embedded)?;
             }
             match else_branch {
-                Some(fallback) => {
-                    walk_qualifiers(fallback, relations, outer_relations, embedded)
-                }
+                Some(fallback) => walk_qualifiers(fallback, relations, outer_relations, embedded),
                 None => Ok(()),
             }
         }

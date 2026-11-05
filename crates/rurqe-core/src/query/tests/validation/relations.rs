@@ -8,7 +8,7 @@
 
 use super::{empty_ast, exists_subquery, relation_statement, scalar_subquery};
 use crate::expr::{BinaryOp, DerivedAst, Expr, ExprKind, SelectAst, SqlVal};
-use crate::query::validate::{reject_shadowed_derived, register_relation};
+use crate::query::validate::{register_relation, reject_shadowed_derived};
 use crate::query::*;
 use crate::schema::TableRef;
 

@@ -237,13 +237,11 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
     /// #     fn push_placeholder(_: &mut String, _: usize) {}
     /// # }
-/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
+    /// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
     /// // Fails to compile because `MockDialect` does not implement `SupportsOnConflict`:
     /// let query = InsertQuery::<MockDialect, User>::new().on_conflict_do_nothing();
     /// ```
-    pub fn on_conflict_do_nothing(
-        self,
-    ) -> InsertQuery<D, T, Values, Returning, HasConflict> {
+    pub fn on_conflict_do_nothing(self) -> InsertQuery<D, T, Values, Returning, HasConflict> {
         self.with_conflict(Conflict {
             target: Vec::new(),
             target_predicate: None,

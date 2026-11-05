@@ -55,8 +55,7 @@ fn a_configuration_argument_replaces_the_discovery() {
 
 #[test]
 fn a_configuration_argument_resolves_the_artifact_layout() {
-    let embedded =
-        embed_migrations!("tests/fixtures/alternate/rurqe.toml").expect("valid scripts");
+    let embedded = embed_migrations!("tests/fixtures/alternate/rurqe.toml").expect("valid scripts");
 
     assert_eq!(names(&embedded), ["V7__alternate.sql"]);
 }
@@ -73,8 +72,7 @@ fn a_baked_script_carries_the_text_of_its_file() {
 
 #[test]
 fn every_artifact_the_configuration_declares_is_baked() {
-    let embedded =
-        embed_migrations!("tests/fixtures/guarded/rurqe.toml").expect("valid artifacts");
+    let embedded = embed_migrations!("tests/fixtures/guarded/rurqe.toml").expect("valid artifacts");
 
     assert_eq!(names(&embedded), ["V5__orders.sql"]);
 

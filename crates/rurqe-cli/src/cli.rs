@@ -25,9 +25,9 @@ mod tests;
 
 pub use args::{parse_args, CliCommand};
 pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
-pub use error::{CliCause, CliError};
 pub(crate) use commands::best_effort;
 pub(crate) use connection::{connect, Connection};
+pub use error::{CliCause, CliError};
 pub use redact::redact_database_url;
 pub use report::CommandOutput;
 
@@ -331,7 +331,10 @@ pub(crate) fn run_cli_with_config(
                 // a wrong selection is exactly what manufactures its misleading
                 // findings, so the warning travels inside the error while a passing
                 // gate reports it beside the result.
-                carry_notice(notice.as_deref(), CliError::with_cause(CliCause::Drift(err)))
+                carry_notice(
+                    notice.as_deref(),
+                    CliError::with_cause(CliCause::Drift(err)),
+                )
             })?;
 
             // A selection that describes nothing compares nothing against

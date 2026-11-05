@@ -27,7 +27,8 @@ scribe = "Claude Haiku"    # history compaction, git squash commit messages, dif
 coder = [
   { model = "DeepSeek Flash", effort = "max" },
   { model = "GLM", effort = "max" },
-  { model = "Gemini Flash", level_up = false }
+  { model = "Gemini Flash", level_up = false },
+  { model = "Claude Sonnet", level_up = false }
 ]
 
 # Conceptual design, plan refinement, blocked-step replanning.

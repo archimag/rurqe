@@ -521,8 +521,8 @@ pub mod prelude {
 
     pub use rurqe_core::dml::{
         excluded, AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent,
-        ColumnAssign, ColumnAssignValue, DeleteQuery, EmptyRows, Excluded, Filtered, HasAssignments,
-        InsertQuery, NoAssignments, Unfiltered, UpdateQuery,
+        ColumnAssign, ColumnAssignValue, DeleteQuery, EmptyRows, Excluded, Filtered,
+        HasAssignments, InsertQuery, NoAssignments, Unfiltered, UpdateQuery,
     };
 
     #[cfg(feature = "macros")]
@@ -546,8 +546,8 @@ pub mod prelude {
     ))]
     pub use rurqe_postgres::{
         JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions,
-        /* PgConnection is imported below */ PgJson, PgJsonb, PgJsonbExpressions, PgJsonbValue,
-        PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
+        /* PgConnection is imported below */ PgJson, PgJsonExpressions, PgJsonValue, PgJsonb,
+        PgJsonbExpressions, PgJsonbValue, PgRegexExpressions, PgTextSearchExpressions,
         PgTextSearchValue, PgTextValue, PgVersion, Postgres,
     };
 
@@ -599,12 +599,6 @@ pub mod prelude {
     #[cfg(feature = "deadpool-postgres")]
     pub use rurqe_postgres::PgAsyncPool;
 
-    #[cfg(feature = "migrate")]
-    pub use rurqe_migrate::{
-        warn_if_in_tokio_runtime, Checksum, EmbeddedMigrations, Migration, MigrationKind,
-        MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper, SchemaCatalog,
-        Sleeper, ThreadSleeper,
-    };
     /// The dialect the doc-test catalogue pins its statements to.
     ///
     /// A doc-test is compiled as a crate of its own against the library the
@@ -616,6 +610,12 @@ pub mod prelude {
     /// no application names it.
     #[doc(hidden)]
     pub use crate::TestDialect;
+    #[cfg(feature = "migrate")]
+    pub use rurqe_migrate::{
+        warn_if_in_tokio_runtime, Checksum, EmbeddedMigrations, Migration, MigrationKind,
+        MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper, SchemaCatalog,
+        Sleeper, ThreadSleeper,
+    };
 }
 
 /// The dialect the doc-test catalogue pins its statements to.

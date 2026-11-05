@@ -382,7 +382,10 @@ fn migrations_config(workspace: &Path, migrations: &Path) -> String {
     let config = workspace.join("rurqe.toml");
     fs::write(
         &config,
-        format!("[migrations]\ndir = \"{}\"\n", declared_path(workspace, migrations)),
+        format!(
+            "[migrations]\ndir = \"{}\"\n",
+            declared_path(workspace, migrations)
+        ),
     )
     .expect("write the project configuration");
     path_string(&config)
@@ -1056,7 +1059,8 @@ fn the_built_in_conventions_place_every_artifact_under_rurqe() {
     let db = workspace.join("app.db");
     {
         let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
-        conn.execute_batch(CONVENTIONAL_USERS).expect("create schema");
+        conn.execute_batch(CONVENTIONAL_USERS)
+            .expect("create schema");
     }
 
     // No artifact path is named on the command line: each one is resolved from
@@ -1235,7 +1239,10 @@ fn the_conventional_paths_carry_a_verification_and_an_applied_tail() {
 
     // The verification replays the boundary snapshot the commit recorded beside
     // the conventional marker without naming a single path.
-    let output = run_binary_in(&workspace, &["stage", "verify", "--scratch-url", ":memory:"]);
+    let output = run_binary_in(
+        &workspace,
+        &["stage", "verify", "--scratch-url", ":memory:"],
+    );
     assert!(
         output.status.success(),
         "`stage verify` failed: {}",

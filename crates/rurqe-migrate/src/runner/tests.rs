@@ -261,10 +261,10 @@ fn the_history_of_a_non_transactional_migration_is_written_after_it_runs() {
 #[test]
 fn duplicate_script_names_are_rejected_before_any_migration_runs() {
     let mut backend = InMemoryBackend::new();
-    let first = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;")
-        .expect("a valid script name");
-    let second = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;")
-        .expect("a valid script name");
+    let first =
+        Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;").expect("a valid script name");
+    let second =
+        Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;").expect("a valid script name");
 
     let error = Migrator::new()
         .migrate(&mut backend, &[first, second])
@@ -669,19 +669,16 @@ fn a_transactional_script_whose_history_write_fails_names_the_script_and_rolls_b
     }
 
     assert_eq!(
-        backend.state.rollbacks,
-        1,
+        backend.state.rollbacks, 1,
         "the transaction of the script is rolled back"
     );
     assert_eq!(
-        backend.state.commits,
-        1,
+        backend.state.commits, 1,
         "only the best-effort failed row commits"
     );
     assert_eq!(backend.state.failed_commits, 0);
     assert_eq!(
-        backend.state.open,
-        0,
+        backend.state.open, 0,
         "every transaction is terminated before the run returns"
     );
     assert_eq!(backend.inner.history.len(), 1);
@@ -712,23 +709,19 @@ fn a_transactional_script_whose_commit_fails_names_the_script_and_leaves_no_appl
     }
 
     assert_eq!(
-        backend.state.failed_commits,
-        1,
+        backend.state.failed_commits, 1,
         "the commit of the script transaction fails"
     );
     assert_eq!(
-        backend.state.rollbacks,
-        0,
+        backend.state.rollbacks, 0,
         "a failed commit consumes its transaction"
     );
     assert_eq!(
-        backend.state.commits,
-        1,
+        backend.state.commits, 1,
         "only the best-effort failed row commits"
     );
     assert_eq!(
-        backend.state.open,
-        0,
+        backend.state.open, 0,
         "every transaction is terminated before the run returns"
     );
     assert_eq!(backend.inner.history.len(), 1);
@@ -795,8 +788,7 @@ fn a_repair_whose_purge_fails_rolls_back_the_staged_checksum_update() {
     }
 
     assert_eq!(
-        backend.inner.history,
-        history,
+        backend.inner.history, history,
         "the whole repair transaction is rolled back"
     );
     assert_eq!(
@@ -845,8 +837,7 @@ fn a_repair_whose_checksum_update_fails_rolls_back_the_staged_purge() {
     }
 
     assert_eq!(
-        backend.inner.history,
-        history,
+        backend.inner.history, history,
         "the whole repair transaction is rolled back"
     );
     assert!(
@@ -889,8 +880,7 @@ fn duplicate_script_names_are_rejected_before_a_repair_rewrites_a_checksum() {
         }
     );
     assert_eq!(
-        backend.history,
-        history,
+        backend.history, history,
         "the recorded checksum is never rewritten against an arbitrary survivor"
     );
     assert!(
@@ -902,10 +892,10 @@ fn duplicate_script_names_are_rejected_before_a_repair_rewrites_a_checksum() {
 #[test]
 fn duplicate_script_names_are_rejected_before_a_status_is_computed() {
     let mut backend = InMemoryBackend::new();
-    let first = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;")
-        .expect("a valid script name");
-    let second = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;")
-        .expect("a valid script name");
+    let first =
+        Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;").expect("a valid script name");
+    let second =
+        Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;").expect("a valid script name");
 
     let error = Migrator::new()
         .status(&mut backend, &[first, second])

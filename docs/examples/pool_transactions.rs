@@ -112,7 +112,10 @@ async fn main() -> Result<()> {
     let mut config = deadpool_postgres::Config::new();
     config.url = Some(String::from("postgres://app@localhost/app"));
     let driver = config
-        .create_pool(Some(deadpool_postgres::Runtime::Tokio1), tokio_postgres::NoTls)
+        .create_pool(
+            Some(deadpool_postgres::Runtime::Tokio1),
+            tokio_postgres::NoTls,
+        )
         .expect("the documented pool configuration is a valid connection string");
     let pool = PgAsyncPool::new(driver);
 
@@ -127,7 +130,10 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: adapt_pool
 
-    println!("{} account(s), at most {size_cap} connection(s)", accounts.len());
+    println!(
+        "{} account(s), at most {size_cap} connection(s)",
+        accounts.len()
+    );
 
     Ok(())
 }

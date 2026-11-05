@@ -229,4 +229,3 @@ fn assemble_bulk_insert() -> Result<(), EmptyRows> {
     // ANCHOR_END: values_many
     Ok(())
 }
-

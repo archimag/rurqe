@@ -517,8 +517,9 @@ mod sync_pool {
         // loss reaches the statement of the caller: the session a query
         // addresses no longer has a backend to answer it.
         {
-            let mut connection =
-                pool.get().expect("the unprobed checkout hands the session out");
+            let mut connection = pool
+                .get()
+                .expect("the unprobed checkout hands the session out");
             let refused = connection.query_one("SELECT 1", &[]);
             assert!(
                 refused.is_err(),
@@ -550,18 +551,18 @@ mod sync_pool {
                 .client_mut()
                 .query_one("SELECT pg_backend_pid()", &[])?
                 .get::<_, i32>(0);
-            tx.client_mut().batch_execute(
-                "INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (1, 100)",
-            )?;
+            tx.client_mut()
+                .batch_execute("INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (1, 100)")?;
 
             // The nested block loses its session, so the `ROLLBACK TO SAVEPOINT`
             // its guard issues cannot reach a server: the refused statement
             // poisons the connection.
             let nested: Result<(), PgError> = tx.transaction(|nested| {
-                nested.client_mut().batch_execute(
-                    "INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (2, 200)",
-                )?;
-                let terminated = killer.query_one("SELECT pg_terminate_backend($1)", &[&backend])?;
+                nested
+                    .client_mut()
+                    .batch_execute("INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (2, 200)")?;
+                let terminated =
+                    killer.query_one("SELECT pg_terminate_backend($1)", &[&backend])?;
                 assert!(
                     terminated.get::<_, bool>(0),
                     "the server accepted the termination of backend {backend}"
@@ -710,8 +711,7 @@ mod async_pool {
                     // The statement fails inside the transaction, so the closure
                     // returns its error and the adapter awaits the rollback
                     // before that error reaches this caller.
-                    support::execute(&scope, "INSERT INTO rurqe_tx_absent (id) VALUES (1)")
-                        .await?;
+                    support::execute(&scope, "INSERT INTO rurqe_tx_absent (id) VALUES (1)").await?;
                     Ok::<(), PgError>(())
                 })
             })
@@ -1011,7 +1011,9 @@ mod async_pool {
         let pool = pool(&url);
         reset(&pool, "rurqe_tx_async_break").await;
 
-        support::execute(&pool, "BEGIN").await.expect("the transaction opens");
+        support::execute(&pool, "BEGIN")
+            .await
+            .expect("the transaction opens");
         support::execute(
             &pool,
             "INSERT INTO rurqe_tx_async_break (id, amount) VALUES (1, 100)",
@@ -1316,8 +1318,9 @@ mod async_connection {
         let mut connection = connect(&url).await;
         let table = "rurqe_tx_async_panic";
 
-        let outcome: BlockOutcome<()> = catch_unwind_future(
-            connection.transaction_with_isolation(IsolationLevel::Serializable, |mut scope| {
+        let outcome: BlockOutcome<()> = catch_unwind_future(connection.transaction_with_isolation(
+            IsolationLevel::Serializable,
+            |mut scope| {
                 Box::pin(async move {
                     support::execute(&scope, &format!("DROP TABLE IF EXISTS {table}")).await?;
                     support::execute(
@@ -1350,8 +1353,8 @@ mod async_connection {
                         .await;
                     Ok::<(), PgError>(())
                 })
-            }),
-        )
+            },
+        ))
         .await;
 
         let payload = outcome.expect_err("the wrapper captures the panic the block unwinds with");

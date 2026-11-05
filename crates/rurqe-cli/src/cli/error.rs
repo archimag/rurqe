@@ -250,7 +250,11 @@ impl fmt::Display for TransportRefusal {
                      neither"
                 )
             }
-            Self::UnacknowledgedCleartext { host, ssl_mode, url } => {
+            Self::UnacknowledgedCleartext {
+                host,
+                ssl_mode,
+                url,
+            } => {
                 write!(
                     formatter,
                     "`{url}` would reach the remote host `{host}` in cleartext (`sslmode={ssl_mode}`), \
@@ -339,7 +343,7 @@ impl std::error::Error for CliError {
         self.cause
             .as_deref()
             .map(|cause| cause as &(dyn std::error::Error + 'static))
-}
+    }
 }
 
 #[cfg(test)]
@@ -388,7 +392,9 @@ mod tests {
         let cause = error.source().expect("the line carries its cause");
         assert_eq!(cause.to_string(), "project configuration");
 
-        let wrapped = cause.source().expect("the cause carries the taxonomy failure");
+        let wrapped = cause
+            .source()
+            .expect("the cause carries the taxonomy failure");
         assert_eq!(
             wrapped.to_string(),
             "configuration file `rurqe.toml` does not exist"
@@ -488,7 +494,10 @@ mod tests {
             line.contains("`postgres://***@db.internal/app` demands TLS (`sslmode=require`)"),
             "got {line}"
         );
-        assert!(line.contains("a Unix-domain socket needs neither"), "got {line}");
+        assert!(
+            line.contains("a Unix-domain socket needs neither"),
+            "got {line}"
+        );
 
         let cause = error.source().expect("the line carries its cause");
         assert_eq!(cause.to_string(), "transport policy");
@@ -504,7 +513,10 @@ mod tests {
             url: "<unrecognised database URL>".to_owned(),
         }
         .to_string();
-        assert!(unrecognised.contains("names the URL scheme `mysql`"), "got {unrecognised}");
+        assert!(
+            unrecognised.contains("names the URL scheme `mysql`"),
+            "got {unrecognised}"
+        );
         assert!(
             unrecognised.contains("PostgreSQL is addressed by"),
             "got {unrecognised}"

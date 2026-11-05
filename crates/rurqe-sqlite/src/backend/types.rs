@@ -53,9 +53,8 @@ impl ToSql for SqlValParam<'_> {
 /// value it never carried. Infinities keep binding as-is, because SQLite
 /// stores them faithfully.
 fn nan_failure() -> ::rusqlite::Error {
-    let cause = ::std::io::Error::other(
-        "a NaN double has no SQLite representation and would bind as NULL",
-    );
+    let cause =
+        ::std::io::Error::other("a NaN double has no SQLite representation and would bind as NULL");
     ::rusqlite::Error::ToSqlConversionFailure(Box::new(cause))
 }
 

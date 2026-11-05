@@ -9,8 +9,8 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::dml::{
     AssignColumn, AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery,
 };
-use crate::query::{BuildError, Selection, TableSelection};
 use crate::expr::{ExprKind, Expression, SqlVal, Unscoped};
+use crate::query::{BuildError, Selection, TableSelection};
 use crate::schema::Column;
 use core::fmt::Write;
 

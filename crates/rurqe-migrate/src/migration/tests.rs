@@ -3,8 +3,7 @@ use crate::history::{DESCRIPTION_COLUMN_WIDTH, VERSION_COLUMN_WIDTH};
 
 #[test]
 fn versioned_script_yields_version_and_description() {
-    let migration =
-        Migration::parse("V2_1__add_orders.sql", "CREATE TABLE orders ();").unwrap();
+    let migration = Migration::parse("V2_1__add_orders.sql", "CREATE TABLE orders ();").unwrap();
 
     assert_eq!(migration.kind, MigrationKind::Versioned);
     assert_eq!(migration.version.as_ref().unwrap().to_string(), "2.1");

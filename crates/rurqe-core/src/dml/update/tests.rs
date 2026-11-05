@@ -282,7 +282,10 @@ fn repeated_where_conditions_are_combined_with_and() {
 
 #[test]
 fn set_moves_the_query_into_the_assigned_typestate() {
-    fn assert_assigned<R, S>(_query: &UpdateQuery<MockDialect, User, Filtered, R, S, HasAssignments>) {}
+    fn assert_assigned<R, S>(
+        _query: &UpdateQuery<MockDialect, User, Filtered, R, S, HasAssignments>,
+    ) {
+    }
 
     let query = UpdateQuery::<MockDialect, User>::new()
         .set(UserName::set("root"))

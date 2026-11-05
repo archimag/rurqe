@@ -84,13 +84,9 @@ async fn main() -> Result<()> {
     // ANCHOR: dto_decode
     // The row is read through the declaration: the fields keep the types the
     // schema declares, and the column order of the statement does not matter.
-    let summary = UserSummary::from_row(&[
-        SqlVal::I64(7),
-        SqlVal::Text("root".to_owned()),
-    ]);
+    let summary = UserSummary::from_row(&[SqlVal::I64(7), SqlVal::Text("root".to_owned())]);
     // ANCHOR_END: dto_decode
     println!("{summary:?}");
 
     Ok(())
 }
-

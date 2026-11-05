@@ -192,7 +192,9 @@ impl<D: Dialect, T: Table, Values, Returning, ConflictState>
     /// the statement inserts, so those builders restate the recorded source here.
     /// The dialect, the inserted table, the row type of the recorded `RETURNING`
     /// clause, and the recorded `ON CONFLICT` typestate stay exactly as they were.
-    pub(super) fn with_row_source<Source>(self) -> InsertQuery<D, T, Source, Returning, ConflictState> {
+    pub(super) fn with_row_source<Source>(
+        self,
+    ) -> InsertQuery<D, T, Source, Returning, ConflictState> {
         self.retyped()
     }
 

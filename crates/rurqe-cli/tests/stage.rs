@@ -10,9 +10,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rurqe_cli::{run_cli, CliCause, StageError};
 use rurqe_cli::stage::materialise_stage;
 use rurqe_cli::SqliteMigrationBackend;
+use rurqe_cli::{run_cli, CliCause, StageError};
 use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::{
     Checkpoint, Checksum, DeclarativeStage, Error, Migration, Migrator, StageScript, STAGE_SCRIPT,

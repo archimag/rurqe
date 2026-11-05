@@ -459,7 +459,11 @@ impl EmbeddedMigrations {
             (None, Some(checkpoint)) => checkpoint.schema_hash(),
             (None, None) => stage.checksum(),
         };
-        Ok(StageMarker::new(self.marker_version()?, StageMarker::DESCRIPTION, checksum))
+        Ok(StageMarker::new(
+            self.marker_version()?,
+            StageMarker::DESCRIPTION,
+            checksum,
+        ))
     }
 
     /// The version that closes every versioned migration the cold start already

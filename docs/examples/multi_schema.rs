@@ -56,18 +56,12 @@ async fn main() -> Result<()> {
     let session_table: auth::Sessions = Auth.Sessions;
     let session_id: auth::SessionsId = Auth.Sessions.SessionsId;
     // ANCHOR_END: secondary_query
-    println!(
-        "{} {session_table:?} {session_id:?}",
-        sessions.len()
-    );
+    println!("{} {session_table:?} {session_id:?}", sessions.len());
 
     // ANCHOR: cross_schema_join
     // Joining a primary relation with a secondary relation:
     let joined = select_from(User)
-        .inner_join(
-            Auth.Sessions,
-            Auth.Sessions.SessionsUserId.eq(User.UserId),
-        )
+        .inner_join(Auth.Sessions, Auth.Sessions.SessionsUserId.eq(User.UserId))
         .select(cols!(User.UserName, Auth.Sessions.SessionsId))
         .fetch_all(&pool)
         .await?;

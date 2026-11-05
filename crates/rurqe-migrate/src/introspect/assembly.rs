@@ -14,8 +14,8 @@ use crate::catalog::{
 };
 
 use super::metadata::{
-    RawCatalogSections, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
-    RawPrimaryKeyMetadata, RawTableMetadata, TableKey,
+    RawCatalogSections, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata,
+    RawIndexMetadata, RawPrimaryKeyMetadata, RawTableMetadata, TableKey,
 };
 use super::type_mapping::map_sql_type_to_kind;
 
@@ -149,7 +149,10 @@ fn functional_expressions(text: &str) -> Option<String> {
 
 /// The composite identity of the table `table_name` inside `schema`.
 fn table_key(schema: Option<&str>, table_name: &str) -> TableKey {
-    (schema.map(|schema| schema.to_owned()), table_name.to_owned())
+    (
+        schema.map(|schema| schema.to_owned()),
+        table_name.to_owned(),
+    )
 }
 
 /// Folds flat index rows into one [`IndexDef`] per index.

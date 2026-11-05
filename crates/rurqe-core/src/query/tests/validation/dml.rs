@@ -37,7 +37,7 @@ fn an_insert_value_addresses_no_relation_at_all() {
             column: "total",
         })
     );
-    }
+}
 
 #[test]
 fn an_insert_value_referencing_the_excluded_relation_is_rejected() {
@@ -106,7 +106,9 @@ fn an_insert_value_embedding_a_correlated_subquery_is_rejected() {
     });
 
     let built = InsertQuery::<UpsertDialect, Order>::new()
-        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(
+            inner,
+        ))))
         .build();
 
     assert_eq!(
@@ -132,7 +134,9 @@ fn an_insert_value_embedding_a_subquery_qualified_by_a_foreign_relation_is_rejec
     }];
 
     let built = InsertQuery::<UpsertDialect, Order>::new()
-        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(
+            inner,
+        ))))
         .build();
 
     assert_eq!(built, Err(BuildError::UnresolvedQualifier { name: "o" }));
@@ -182,7 +186,9 @@ fn an_insert_value_embedding_a_self_contained_subquery_is_accepted() {
     inner.projections = vec![sum_of("recent", "total")];
 
     let built = InsertQuery::<UpsertDialect, Order>::new()
-        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(inner))))
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(scalar_subquery(
+            inner,
+        ))))
         .build()
         .expect("the nested statement aggregates its own relation");
 

@@ -183,7 +183,10 @@ fn names_libpq_keywords(url: &str) -> bool {
         return false;
     };
 
-    !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Strips a case-insensitive `scheme:` prefix, returning what follows it.

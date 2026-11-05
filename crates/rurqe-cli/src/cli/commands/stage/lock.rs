@@ -936,16 +936,30 @@ mod tests {
         // A parked copy and a staged sibling of this process are named after one
         // pair, so a copy attributed through the scope of the section is
         // attributed to the writer that staged and parked it.
-        assert_eq!(scope, current_writer(), "the section reports the process scope");
-        assert_eq!(owner.pid, scope.pid, "the record names the process of the writer");
-        assert_eq!(owner.nonce, scope.nonce, "the record carries the process nonce");
+        assert_eq!(
+            scope,
+            current_writer(),
+            "the section reports the process scope"
+        );
+        assert_eq!(
+            owner.pid, scope.pid,
+            "the record names the process of the writer"
+        );
+        assert_eq!(
+            owner.nonce, scope.nonce,
+            "the record carries the process nonce"
+        );
 
         // The scope is derived once for the lifetime of the process, so a second
         // section of the same process reports the very same identity: a copy
         // parked before the first release stays attributable afterwards.
         drop(section);
         let reopened = CheckpointLock::acquire(&checkpoint).expect("the section is free again");
-        assert_eq!(reopened.writer(), scope, "the scope survives re-acquisition");
+        assert_eq!(
+            reopened.writer(),
+            scope,
+            "the scope survives re-acquisition"
+        );
 
         drop(reopened);
     }

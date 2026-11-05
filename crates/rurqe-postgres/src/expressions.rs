@@ -803,9 +803,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions, PgJson, PgJsonb,
-        PgJsonbExpressions, PgJsonbValue, PgJsonExpressions, PgJsonValue, PgRegexExpressions,
-        PgTextSearchExpressions, PgTextSearchValue, PgTextValue,
+        plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions, PgJson,
+        PgJsonExpressions, PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue,
+        PgRegexExpressions, PgTextSearchExpressions, PgTextSearchValue, PgTextValue,
     };
     use crate::dialect::Postgres;
     use rurqe_core::expr::{render_expr, Expr, ExprKind, NonAggregate, SqlVal, ToSqlVal};
@@ -951,7 +951,10 @@ mod tests {
             expr.kind(),
             &[TableRef::plain("docs"), TableRef::plain("other")],
         );
-        assert_eq!(qualified, "(to_tsvector(\"docs\".\"content\") @@ to_tsquery($1))");
+        assert_eq!(
+            qualified,
+            "(to_tsvector(\"docs\".\"content\") @@ to_tsquery($1))"
+        );
         assert_eq!(params, vec![SqlVal::Text("english & rust".to_owned())]);
 
         // An aliased column keeps its alias prefix inside the call.
@@ -1194,10 +1197,7 @@ mod tests {
             PgJsonb("[1, 2]").to_sql_val(),
             SqlVal::Text("[1, 2]".to_owned())
         );
-        assert_eq!(
-            (&PgJsonb("{}")).to_sql_val(),
-            SqlVal::Text("{}".to_owned())
-        );
+        assert_eq!((&PgJsonb("{}")).to_sql_val(), SqlVal::Text("{}".to_owned()));
     }
 
     #[test]

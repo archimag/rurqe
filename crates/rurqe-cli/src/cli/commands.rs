@@ -15,8 +15,8 @@ use crate::config::{ProjectConfig, SchemaSelection};
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{process_may_be_alive, process_nonce};
 
-use super::error::{CliCause, CliError};
 use self::stage::lock::WriterId;
+use super::error::{CliCause, CliError};
 
 mod help;
 mod migrate;

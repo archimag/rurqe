@@ -453,7 +453,7 @@ mod tests {
             .with_schema("auth"),
         ])
         .with_enums(vec![
-            EnumDef::new("mood", vec!["happy".to_owned()]).with_schema("auth"),
+            EnumDef::new("mood", vec!["happy".to_owned()]).with_schema("auth")
         ]);
 
         let code =
@@ -464,7 +464,9 @@ mod tests {
 
         // The secondary schema declares the marker it is addressed through next
         // to the module holding its type namespace.
-        assert!(code.contains("schema!(\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n"));
+        assert!(
+            code.contains("schema!(\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n")
+        );
         // The table is declared with the ordinary `table!` grammar inside the
         // schema block, so the renderer keeps no table syntax of its own.
         assert!(code.contains(

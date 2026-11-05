@@ -90,7 +90,10 @@ fn a_forged_marker_keeps_the_dropped_modifier_visible() {
     let marked = forged.distinct();
 
     let ExprKind::Raw { fragments, params } = marked.kind() else {
-        panic!("expected the diagnostic placeholder, got {:?}", marked.kind());
+        panic!(
+            "expected the diagnostic placeholder, got {:?}",
+            marked.kind()
+        );
     };
     assert_eq!(
         fragments.first(),
@@ -112,7 +115,10 @@ fn a_forged_marker_keeps_the_dropped_filter_visible() {
     let marked = forged.filter_where(Expr::column::<OrderId>().gt(10i64));
 
     let ExprKind::Raw { fragments, params } = marked.kind() else {
-        panic!("expected the diagnostic placeholder, got {:?}", marked.kind());
+        panic!(
+            "expected the diagnostic placeholder, got {:?}",
+            marked.kind()
+        );
     };
     assert_eq!(
         fragments.first(),
@@ -133,7 +139,11 @@ fn a_new_root_degrades_the_aggregate_call_to_the_general_marker() {
     assert_general(Expr::<i64>::count::<OrderId>().is_null());
     assert_general(Expr::<i64>::count::<OrderId>().is_not_null());
     assert_general(Expr::<i64>::sum::<OrderId>().cast::<i32>());
-    assert_general(sum(OrderId).filter_where(Expr::column::<OrderId>().gt(0i64)).is_null());
+    assert_general(
+        sum(OrderId)
+            .filter_where(Expr::column::<OrderId>().gt(0i64))
+            .is_null(),
+    );
     assert_general(Expr::<String>::max::<OrderNote>().like("A%"));
     assert_general(Expr::<String>::max::<OrderNote>().ilike("a%"));
     assert_general(Expr::<i64>::sum::<OrderId>().dialect_op::<i64, i64, _>("+", 1i64));

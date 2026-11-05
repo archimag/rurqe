@@ -216,9 +216,10 @@ fn report_status_reports_the_boundary_the_next_run_would_refuse() {
         output.lines()
     );
     assert!(
-        output.lines().iter().any(|line| line
-            .contains("`migrate up` would refuse this database")
-            && line.contains("pruned history up to `2`")),
+        output.lines().iter().any(
+            |line| line.contains("`migrate up` would refuse this database")
+                && line.contains("pruned history up to `2`")
+        ),
         "the boundary is reported beside the table: {:?}",
         output.lines()
     );

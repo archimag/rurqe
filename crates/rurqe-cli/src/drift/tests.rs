@@ -733,8 +733,12 @@ fn the_same_bare_name_in_two_schemas_is_two_distinct_entities() {
     // The `auth.role` enum is missing from the live database and the primary
     // `role` one is extra: matching by the bare name alone would read the pair as
     // a single altered enum instead.
-    let expected = SchemaCatalog::new(vec![users_table(Vec::new())])
-        .with_enums(vec![EnumDef::new("role", vec!["admin".to_owned()]).with_schema("auth")]);
+    let expected =
+        SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![EnumDef::new(
+            "role",
+            vec!["admin".to_owned()],
+        )
+        .with_schema("auth")]);
     let live = SchemaCatalog::new(vec![users_table(Vec::new())])
         .with_enums(vec![EnumDef::new("role", vec!["admin".to_owned()])]);
 

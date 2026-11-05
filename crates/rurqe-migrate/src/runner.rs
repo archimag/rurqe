@@ -43,7 +43,7 @@ pub use backend::{MigrationBackend, MigrationTransaction};
 pub use guard::LockGuard;
 pub use memory::{InMemoryBackend, InMemoryTransaction};
 pub use migrator::Migrator;
-pub use report::{MigrationReport, MigrationStatus, MigrationStatusKind, RepairReport};
 #[cfg(feature = "tokio")]
 pub(crate) use offload::join_offloaded;
+pub use report::{MigrationReport, MigrationStatus, MigrationStatusKind, RepairReport};
 pub(crate) use time::current_timestamp;

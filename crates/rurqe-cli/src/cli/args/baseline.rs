@@ -2,7 +2,9 @@
 
 use rurqe_migrate::version::MigrationVersion;
 
-use super::{take_path, take_value, universal_flag_beside_version, CliCommand, CliError, Interrupt};
+use super::{
+    take_path, take_value, universal_flag_beside_version, CliCommand, CliError, Interrupt,
+};
 
 /// Parses a `baseline` invocation into its typed command.
 pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
@@ -27,7 +29,9 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
-                return Err(CliError::message(format!("unknown option `{other}` for baseline")).into());
+                return Err(
+                    CliError::message(format!("unknown option `{other}` for baseline")).into(),
+                );
             }
         }
     }

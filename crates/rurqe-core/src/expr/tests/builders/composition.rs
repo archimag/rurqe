@@ -356,7 +356,9 @@ fn a_forged_direct_aggregate_marker_reports_the_dropped_filter_in_every_profile(
         "the placeholder is a single fragment carrying no parameter"
     );
     assert!(
-        fragments.first().is_some_and(|fragment| fragment.contains("FILTER")),
+        fragments
+            .first()
+            .is_some_and(|fragment| fragment.contains("FILTER")),
         "the placeholder names the clause it replaced: {fragments:?}"
     );
     assert!(bound.is_empty());
@@ -400,7 +402,9 @@ fn a_forged_filtered_aggregate_marker_reports_the_dropped_distinct_in_every_prof
         "the placeholder is a single fragment carrying no parameter"
     );
     assert!(
-        fragments.first().is_some_and(|fragment| fragment.contains("DISTINCT")),
+        fragments
+            .first()
+            .is_some_and(|fragment| fragment.contains("DISTINCT")),
         "the placeholder names the modifier it dropped: {fragments:?}"
     );
     assert!(bound.is_empty());

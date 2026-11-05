@@ -251,9 +251,9 @@ fn contains_window_call(expr: &ExprKind) -> bool {
         | ExprKind::Aggregate { .. }
         | ExprKind::Multiset { .. } => false,
         ExprKind::Row { values } => any_window_call_in(values),
-        ExprKind::InList { operand, values, .. } => {
-            contains_window_call(operand) || any_window_call_in(values)
-        }
+        ExprKind::InList {
+            operand, values, ..
+        } => contains_window_call(operand) || any_window_call_in(values),
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
             contains_window_call(lhs) || contains_window_call(rhs)
         }
@@ -263,23 +263,22 @@ fn contains_window_call(expr: &ExprKind) -> bool {
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
             contains_window_call(operand)
         }
-        ExprKind::Like { operand, pattern, .. } => {
-            contains_window_call(operand) || contains_window_call(pattern)
-        }
+        ExprKind::Like {
+            operand, pattern, ..
+        } => contains_window_call(operand) || contains_window_call(pattern),
         ExprKind::Between { operand, low, high } => {
-            contains_window_call(operand)
-                || contains_window_call(low)
-                || contains_window_call(high)
+            contains_window_call(operand) || contains_window_call(low) || contains_window_call(high)
         }
         ExprKind::Function { args, .. } => any_window_call_in(args),
-        ExprKind::Case { branches, else_branch } => {
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
             branches.iter().any(|branch| {
                 contains_window_call(&branch.condition) || contains_window_call(&branch.result)
             }) || else_branch.as_deref().is_some_and(contains_window_call)
         }
-        ExprKind::Subquery { operand, .. } => {
-            operand.as_deref().is_some_and(contains_window_call)
-        }
+        ExprKind::Subquery { operand, .. } => operand.as_deref().is_some_and(contains_window_call),
         ExprKind::Aliased { expr, .. } => contains_window_call(expr),
     }
 }

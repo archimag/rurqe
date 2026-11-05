@@ -957,7 +957,10 @@ mod tests {
             panic!("an unrecognised scheme is a transport cause");
         };
         match schemed_refusal {
-            TransportRefusal::UnrecognisedTarget { scheme: Some(scheme), .. } => {
+            TransportRefusal::UnrecognisedTarget {
+                scheme: Some(scheme),
+                ..
+            } => {
                 assert_eq!(scheme.as_str(), "mysql");
             }
             other => panic!("the refusal names the spelled scheme, got {other:?}"),

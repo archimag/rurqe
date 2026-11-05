@@ -97,7 +97,10 @@ async fn main() -> Result<()> {
     // the run instead of compiling unseen.
     build_correlated().map_err(ExecutionError::Build)?;
     build_sqlite_collection().map_err(ExecutionError::Build)?;
-    decode_document().map_err(|source| ExecutionError::RowDecode { row_index: 0, source })?;
+    decode_document().map_err(|source| ExecutionError::RowDecode {
+        row_index: 0,
+        source,
+    })?;
 
     Ok(())
 }
@@ -149,4 +152,3 @@ fn decode_document() -> Result<(), RowDecodeError> {
     }
     Ok(())
 }
-

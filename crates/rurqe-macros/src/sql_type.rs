@@ -908,8 +908,7 @@ mod tests {
     }
 
     /// The message the derive emits for a generic input.
-    const GENERIC_REJECTION: &str =
-        "`SqlType` cannot be derived on a generic type; \
+    const GENERIC_REJECTION: &str = "`SqlType` cannot be derived on a generic type; \
          derive it on a concrete newtype or enum";
 
     #[test]
@@ -1005,9 +1004,7 @@ mod tests {
 
     /// The tokens the derive emits for an accepted input, rendered as text.
     fn expansion(input: DeriveInput) -> String {
-        expand(input)
-            .expect("the input is accepted")
-            .to_string()
+        expand(input).expect("the input is accepted").to_string()
     }
 
     #[test]

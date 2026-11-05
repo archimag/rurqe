@@ -1,8 +1,8 @@
+use rurqe_migrate::checkpoint::Checkpoint;
+use rurqe_migrate::Checksum;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::time::Duration;
-use rurqe_migrate::checkpoint::Checkpoint;
-use rurqe_migrate::Checksum;
 
 use super::commands::Project;
 use super::*;
@@ -166,8 +166,13 @@ fn the_migrate_family_rejects_path_options() {
 #[test]
 fn parses_migrate_clean_with_its_confirmation() {
     for flag in ["--yes", "-y", "--force"] {
-        let cmd = parse_args(&["rurqe".into(), "migrate".into(), "clean".into(), flag.into()])
-            .unwrap();
+        let cmd = parse_args(&[
+            "rurqe".into(),
+            "migrate".into(),
+            "clean".into(),
+            flag.into(),
+        ])
+        .unwrap();
 
         assert_eq!(
             cmd,
@@ -250,9 +255,15 @@ fn migrate_clean_lists_the_manifest_and_drops_it_with_confirmation() {
         .expect_err("the clean is refused without --yes");
     let message = refusal.to_string();
     for name in ["users", "orders", "active_users"] {
-        assert!(message.contains(name), "the refusal lists `{name}`: {message}");
+        assert!(
+            message.contains(name),
+            "the refusal lists `{name}`: {message}"
+        );
     }
-    assert!(message.contains("--yes"), "the refusal names the gate: {message}");
+    assert!(
+        message.contains("--yes"),
+        "the refusal names the gate: {message}"
+    );
 
     assert_eq!(user_objects(&database), 3, "the refusal drops nothing");
 
@@ -267,7 +278,11 @@ fn migrate_clean_lists_the_manifest_and_drops_it_with_confirmation() {
         assert!(report.contains(name), "the report lists `{name}`: {report}");
     }
 
-    assert_eq!(user_objects(&database), 0, "no user object survives the clean");
+    assert_eq!(
+        user_objects(&database),
+        0,
+        "no user object survives the clean"
+    );
 }
 
 /// Counts the user objects a clean removes from the SQLite catalog.
@@ -1013,7 +1028,10 @@ fn a_bare_invocation_of_the_single_entrypoint_answers_the_help() {
         parse_args(&["cargo-rurqe".into(), "rurqe".into()]).unwrap(),
         CliCommand::Help
     );
-    assert_eq!(parse_args(&["cargo-rurqe".into()]).unwrap(), CliCommand::Help);
+    assert_eq!(
+        parse_args(&["cargo-rurqe".into()]).unwrap(),
+        CliCommand::Help
+    );
 }
 
 #[test]
@@ -1169,13 +1187,7 @@ fn parses_the_config_flag_of_every_action() {
             "--config",
             "project/rurqe.toml",
         ],
-        vec![
-            "rurqe",
-            "stage",
-            "verify",
-            "--config",
-            "project/rurqe.toml",
-        ],
+        vec!["rurqe", "stage", "verify", "--config", "project/rurqe.toml"],
         vec![
             "rurqe",
             "stage",
@@ -1299,7 +1311,14 @@ fn every_command_validates_the_project_configuration() {
         vec!["rurqe", "migrate", "up"],
         vec!["rurqe", "migrate", "status"],
         vec!["rurqe", "migrate", "repair"],
-        vec!["rurqe", "migrate", "clean", "--yes", "--database-url", ":memory:"],
+        vec![
+            "rurqe",
+            "migrate",
+            "clean",
+            "--yes",
+            "--database-url",
+            ":memory:",
+        ],
         vec!["rurqe", "baseline", "--version", "1"],
         vec!["rurqe", "codegen", "--database-url", ":memory:"],
         vec!["rurqe", "verify", "--database-url", ":memory:"],
@@ -1368,14 +1387,17 @@ output = "generated/schema.rs"
     )
     .expect("write the project configuration");
 
-    let project = Project::load(Some(&configuration), &configuration)
-        .expect("the declared project loads");
+    let project =
+        Project::load(Some(&configuration), &configuration).expect("the declared project loads");
 
     // The declared keys win over the conventional layout beneath the root, and
     // every declared path resolves against the directory holding the file.
     assert_eq!(project.migrations_dir(), dir.join("tail"));
     assert_eq!(project.stage_dir(None), dir.join("declared-stage"));
-    assert_eq!(project.checkpoint_path(), dir.join("tail").join("anchored.toml"));
+    assert_eq!(
+        project.checkpoint_path(),
+        dir.join("tail").join("anchored.toml")
+    );
     assert_eq!(
         project.lock_path(None),
         dir.join("artifacts").join("schema.lock")
@@ -1407,8 +1429,12 @@ fn the_declared_codegen_output_is_the_shared_middle_tier() {
     .expect("write the project configuration");
 
     let declared = dir.join("generated").join("schema.rs");
-    std::fs::create_dir_all(declared.parent().expect("the declared module has a directory"))
-        .expect("create the declared module directory");
+    std::fs::create_dir_all(
+        declared
+            .parent()
+            .expect("the declared module has a directory"),
+    )
+    .expect("create the declared module directory");
     std::fs::write(&declared, "pub const SCHEMA_HASH: &str = \"declared\";\n")
         .expect("write the declared module");
 
@@ -1427,8 +1453,12 @@ fn the_declared_codegen_output_is_the_shared_middle_tier() {
 
     // The first tier: the flag of either command wins over the declared key.
     let flagged = dir.join("flagged").join("schema.rs");
-    std::fs::create_dir_all(flagged.parent().expect("the flagged module has a directory"))
-        .expect("create the flagged module directory");
+    std::fs::create_dir_all(
+        flagged
+            .parent()
+            .expect("the flagged module has a directory"),
+    )
+    .expect("create the flagged module directory");
     std::fs::write(&flagged, "pub const SCHEMA_HASH: &str = \"flagged\";\n")
         .expect("write the flagged module");
 
@@ -1470,7 +1500,9 @@ fn the_declared_codegen_output_is_the_shared_middle_tier() {
         .resolve_schema_code(None)
         .expect_err("the declared module is required to resolve");
     assert!(
-        missing.to_string().contains(&declared.display().to_string()),
+        missing
+            .to_string()
+            .contains(&declared.display().to_string()),
         "the diagnostic names the declared module, got {missing}"
     );
 }
@@ -1529,8 +1561,11 @@ fn codegen_and_verify_address_the_module_the_configuration_declares() {
     // proves: the module the declared key names is the one compared.
     run_cli_with_config(argv("verify", &[]), &configuration)
         .expect("verification reads the declared module");
-    std::fs::write(&declared, "pub const SCHEMA_HASH: &str = \"sha256:0000\";\n")
-        .expect("tamper with the declared module");
+    std::fs::write(
+        &declared,
+        "pub const SCHEMA_HASH: &str = \"sha256:0000\";\n",
+    )
+    .expect("tamper with the declared module");
     let tampered = run_cli_with_config(argv("verify", &[]), &configuration)
         .expect_err("the tampered hash of the declared module is reported");
     assert!(
@@ -1589,7 +1624,10 @@ fn a_project_without_declarations_keeps_the_conventional_layout() {
         project.lock_path(None),
         dir.join("rurqe").join("schema.lock")
     );
-    assert_eq!(project.codegen_output(None), dir.join("src").join("schema.rs"));
+    assert_eq!(
+        project.codegen_output(None),
+        dir.join("src").join("schema.rs")
+    );
     assert_eq!(
         project
             .selection(None)
@@ -1661,9 +1699,7 @@ checkpoint = "declared-tail/anchored.toml"
     let error = run_cli_with_config(prune(None, None), &configuration)
         .expect_err("the declared checkpoint is missing");
     assert!(
-        error
-            .to_string()
-            .contains(&declared.display().to_string()),
+        error.to_string().contains(&declared.display().to_string()),
         "the declared marker wins over the conventional one: {error}"
     );
 
@@ -1673,9 +1709,7 @@ checkpoint = "declared-tail/anchored.toml"
     let error = run_cli_with_config(prune(Some(&flagged), Some(&flagged_tail)), &configuration)
         .expect_err("the flagged checkpoint is missing");
     assert!(
-        error
-            .to_string()
-            .contains(&flagged.display().to_string()),
+        error.to_string().contains(&flagged.display().to_string()),
         "the explicit flag wins over the declared marker: {error}"
     );
 
@@ -1712,8 +1746,11 @@ fn scratch(name: &str) -> PathBuf {
 fn codegen_sweeps_the_staged_siblings_an_interrupted_generation_left_behind() {
     let dir = scratch("codegen-debris");
     let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
-    std::fs::write(&configuration, "[codegen]\noutput = \"generated/schema.rs\"\n")
-        .expect("write the project configuration");
+    std::fs::write(
+        &configuration,
+        "[codegen]\noutput = \"generated/schema.rs\"\n",
+    )
+    .expect("write the project configuration");
 
     let db = dir.join("app.db");
     {
@@ -1802,7 +1839,6 @@ fn backdate(path: &Path, age: Duration) {
 
 #[test]
 fn a_repeated_installation_neither_fails_nor_replaces_the_sink() {
-
     // A process reaches the entry point again when it runs a second command, so
     // the installation has to stay idempotent instead of installing a second
     // sink over the first one.

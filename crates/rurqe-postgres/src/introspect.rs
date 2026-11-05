@@ -67,10 +67,7 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
 /// catalog statements run both on a bare client and inside an open transaction:
 /// a scratch schema can therefore be introspected before its transaction
 /// commits, and the golden equation reads it through the same queries.
-pub fn introspect_postgres_schema<C>(
-    client: &mut C,
-    schema: &str,
-) -> Result<SchemaCatalog, PgError>
+pub fn introspect_postgres_schema<C>(client: &mut C, schema: &str) -> Result<SchemaCatalog, PgError>
 where
     C: postgres::GenericClient,
 {

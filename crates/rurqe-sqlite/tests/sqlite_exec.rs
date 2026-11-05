@@ -200,7 +200,10 @@ fn a_non_finite_array_element_is_refused_instead_of_binding_as_json_null() {
     // every depth.
     let cases = [
         (SqlVal::Array(vec![SqlVal::F64(f64::NAN)]), f64::NAN),
-        (SqlVal::Array(vec![SqlVal::F64(f64::INFINITY)]), f64::INFINITY),
+        (
+            SqlVal::Array(vec![SqlVal::F64(f64::INFINITY)]),
+            f64::INFINITY,
+        ),
         (
             SqlVal::Array(vec![SqlVal::F64(f64::NEG_INFINITY)]),
             f64::NEG_INFINITY,
@@ -214,8 +217,8 @@ fn a_non_finite_array_element_is_refused_instead_of_binding_as_json_null() {
     for (parameter, offender) in cases {
         let mut adapter = seeded();
 
-        let element = Expr::<Vec<f64>>::raw("?", vec![parameter])
-            .expect("a template with one placeholder");
+        let element =
+            Expr::<Vec<f64>>::raw("?", vec![parameter]).expect("a template with one placeholder");
         let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
             .from::<User>()
             .select((element,))
@@ -404,7 +407,10 @@ fn savepoint_statements_accept_a_validated_name() {
     let count: i64 = adapter
         .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
         .expect("count rows");
-    assert_eq!(count, 1, "the savepoint rollback discarded the inner insert");
+    assert_eq!(
+        count, 1,
+        "the savepoint rollback discarded the inner insert"
+    );
 
     let surviving: String = adapter
         .query_row("SELECT name FROM users", [], |row| row.get(0))
@@ -640,7 +646,9 @@ fn assert_refuses_bare_statements(connection: &mut SqliteConnection) {
     ];
 
     for failure in refusals {
-        let backend = failure.as_backend().expect("the refusal is an adapter error");
+        let backend = failure
+            .as_backend()
+            .expect("the refusal is an adapter error");
         match backend {
             rurqe_sqlite::rusqlite::Error::ToSqlConversionFailure(cause) => {
                 let message = cause.to_string();
@@ -680,7 +688,10 @@ fn a_poisoned_connection_refuses_bare_statements_until_the_transaction_is_closed
             inner.execute_batch("RELEASE SAVEPOINT rurqe_sp_1")?;
             Ok(())
         });
-        assert!(nested.is_err(), "the guard lost the savepoint of the nested block");
+        assert!(
+            nested.is_err(),
+            "the guard lost the savepoint of the nested block"
+        );
 
         // The transaction stays open, so the work of the failed block may still
         // be pending: every bare statement entry refuses before the driver sees

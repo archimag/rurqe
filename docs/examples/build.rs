@@ -990,7 +990,9 @@ fn region_of(file: &str, anchor: &str, source: &str) -> Result<String, String> {
                     continue;
                 }
                 let Some((indent, lines)) = region.take() else {
-                    return Err(format!("`{file}` closes the region `{anchor}` before it opens"));
+                    return Err(format!(
+                        "`{file}` closes the region `{anchor}` before it opens"
+                    ));
                 };
                 return Ok(dedent(indent, &lines));
             }

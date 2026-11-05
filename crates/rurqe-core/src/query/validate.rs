@@ -54,7 +54,6 @@ pub(crate) use self::rules::reject_columns_without_relations;
 #[cfg(test)]
 pub(crate) use self::rules::reject_shadowed_derived;
 
-
 /// The effective name a relation is referenced under.
 ///
 /// The name is the alias the relation carries, or its table name when it has

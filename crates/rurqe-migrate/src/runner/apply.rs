@@ -75,8 +75,7 @@ pub(super) fn apply_migration<B: MigrationBackend>(
     let in_progress = SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), 0);
     // The row stops the run before the script reaches the database, and the
     // diagnostic names the script like every neighbouring failure path does.
-    record_in_progress(guard, &in_progress)
-        .map_err(|error| execution_failed(migration, &error))?;
+    record_in_progress(guard, &in_progress).map_err(|error| execution_failed(migration, &error))?;
 
     let execution_started = std::time::Instant::now();
 

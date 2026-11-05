@@ -395,9 +395,15 @@ fn labels_that_are_not_identifiers_are_reported() {
 
 #[test]
 fn markers_with_type_arguments_that_admit_no_name_are_reported() {
-    for source in ["Blob::<[u8; 4]>", "Blob::<&[u8]>", "Nested::<Blob<[u8; 4]>>"] {
+    for source in [
+        "Blob::<[u8; 4]>",
+        "Blob::<&[u8]>",
+        "Nested::<Blob<[u8; 4]>>",
+    ] {
         let item: ProjectionItem = parse_str(source).expect("valid projection");
-        let error = item.field_ident().expect_err("the marker cannot name a field");
+        let error = item
+            .field_ident()
+            .expect_err("the marker cannot name a field");
         let message = error.to_string();
 
         assert!(
@@ -418,7 +424,10 @@ fn two_unnamable_markers_are_reported_instead_of_sharing_a_fallback_name() {
 
     let error = ensure_unique_field_names(&list).expect_err("neither marker can name a field");
 
-    assert!(error.to_string().contains("cannot be derived"), "unexpected message: {error}");
+    assert!(
+        error.to_string().contains("cannot be derived"),
+        "unexpected message: {error}"
+    );
     assert!(
         !error.to_string().contains("more than one projection"),
         "the derivation is reported before any duplicate: {error}"
@@ -428,10 +437,16 @@ fn two_unnamable_markers_are_reported_instead_of_sharing_a_fallback_name() {
 #[test]
 fn an_unnamable_marker_accepts_an_explicit_alias() {
     let item: ProjectionItem = parse_str("payload: Blob::<[u8; 4]>").expect("valid projection");
-    assert_eq!(item.field_ident().expect("the alias names the field"), "payload");
+    assert_eq!(
+        item.field_ident().expect("the alias names the field"),
+        "payload"
+    );
 
     let item: ProjectionItem = parse_str("Blob::<[u8; 4]> as payload").expect("valid projection");
-    assert_eq!(item.field_ident().expect("the alias names the field"), "payload");
+    assert_eq!(
+        item.field_ident().expect("the alias names the field"),
+        "payload"
+    );
 }
 
 #[test]
@@ -470,7 +485,10 @@ fn nested_generic_arguments_do_not_split_an_item() {
 
     assert_eq!(list.len(), 2);
     assert!(matches!(list.items[0].target, ProjectionTarget::Column(_)));
-    assert_eq!(list.items[0].field_ident().expect("named"), "manager_user_id");
+    assert_eq!(
+        list.items[0].field_ident().expect("named"),
+        "manager_user_id"
+    );
     assert_eq!(list.items[1].field_ident().expect("named"), "email");
 }
 
@@ -509,8 +527,8 @@ fn a_group_inside_nested_generic_arguments_does_not_split_the_item() {
 
 #[test]
 fn a_named_generic_projection_keeps_its_alias() {
-    let item: ProjectionItem = parse_str("total: Expr::sum::<OrderTotal, i64>()")
-        .expect("valid projection");
+    let item: ProjectionItem =
+        parse_str("total: Expr::sum::<OrderTotal, i64>()").expect("valid projection");
 
     assert_eq!(
         item.alias.as_ref().map(|a| a.to_string()),
@@ -521,8 +539,8 @@ fn a_named_generic_projection_keeps_its_alias() {
 
 #[test]
 fn a_shift_operator_does_not_open_a_generic_argument_list() {
-    let list: ProjectionList = parse_str("users::ID << 1, users::EMAIL")
-        .expect("the shift keeps the two items apart");
+    let list: ProjectionList =
+        parse_str("users::ID << 1, users::EMAIL").expect("the shift keeps the two items apart");
 
     assert_eq!(list.len(), 2);
     assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
@@ -584,8 +602,8 @@ fn field_keys_strip_the_raw_identifier_prefix() {
 
 #[test]
 fn a_grouped_projection_list_ends_the_stream_it_is_parsed_from() {
-    let body = parse_braced_body("{ (users::ID, users::EMAIL) }")
-        .expect("the parentheses carry the list");
+    let body =
+        parse_braced_body("{ (users::ID, users::EMAIL) }").expect("the parentheses carry the list");
     assert_eq!(body.len(), 2);
     assert_eq!(body.items[0].field_ident().expect("named"), "id");
     assert_eq!(body.items[1].field_ident().expect("named"), "email");
@@ -630,9 +648,8 @@ fn a_projection_written_after_a_grouped_list_is_reported() {
 
 #[test]
 fn attributes_that_do_not_remove_the_field_stay_accepted() {
-    let item: ProjectionItem =
-        parse_str("#[doc = \"identifier\"] #[allow(dead_code)] users::ID")
-            .expect("descriptive attributes are carried onto the field");
+    let item: ProjectionItem = parse_str("#[doc = \"identifier\"] #[allow(dead_code)] users::ID")
+        .expect("descriptive attributes are carried onto the field");
 
     assert_eq!(item.attrs.len(), 2);
     assert_eq!(item.field_ident().expect("named"), "id");
@@ -665,7 +682,9 @@ fn field_removing_attributes_are_rejected_inside_a_projection_list() {
         .expect_err("the attribute would remove the projected field");
 
     assert!(
-        error.to_string().contains("cannot be written on a projection"),
+        error
+            .to_string()
+            .contains("cannot be written on a projection"),
         "unexpected message: {error}"
     );
 
@@ -673,7 +692,9 @@ fn field_removing_attributes_are_rejected_inside_a_projection_list() {
         .expect_err("the attribute would remove the projected field");
 
     assert!(
-        error.to_string().contains("cannot be written on a projection"),
+        error
+            .to_string()
+            .contains("cannot be written on a projection"),
         "unexpected message: {error}"
     );
 }
@@ -716,7 +737,9 @@ fn the_raw_spelling_of_a_built_in_attribute_is_still_a_field_removal() {
             .expect_err("the raw spelling names the same built-in attribute");
 
         assert!(
-            error.to_string().contains("cannot be written on a projection"),
+            error
+                .to_string()
+                .contains("cannot be written on a projection"),
             "unexpected message for `{source}`: {error}"
         );
     }

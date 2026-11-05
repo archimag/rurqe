@@ -605,8 +605,14 @@ mod tests {
     #[test]
     fn the_tuple_table_selection_names_its_columns_in_declaration_order() {
         assert_eq!(column_names::<User, _>((UserId,)), vec!["id"]);
-        assert_eq!(column_names::<User, _>((UserId, UserName)), vec!["id", "name"]);
-        assert_eq!(column_names::<User, _>((UserName, UserId)), vec!["name", "id"]);
+        assert_eq!(
+            column_names::<User, _>((UserId, UserName)),
+            vec!["id", "name"]
+        );
+        assert_eq!(
+            column_names::<User, _>((UserName, UserId)),
+            vec!["name", "id"]
+        );
     }
 
     #[test]

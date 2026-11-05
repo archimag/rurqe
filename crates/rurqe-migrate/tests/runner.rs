@@ -247,7 +247,10 @@ fn embedded_migrations_apply_in_canonical_order() {
     let embedded = EmbeddedMigrations::new(&[
         ("V2__add_items.sql", "CREATE TABLE items (id INT);"),
         ("V1__init.sql", "CREATE TABLE users (id INT);"),
-        ("R__users_view.sql", "CREATE VIEW users_v AS SELECT * FROM users;"),
+        (
+            "R__users_view.sql",
+            "CREATE VIEW users_v AS SELECT * FROM users;",
+        ),
     ])
     .expect("valid embedded migrations");
 
@@ -515,11 +518,10 @@ fn a_baked_checkpoint_rejects_a_target_below_the_pruned_boundary() {
     use rurqe_migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations};
 
     let mut backend = InMemoryBackend::new();
-    let stage = [Migration::parse(
-        "V1__init.sql",
-        "CREATE TABLE users (id INTEGER);",
-    )
-    .expect("a valid script name")];
+    let stage = [
+        Migration::parse("V1__init.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name"),
+    ];
     Migrator::new()
         .migrate(&mut backend, &stage)
         .expect("the first run records the history");
@@ -552,11 +554,7 @@ fn a_baked_checkpoint_rejects_a_target_below_the_pruned_boundary() {
         other => panic!("expected OutdatedCheckpoint, got {other:?}"),
     }
 
-    assert_eq!(
-        backend.history.len(),
-        1,
-        "the rejected run applies nothing"
-    );
+    assert_eq!(backend.history.len(), 1, "the rejected run applies nothing");
 }
 
 #[test]

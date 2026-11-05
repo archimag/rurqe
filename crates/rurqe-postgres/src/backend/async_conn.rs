@@ -276,7 +276,10 @@ where
 /// The callers are the pools, because only a checkout can still close the state
 /// a previous block left behind: the bookkeeping of an adapter dies with the
 /// adapter, while the session of the server outlives it.
-#[cfg_attr(not(all(feature = "deadpool-postgres", feature = "tokio-postgres")), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "deadpool-postgres", feature = "tokio-postgres")),
+    allow(dead_code)
+)]
 pub(crate) async fn ensure_idle_async(client: &tokio_postgres::Client) -> Result<(), PgError> {
     client
         .batch_execute("ROLLBACK")

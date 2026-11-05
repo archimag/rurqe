@@ -8,8 +8,8 @@
 use super::super::{MockDialect, Order, OrderAlias, OrderId, RecentId, RecentOrder};
 use super::{empty_ast, exists_subquery, relation_statement, scalar_subquery};
 use crate::expr::{
-    AggregateFunc, BinaryOp, ExprKind, JoinAst, JoinKind, OrderCriterion, OrderDirection, SelectAst,
-    SqlVal, Subquery, SubqueryOp,
+    AggregateFunc, BinaryOp, ExprKind, JoinAst, JoinKind, OrderCriterion, OrderDirection,
+    SelectAst, SqlVal, Subquery, SubqueryOp,
 };
 use crate::query::validate::reject_unresolved_qualifiers;
 use crate::query::*;
@@ -443,7 +443,10 @@ fn correlated_plain_statement(reference_table: &'static str, aliased: bool) -> S
 fn a_correlated_plain_reference_to_an_unaliased_enclosing_relation_is_accepted() {
     // The enclosing statement renders `orders` under its own table name, so the
     // qualifier the nested statement writes resolves verbatim.
-    assert_eq!(correlated_plain_statement("orders", false).validate(), Ok(()));
+    assert_eq!(
+        correlated_plain_statement("orders", false).validate(),
+        Ok(())
+    );
 }
 
 #[test]

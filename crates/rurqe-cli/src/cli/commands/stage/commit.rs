@@ -153,7 +153,12 @@ pub(crate) fn commit_stage(
         .map_err(|error| CliError::with_cause(CliCause::Stage(error)))
         .map_err(with_notice)?;
     if !diff.is_empty() {
-        return Err(stage_parity_failure(stage_dir, &diff, &parity, notice.as_deref()));
+        return Err(stage_parity_failure(
+            stage_dir,
+            &diff,
+            &parity,
+            notice.as_deref(),
+        ));
     }
 
     let lock = catalog.to_lock();
@@ -688,11 +693,15 @@ mod tests {
     fn a_scratch_naming_the_sealed_sqlite_file_is_refused() {
         let sealed = format!(
             "sqlite:{}",
-            std::env::temp_dir().join("rurqe-parity-sealed.db").display()
+            std::env::temp_dir()
+                .join("rurqe-parity-sealed.db")
+                .display()
         );
         let scratch = format!(
             "sqlite:{}",
-            std::env::temp_dir().join("rurqe-parity-scratch.db").display()
+            std::env::temp_dir()
+                .join("rurqe-parity-scratch.db")
+                .display()
         );
 
         let error = refuse_scratch_over_project_file(&sealed, &sealed)

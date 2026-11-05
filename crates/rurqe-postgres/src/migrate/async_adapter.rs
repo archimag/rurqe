@@ -593,10 +593,12 @@ impl PgAsyncMigrationBackend {
     #[cfg(feature = "deadpool-postgres")]
     pub fn from_pool(pool: crate::PgAsyncPool) -> Result<Self, Error> {
         let pooled = pool.pool().clone();
-        Self::bootstrap(Box::new(move |runtime: &Runtime| -> Result<Connection, Error> {
-            let object = runtime.block_on(pooled.get()).map_err(backend_failure)?;
-            Ok(Connection::Pooled(object))
-        }))
+        Self::bootstrap(Box::new(
+            move |runtime: &Runtime| -> Result<Connection, Error> {
+                let object = runtime.block_on(pooled.get()).map_err(backend_failure)?;
+                Ok(Connection::Pooled(object))
+            },
+        ))
     }
 
     /// Starts the worker thread and wraps it in the backend.
@@ -651,7 +653,8 @@ impl MigrationBackend for PgAsyncMigrationBackend {
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
         let selection = self.selection.clone();
-        self.submit(Operation::CatalogChecksum(selection))?.checksum()
+        self.submit(Operation::CatalogChecksum(selection))?
+            .checksum()
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
@@ -672,7 +675,8 @@ impl MigrationBackend for PgAsyncMigrationBackend {
             timeout = ?self.lock_timeout,
             "acquiring the PostgreSQL advisory lock through the asynchronous backend"
         );
-        self.submit(Operation::AcquireLock(self.lock_timeout))?.unit()?;
+        self.submit(Operation::AcquireLock(self.lock_timeout))?
+            .unit()?;
         self.lock_held = true;
         Ok(())
     }
@@ -733,7 +737,8 @@ impl MigrationTransaction for PgAsyncMigrationTransaction<'_> {
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
         let selection = self.backend.selection.clone();
-        self.submit(Operation::CatalogChecksum(selection))?.checksum()
+        self.submit(Operation::CatalogChecksum(selection))?
+            .checksum()
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {

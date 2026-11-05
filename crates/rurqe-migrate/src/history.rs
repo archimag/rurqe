@@ -58,19 +58,19 @@ pub fn validate_metadata(
     description: &str,
 ) -> Result<(), Error> {
     if let Some(version) = version {
-        check_width(script, "version", &version.to_string(), VERSION_COLUMN_WIDTH)?;
+        check_width(
+            script,
+            "version",
+            &version.to_string(),
+            VERSION_COLUMN_WIDTH,
+        )?;
     }
     check_width(script, "description", description, DESCRIPTION_COLUMN_WIDTH)?;
     check_width(script, "script", script, SCRIPT_COLUMN_WIDTH)
 }
 
 /// Rejects `value` when it is wider than the column `column` declares.
-fn check_width(
-    script: &str,
-    column: &'static str,
-    value: &str,
-    limit: usize,
-) -> Result<(), Error> {
+fn check_width(script: &str, column: &'static str, value: &str, limit: usize) -> Result<(), Error> {
     let actual = value.chars().count();
 
     if actual <= limit {

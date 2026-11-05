@@ -344,8 +344,7 @@ fn begin_without_an_isolation_level_renders_a_plain_begin() {
     drop(guard);
 
     let mut connection = MockConnection::default();
-    let guard =
-        TransactionGuard::begin_with(&mut connection, None).expect("the transaction opens");
+    let guard = TransactionGuard::begin_with(&mut connection, None).expect("the transaction opens");
     assert_eq!(guard.statements, vec![String::from("BEGIN")]);
 }
 
@@ -381,9 +380,8 @@ fn a_nested_block_ignores_the_requested_isolation_level() {
 #[test]
 fn a_committed_isolation_transaction_renders_begin_then_commit() {
     let mut connection = MockConnection::default();
-    let guard =
-        TransactionGuard::begin_with(&mut connection, Some(IsolationLevel::Serializable))
-            .expect("the transaction opens");
+    let guard = TransactionGuard::begin_with(&mut connection, Some(IsolationLevel::Serializable))
+        .expect("the transaction opens");
     guard.commit().expect("the transaction commits");
 
     assert_eq!(

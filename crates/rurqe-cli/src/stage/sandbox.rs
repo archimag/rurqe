@@ -3,7 +3,8 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::redact_database_url;
-use crate::config::SchemaSelection;use crate::introspect::introspect_sqlite;
+use crate::config::SchemaSelection;
+use crate::introspect::introspect_sqlite;
 use crate::target::DatabaseTarget;
 
 use super::error::StageError;

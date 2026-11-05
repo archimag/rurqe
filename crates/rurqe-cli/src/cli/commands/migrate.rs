@@ -235,7 +235,10 @@ pub(crate) fn clean_database<B: MigrationBackend>(
     }
 
     let mut output = CommandOutput::new();
-    output.line(format!("Dropped {} object(s) of `{database_url}`:", dropped.len()));
+    output.line(format!(
+        "Dropped {} object(s) of `{database_url}`:",
+        dropped.len()
+    ));
     for name in &dropped {
         output.line(format!("  - {name}"));
     }

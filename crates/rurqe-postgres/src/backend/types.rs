@@ -150,9 +150,9 @@ impl StdError for PgError {
             PgError::UnsupportedType(_) => None,
             PgError::InvalidValue { .. } => None,
             PgError::Catalog(_) => None,
-            PgError::ConnectionPoisoned { cause, .. } => {
-                cause.as_deref().map(|failure| failure as &(dyn StdError + 'static))
-            }
+            PgError::ConnectionPoisoned { cause, .. } => cause
+                .as_deref()
+                .map(|failure| failure as &(dyn StdError + 'static)),
             PgError::AbandonedTransaction { failure } => Some(failure),
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(error) => Some(error),
@@ -299,7 +299,9 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
 /// what keeps the reason the server reported visible to the operator.
 pub(crate) fn server_refusal(message: &str, detail: Option<&str>, hint: Option<&str>) -> String {
     let detail = detail.map(|text| format!(" ({text})")).unwrap_or_default();
-    let hint = hint.map(|text| format!("; hint: {text}")).unwrap_or_default();
+    let hint = hint
+        .map(|text| format!("; hint: {text}"))
+        .unwrap_or_default();
     format!("{message}{detail}{hint}")
 }
 

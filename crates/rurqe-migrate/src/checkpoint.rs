@@ -301,9 +301,7 @@ mod tests {
 
     /// The text of a marker anchoring `version` at the empty catalog.
     fn marker(version: &str) -> String {
-        format!(
-            "[checkpoint]\npruned_up_to_version = \"{version}\"\nschema_hash = \"{HASH}\"\n"
-        )
+        format!("[checkpoint]\npruned_up_to_version = \"{version}\"\nschema_hash = \"{HASH}\"\n")
     }
 
     /// The digest a recorded script of the fixtures carries.
@@ -528,9 +526,8 @@ mod tests {
 
     #[test]
     fn a_misspelled_key_is_rejected_with_its_location() {
-        let text = format!(
-            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hahs = \"{HASH}\"\n"
-        );
+        let text =
+            format!("[checkpoint]\npruned_up_to_version = \"1\"\nschema_hahs = \"{HASH}\"\n");
 
         let error = Checkpoint::parse(&text).expect_err("a misspelled key is refused");
 
@@ -602,9 +599,8 @@ mod tests {
     #[test]
     fn a_hash_that_is_not_a_digest_is_rejected() {
         let short = "abc";
-        let text = format!(
-            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{short}\"\n"
-        );
+        let text =
+            format!("[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{short}\"\n");
 
         let error = Checkpoint::parse(&text).expect_err("the hash is refused");
 
@@ -623,9 +619,8 @@ mod tests {
         );
 
         let not_hex = "z".repeat(64);
-        let text = format!(
-            "[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{not_hex}\"\n"
-        );
+        let text =
+            format!("[checkpoint]\npruned_up_to_version = \"1\"\nschema_hash = \"{not_hex}\"\n");
 
         let error = Checkpoint::parse(&text).expect_err("a non-hexadecimal digest is refused");
         assert!(

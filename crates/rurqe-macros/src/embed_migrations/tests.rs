@@ -15,8 +15,7 @@ use super::*;
 
 /// An empty directory of its own for one test.
 fn temporary_directory(name: &str) -> PathBuf {
-    let path =
-        std::env::temp_dir().join(format!("rurqe-embed-{}-{name}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("rurqe-embed-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("create the fixture directory");
     path
@@ -84,8 +83,14 @@ fn only_top_level_scripts_are_baked_in_lexicographic_order() {
     write(&root.join("migrations/V2__orders.sql"), "SELECT 2;");
     write(&root.join("migrations/V1__init.sql"), "SELECT 1;");
     write(&root.join("migrations/checkpoint.toml"), "anything");
-    write(&root.join("migrations/checkpoint-stage/V9__staged.sql"), "SELECT 9;");
-    write(&root.join("migrations/nested.sql/V8__inner.sql"), "SELECT 8;");
+    write(
+        &root.join("migrations/checkpoint-stage/V9__staged.sql"),
+        "SELECT 9;",
+    );
+    write(
+        &root.join("migrations/nested.sql/V8__inner.sql"),
+        "SELECT 8;",
+    );
     write(&root.join("migrations/notes.txt"), "not a script");
     write(&root.join("rurqe/schema.lock"), "version = 5\n");
 
@@ -106,8 +111,14 @@ fn only_top_level_scripts_are_baked_in_lexicographic_order() {
 #[test]
 fn a_stage_without_a_tail_is_enough_to_bake() {
     let root = temporary_directory("stage-only");
-    write(&root.join("schema/2_users.sql"), "CREATE TABLE users (id INTEGER);");
-    write(&root.join("schema/10_orders.sql"), "CREATE TABLE orders (id INTEGER);");
+    write(
+        &root.join("schema/2_users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    );
+    write(
+        &root.join("schema/10_orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    );
 
     let artifacts = plan(&fixture_configuration("migrations", "schema"), &root, None)
         .expect("a declarative stage alone is enough");
@@ -128,7 +139,10 @@ fn a_configuration_baking_no_script_is_rejected() {
         .expect_err("no script bakes nothing");
     let _ = std::fs::remove_dir_all(&root);
 
-    assert!(error.contains("holds no top-level `*.sql` script"), "{error}");
+    assert!(
+        error.contains("holds no top-level `*.sql` script"),
+        "{error}"
+    );
     assert!(error.contains("rurqe.toml"), "{error}");
 }
 
@@ -156,8 +170,7 @@ fn a_script_name_that_is_not_text_is_rejected() {
 fn a_directory_argument_is_rejected() {
     let root = temporary_directory("directory");
 
-    let error =
-        configuration(Some(&root), &root).expect_err("a directory declares no layout");
+    let error = configuration(Some(&root), &root).expect_err("a directory declares no layout");
     let _ = std::fs::remove_dir_all(&root);
 
     assert!(error.contains("is a directory"), "{error}");
@@ -171,8 +184,7 @@ fn a_missing_configuration_argument_is_rejected() {
     std::fs::create_dir_all(&member).expect("create the member directory");
     let absent = root.join("absent.toml");
 
-    let error =
-        configuration(Some(&absent), &member).expect_err("an absent path bakes nothing");
+    let error = configuration(Some(&absent), &member).expect_err("an absent path bakes nothing");
     let _ = std::fs::remove_dir_all(&root);
 
     assert!(error.contains("does not exist"), "{error}");
@@ -182,7 +194,10 @@ fn a_missing_configuration_argument_is_rejected() {
 #[test]
 fn a_file_that_declares_no_layout_is_rejected_by_the_parser() {
     let root = temporary_directory("not-a-configuration");
-    write(&root.join("scripts.sql"), "CREATE TABLE users (id INTEGER);");
+    write(
+        &root.join("scripts.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    );
 
     let error = configuration(Some(&root.join("scripts.sql")), &root)
         .expect_err("a script declares no artifact layout");
@@ -195,7 +210,10 @@ fn a_file_that_declares_no_layout_is_rejected_by_the_parser() {
 fn discovery_climbs_from_the_calling_crate_to_the_configuration() {
     let root = temporary_directory("discovery");
     let project = root.join("project");
-    write(&project.join("rurqe.toml"), "[migrations]\ndir = \"scripts\"\n");
+    write(
+        &project.join("rurqe.toml"),
+        "[migrations]\ndir = \"scripts\"\n",
+    );
     write(&project.join("scripts/V1__init.sql"), "SELECT 1;");
     let member = project.join("crates/application");
     std::fs::create_dir_all(&member).expect("create the member directory");
@@ -243,8 +261,7 @@ fn the_conventional_artifact_directory_applies_without_a_configuration() {
     // macro is expanded in, not at the project root.
     write(&member.join("rurqe/migrations/V1__init.sql"), "SELECT 1;");
 
-    let discovered =
-        configuration(None, &member).expect("the conventional layout applies");
+    let discovered = configuration(None, &member).expect("the conventional layout applies");
     let (configuration, directory, file) = discovered;
     let artifacts = plan(&configuration, &directory, None).expect("the directory holds a script");
     let baked = names(&artifacts.tail);
@@ -259,7 +276,10 @@ fn a_configuration_argument_resolves_against_its_own_directory() {
     let root = temporary_directory("configuration");
     let project = root.join("project");
     write(&project.join("rurqe.toml"), "root = \"artifacts\"\n");
-    write(&project.join("artifacts/migrations/V3__init.sql"), "SELECT 3;");
+    write(
+        &project.join("artifacts/migrations/V3__init.sql"),
+        "SELECT 3;",
+    );
     let member = root.join("application");
     std::fs::create_dir_all(&member).expect("create the member directory");
     let file = project.join("rurqe.toml");
@@ -280,7 +300,10 @@ fn the_configuration_the_bake_read_is_registered_as_a_compile_input() {
     let root = temporary_directory("configuration-input");
     let project = root.join("project");
     write(&project.join("rurqe.toml"), "root = \"artifacts\"\n");
-    write(&project.join("artifacts/migrations/V1__init.sql"), "SELECT 1;");
+    write(
+        &project.join("artifacts/migrations/V1__init.sql"),
+        "SELECT 1;",
+    );
     let member = project.join("crates/application");
     std::fs::create_dir_all(&member).expect("create the member directory");
 
@@ -391,15 +414,14 @@ fn the_bake_order_is_lexicographic_while_the_run_order_is_versioned() {
         .map(|(name, text)| (name.as_str(), text.as_str()))
         .collect();
 
-    let embedded = rurqe::migrate::EmbeddedMigrations::from_artifacts(
-        rurqe::migrate::EmbeddedArtifacts {
+    let embedded =
+        rurqe::migrate::EmbeddedMigrations::from_artifacts(rurqe::migrate::EmbeddedArtifacts {
             tail: &tail_pairs,
             checkpoint: None,
             stage: &stage_pairs,
             schema_lock: None,
-        },
-    )
-    .expect("the planned artifacts are valid");
+        })
+        .expect("the planned artifacts are valid");
 
     let run_tail: Vec<&str> = embedded
         .iter()

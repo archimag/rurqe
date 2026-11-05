@@ -187,7 +187,9 @@ fn a_statement_recording_both_flavours_reports_them_before_the_lock() {
         },
         OrderDirection::Asc,
     ));
-    ast.lock = Some(crate::expr::LockClause::new(crate::expr::LockStrength::Update));
+    ast.lock = Some(crate::expr::LockClause::new(
+        crate::expr::LockStrength::Update,
+    ));
 
     assert_eq!(ast.validate(), Err(BuildError::DistinctWithDistinctOn));
 }
@@ -435,10 +437,11 @@ fn a_distinct_ordering_matches_a_window_over_the_other_node_shape() {
     let mut ast = empty_ast();
     ast.from = Some(TableRef::plain("orders"));
     ast.distinct = true;
-    ast.projections.push(window_partitioned_by(ExprKind::Column {
-        table: "orders",
-        name: "user_id",
-    }));
+    ast.projections
+        .push(window_partitioned_by(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }));
     ast.order_by.push(OrderCriterion::new(
         window_partitioned_by(ExprKind::QualifiedColumn {
             table: "orders",
@@ -459,10 +462,11 @@ fn a_distinct_ordering_of_a_window_partitioned_by_another_column_is_rejected() {
     let mut ast = empty_ast();
     ast.from = Some(TableRef::plain("orders"));
     ast.distinct = true;
-    ast.projections.push(window_partitioned_by(ExprKind::Column {
-        table: "orders",
-        name: "user_id",
-    }));
+    ast.projections
+        .push(window_partitioned_by(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }));
     ast.order_by.push(OrderCriterion::new(
         window_partitioned_by(ExprKind::QualifiedColumn {
             table: "orders",

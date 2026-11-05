@@ -41,9 +41,7 @@ pub(super) fn sqlite_indexes(
                 row.get::<_, i64>(4)? != 0,
             ))
         })
-        .map_err(|error| {
-            query_error(format!("failed to inspect indexes for `{table}`"), error)
-        })?
+        .map_err(|error| query_error(format!("failed to inspect indexes for `{table}`"), error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| query_error(format!("failed to read index for `{table}`"), error))?;
 
@@ -165,9 +163,7 @@ fn sqlite_index_columns(
 
     let columns = statement
         .query_map([], |row| row.get::<_, Option<String>>(2))
-        .map_err(|error| {
-            query_error(format!("failed to inspect columns of `{index}`"), error)
-        })?
+        .map_err(|error| query_error(format!("failed to inspect columns of `{index}`"), error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| query_error(format!("failed to read column of `{index}`"), error))?;
 

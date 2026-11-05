@@ -37,7 +37,10 @@ async fn main() -> Result<()> {
     // The fetched rows are read by field name: the projection decided the
     // names, and the left join decided the type of `order_total`.
     for row in &outer_join {
-        println!("user #{}: {} spent {:?}", row.user_id, row.user_name, row.order_total);
+        println!(
+            "user #{}: {} spent {:?}",
+            row.user_id, row.user_name, row.order_total
+        );
     }
     // ANCHOR_END: outer_rows
 

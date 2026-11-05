@@ -219,7 +219,9 @@ pub(crate) fn join_offloaded<T, B>(
     match joined {
         Ok((outcome, backend)) => (outcome, Some(backend)),
         Err(error) => (
-            Err(Error::Backend(format!("blocking {context} task failed: {error}"))),
+            Err(Error::Backend(format!(
+                "blocking {context} task failed: {error}"
+            ))),
             None,
         ),
     }
@@ -259,8 +261,8 @@ mod tests {
         let runtime = runtime();
         let migrations = sample();
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        let (outcome, backend) =
+            runtime.block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
         let report = outcome.expect("the blocking run succeeds");
         let backend = backend.expect("the backend is handed back with the report");
 
@@ -280,12 +282,11 @@ mod tests {
         let runtime = runtime();
         let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().baseline_async(
-                InMemoryBackend::new(),
-                version.clone(),
-                "legacy baseline",
-            ));
+        let (outcome, backend) = runtime.block_on(Migrator::new().baseline_async(
+            InMemoryBackend::new(),
+            version.clone(),
+            "legacy baseline",
+        ));
         let entry = outcome.expect("the blocking baseline succeeds");
         let backend = backend.expect("the backend is handed back with the entry");
 
@@ -326,8 +327,7 @@ mod tests {
         let fixed =
             vec![Migration::parse("V1__broken.sql", "SELECT 1;").expect("a valid script name")];
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().repair_async(backend, &fixed));
+        let (outcome, backend) = runtime.block_on(Migrator::new().repair_async(backend, &fixed));
         let report = outcome.expect("the blocking repair succeeds");
         let backend = backend.expect("the backend is handed back with the report");
 
@@ -344,8 +344,8 @@ mod tests {
         let runtime = runtime();
         let migrations = sample();
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        let (outcome, backend) =
+            runtime.block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
         outcome.expect("the blocking run succeeds");
         let backend = backend.expect("the backend is handed back with the report");
 
@@ -369,8 +369,8 @@ mod tests {
                 .expect("a valid script name"),
         ];
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &stage));
+        let (outcome, backend) =
+            runtime.block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &stage));
         outcome.expect("the stage migration applies");
         let backend = backend.expect("the backend is handed back with the report");
 
@@ -431,8 +431,8 @@ mod tests {
             Ok(_) => panic!("`strict-async` must refuse a synchronous run inside a runtime"),
         }
 
-        let (outcome, backend) = runtime
-            .block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
+        let (outcome, backend) =
+            runtime.block_on(Migrator::new().migrate_async(InMemoryBackend::new(), &migrations));
         let report = outcome.expect("the blocking wrapper runs the guard-free core");
         let backend = backend.expect("the backend is handed back with the report");
 

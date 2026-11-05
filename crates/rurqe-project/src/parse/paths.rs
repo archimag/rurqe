@@ -12,8 +12,8 @@ use std::path::{Component, Path};
 
 use toml_edit::Item;
 
-use crate::ConfigError;
 use super::syntax_error;
+use crate::ConfigError;
 
 /// Reads a key whose value is a non-empty string, trimmed of surrounding space.
 fn read_required_string(
@@ -22,9 +22,9 @@ fn read_required_string(
     item: &Item,
     key: &str,
 ) -> Result<String, ConfigError> {
-    let value = item.as_str().ok_or_else(|| {
-        syntax_error(contents, span.clone(), format!("`{key}` must be a string"))
-    })?;
+    let value = item
+        .as_str()
+        .ok_or_else(|| syntax_error(contents, span.clone(), format!("`{key}` must be a string")))?;
     let value = value.trim();
 
     if value.is_empty() {

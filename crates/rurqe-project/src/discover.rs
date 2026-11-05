@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{ConfigError, DEFAULT_CONFIG_PATH, ProjectConfig};
+use crate::{ConfigError, ProjectConfig, DEFAULT_CONFIG_PATH};
 
 /// The configuration file of the project rooted at `directory`.
 ///
