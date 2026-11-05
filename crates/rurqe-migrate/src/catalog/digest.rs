@@ -33,6 +33,12 @@
 //!   — neither its canonical snapshot text nor a TOML representation — takes
 //!   part in the digest.
 //!
+//! The writers address a [`Sink`] instead of a byte buffer, so both consumers of
+//! the format share one traversal: [`checksum`] feeds every field into the
+//! incremental [`ChecksumHasher`] as the traversal reaches it and never
+//! materializes the stream it digests, while the test suite collects the same
+//! traversal into a `Vec<u8>` to pin the byte layout against the golden fixtures.
+//!
 //! # Stability
 //!
 //! The byte layout is versioned. Any change to the layout, to the shape of a
@@ -41,7 +47,7 @@
 //! that changed the format. The golden fixtures of the test module pin the
 //! stream against a hand-derived byte sequence.
 
-use crate::checksum::Checksum;
+use crate::checksum::{Checksum, ChecksumHasher};
 
 use super::types::{
     CheckDef, ColumnDef, EnumDef, ForeignKeyAction, ForeignKeyDef, IndexDef, TableDef, TriggerDef,
@@ -95,59 +101,100 @@ const ACTION_SET_NULL: u8 = 3;
 /// Tag byte of [`ForeignKeyAction::SetDefault`].
 const ACTION_SET_DEFAULT: u8 = 4;
 
+/// A destination of the canonical byte stream.
+///
+/// The encoding is a single traversal over the catalog: [`encode`] hands it a
+/// `Vec<u8>` and [`checksum`] hands it the incremental hasher, so a digest is
+/// computed without building the stream in memory first.
+trait Sink {
+    /// Appends the next bytes of the stream.
+    fn write(&mut self, bytes: &[u8]);
+}
+
+/// Collects the canonical stream into a buffer.
+///
+/// Only the test suite needs the stream as bytes: a production digest feeds the
+/// same traversal into [`ChecksumHasher`], so the buffer sink is compiled for
+/// tests alone.
+#[cfg(test)]
+impl Sink for Vec<u8> {
+    fn write(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
+impl Sink for ChecksumHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.update(bytes);
+    }
+}
+
 /// The SHA-256 digest of the canonical encoding of `catalog`.
 pub(super) fn checksum(catalog: &SchemaCatalog) -> Checksum {
-    Checksum::of(&encode(catalog))
+    let mut hasher = ChecksumHasher::new();
+    write_catalog(&mut hasher, catalog);
+    hasher.finalize()
 }
 
 /// Encodes `catalog` into its canonical byte stream.
+///
+/// The encoder exists for the golden fixtures of the test suite, which state the
+/// byte layout field by field and prove that [`checksum`] hashes exactly the
+/// bytes the encoder produces. A production digest never calls it: [`checksum`]
+/// feeds the same traversal into the incremental [`ChecksumHasher`] directly, so
+/// no encoded copy of the catalog is materialized to compute a digest.
+#[cfg(test)]
 pub(super) fn encode(catalog: &SchemaCatalog) -> Vec<u8> {
     let mut out = Vec::new();
-    push_bytes(&mut out, DOMAIN_TAG);
-    out.extend_from_slice(&DIGEST_VERSION.to_le_bytes());
-
-    write_enums(&mut out, &catalog.enums);
-    write_tables(&mut out, &catalog.tables);
-    write_views(&mut out, &catalog.views);
-    write_triggers(&mut out, &catalog.triggers);
-
+    write_catalog(&mut out, catalog);
     out
 }
 
+/// Writes the complete canonical encoding of `catalog` into `out`.
+fn write_catalog<S: Sink>(out: &mut S, catalog: &SchemaCatalog) {
+    push_bytes(out, DOMAIN_TAG);
+    out.write(&DIGEST_VERSION.to_le_bytes());
+
+    write_enums(out, &catalog.enums);
+    write_tables(out, &catalog.tables);
+    write_views(out, &catalog.views);
+    write_triggers(out, &catalog.triggers);
+}
+
 /// Appends `bytes` as a length-prefixed byte string.
-fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+fn push_bytes<S: Sink>(out: &mut S, bytes: &[u8]) {
     push_count(out, bytes.len());
-    out.extend_from_slice(bytes);
+    out.write(bytes);
 }
 
 /// Appends `value` as a length-prefixed UTF-8 string.
-fn push_str(out: &mut Vec<u8>, value: &str) {
+fn push_str<S: Sink>(out: &mut S, value: &str) {
     push_bytes(out, value.as_bytes());
 }
 
 /// Appends an optional string as a presence byte and, when present, its payload.
-fn push_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
+fn push_opt_str<S: Sink>(out: &mut S, value: Option<&str>) {
     match value {
         Some(value) => {
-            out.push(1);
+            out.write(&[1]);
             push_str(out, value);
         }
-        None => out.push(0),
+        None => out.write(&[0]),
     }
 }
 
 /// Appends a boolean as a single `0`/`1` byte.
-fn push_bool(out: &mut Vec<u8>, value: bool) {
-    out.push(u8::from(value));
+fn push_bool<S: Sink>(out: &mut S, value: bool) {
+    out.write(&[u8::from(value)]);
 }
 
 /// Appends a list element count.
-fn push_count(out: &mut Vec<u8>, count: usize) {
-    out.extend_from_slice(&(count as u64).to_le_bytes());
+fn push_count<S: Sink>(out: &mut S, count: usize) {
+    out.write(&(count as u64).to_le_bytes());
 }
 
 /// Appends a list of strings: its element count followed by the elements.
-fn push_str_list(out: &mut Vec<u8>, values: &[String]) {
+fn push_str_list<S: Sink>(out: &mut S, values: &[String]) {
     push_count(out, values.len());
     for value in values {
         push_str(out, value);
@@ -155,7 +202,7 @@ fn push_str_list(out: &mut Vec<u8>, values: &[String]) {
 }
 
 /// Appends the enum types of the catalog, sorted by the composite key.
-fn write_enums(out: &mut Vec<u8>, enums: &[EnumDef]) {
+fn write_enums<S: Sink>(out: &mut S, enums: &[EnumDef]) {
     let mut ordered: Vec<&EnumDef> = enums.iter().collect();
     ordered.sort_by(|left, right| {
         (left.schema.as_deref(), left.name.as_str())
@@ -164,14 +211,14 @@ fn write_enums(out: &mut Vec<u8>, enums: &[EnumDef]) {
 
     push_count(out, ordered.len());
     for definition in ordered {
-        push_opt_str(out, definition.schema.as_deref());
-        push_str(out, &definition.name);
-        push_str_list(out, &definition.variants);
+        push_opt_str(&mut *out, definition.schema.as_deref());
+        push_str(&mut *out, &definition.name);
+        push_str_list(&mut *out, &definition.variants);
     }
 }
 
 /// Appends the tables of the catalog, sorted by the composite key.
-fn write_tables(out: &mut Vec<u8>, tables: &[TableDef]) {
+fn write_tables<S: Sink>(out: &mut S, tables: &[TableDef]) {
     let mut ordered: Vec<&TableDef> = tables.iter().collect();
     ordered.sort_by(|left, right| {
         (left.schema.as_deref(), left.name.as_str())
@@ -180,12 +227,12 @@ fn write_tables(out: &mut Vec<u8>, tables: &[TableDef]) {
 
     push_count(out, ordered.len());
     for table in ordered {
-        write_table(out, table);
+        write_table(&mut *out, table);
     }
 }
 
 /// Appends the views of the catalog, sorted by the composite key.
-fn write_views(out: &mut Vec<u8>, views: &[ViewDef]) {
+fn write_views<S: Sink>(out: &mut S, views: &[ViewDef]) {
     let mut ordered: Vec<&ViewDef> = views.iter().collect();
     ordered.sort_by(|left, right| {
         (left.schema.as_deref(), left.name.as_str())
@@ -194,14 +241,14 @@ fn write_views(out: &mut Vec<u8>, views: &[ViewDef]) {
 
     push_count(out, ordered.len());
     for view in ordered {
-        push_opt_str(out, view.schema.as_deref());
-        push_str(out, &view.name);
-        push_str(out, &view.definition);
+        push_opt_str(&mut *out, view.schema.as_deref());
+        push_str(&mut *out, &view.name);
+        push_str(&mut *out, &view.definition);
     }
 }
 
 /// Appends the triggers of the catalog, sorted by the composite key.
-fn write_triggers(out: &mut Vec<u8>, triggers: &[TriggerDef]) {
+fn write_triggers<S: Sink>(out: &mut S, triggers: &[TriggerDef]) {
     let mut ordered: Vec<&TriggerDef> = triggers.iter().collect();
     ordered.sort_by(|left, right| {
         (left.schema.as_deref(), left.name.as_str())
@@ -210,15 +257,15 @@ fn write_triggers(out: &mut Vec<u8>, triggers: &[TriggerDef]) {
 
     push_count(out, ordered.len());
     for trigger in ordered {
-        push_opt_str(out, trigger.schema.as_deref());
-        push_str(out, &trigger.name);
-        push_str(out, &trigger.table_name);
-        push_str(out, &trigger.definition);
+        push_opt_str(&mut *out, trigger.schema.as_deref());
+        push_str(&mut *out, &trigger.name);
+        push_str(&mut *out, &trigger.table_name);
+        push_str(&mut *out, &trigger.definition);
     }
 }
 
 /// Appends one table with its columns, keys, and constraints.
-fn write_table(out: &mut Vec<u8>, table: &TableDef) {
+fn write_table<S: Sink>(out: &mut S, table: &TableDef) {
     push_opt_str(out, table.schema.as_deref());
     push_str(out, &table.name);
 
@@ -226,7 +273,7 @@ fn write_table(out: &mut Vec<u8>, table: &TableDef) {
     let mut columns: Vec<&ColumnDef> = table.columns.iter().collect();
     columns.sort_by(|left, right| left.name.cmp(&right.name));
     for column in columns {
-        write_column(out, column);
+        write_column(&mut *out, column);
     }
 
     push_str_list(out, &table.primary_key);
@@ -235,26 +282,26 @@ fn write_table(out: &mut Vec<u8>, table: &TableDef) {
     let mut checks: Vec<&CheckDef> = table.checks.iter().collect();
     checks.sort_by(|left, right| left.name.cmp(&right.name));
     for check in checks {
-        write_check(out, check);
+        write_check(&mut *out, check);
     }
 
     push_count(out, table.foreign_keys.len());
     let mut foreign_keys: Vec<&ForeignKeyDef> = table.foreign_keys.iter().collect();
     foreign_keys.sort_by(|left, right| left.name.cmp(&right.name));
     for foreign_key in foreign_keys {
-        write_foreign_key(out, foreign_key);
+        write_foreign_key(&mut *out, foreign_key);
     }
 
     push_count(out, table.indexes.len());
     let mut indexes: Vec<&IndexDef> = table.indexes.iter().collect();
     indexes.sort_by(|left, right| left.name.cmp(&right.name));
     for index in indexes {
-        write_index(out, index);
+        write_index(&mut *out, index);
     }
 }
 
 /// Appends one column.
-fn write_column(out: &mut Vec<u8>, column: &ColumnDef) {
+fn write_column<S: Sink>(out: &mut S, column: &ColumnDef) {
     push_str(out, &column.name);
     write_type(out, &column.type_kind);
     push_bool(out, column.nullable);
@@ -262,49 +309,49 @@ fn write_column(out: &mut Vec<u8>, column: &ColumnDef) {
 }
 
 /// Appends one engine-neutral type as a tagged structure.
-fn write_type(out: &mut Vec<u8>, kind: &TypeKind) {
+fn write_type<S: Sink>(out: &mut S, kind: &TypeKind) {
     match kind {
-        TypeKind::Boolean => out.push(TYPE_BOOLEAN),
-        TypeKind::Int32 => out.push(TYPE_INT32),
-        TypeKind::Int64 => out.push(TYPE_INT64),
-        TypeKind::Float64 => out.push(TYPE_FLOAT64),
-        TypeKind::Numeric => out.push(TYPE_NUMERIC),
-        TypeKind::Text => out.push(TYPE_TEXT),
-        TypeKind::Bytes => out.push(TYPE_BYTES),
-        TypeKind::Uuid => out.push(TYPE_UUID),
-        TypeKind::Json => out.push(TYPE_JSON),
-        TypeKind::Timestamp => out.push(TYPE_TIMESTAMP),
-        TypeKind::Date => out.push(TYPE_DATE),
+        TypeKind::Boolean => out.write(&[TYPE_BOOLEAN]),
+        TypeKind::Int32 => out.write(&[TYPE_INT32]),
+        TypeKind::Int64 => out.write(&[TYPE_INT64]),
+        TypeKind::Float64 => out.write(&[TYPE_FLOAT64]),
+        TypeKind::Numeric => out.write(&[TYPE_NUMERIC]),
+        TypeKind::Text => out.write(&[TYPE_TEXT]),
+        TypeKind::Bytes => out.write(&[TYPE_BYTES]),
+        TypeKind::Uuid => out.write(&[TYPE_UUID]),
+        TypeKind::Json => out.write(&[TYPE_JSON]),
+        TypeKind::Timestamp => out.write(&[TYPE_TIMESTAMP]),
+        TypeKind::Date => out.write(&[TYPE_DATE]),
         TypeKind::Enum(name) => {
-            out.push(TYPE_ENUM);
+            out.write(&[TYPE_ENUM]);
             push_str(out, name);
         }
         TypeKind::Array(element) => {
-            out.push(TYPE_ARRAY);
+            out.write(&[TYPE_ARRAY]);
             write_type(out, element);
         }
         TypeKind::Other(name) => {
-            out.push(TYPE_OTHER);
+            out.write(&[TYPE_OTHER]);
             push_str(out, name);
         }
     }
 }
 
 /// Appends one check constraint.
-fn write_check(out: &mut Vec<u8>, check: &CheckDef) {
+fn write_check<S: Sink>(out: &mut S, check: &CheckDef) {
     push_str(out, &check.name);
     push_str(out, &check.expression);
 }
 
 /// Appends one foreign key with its actions and referenced schema.
-fn write_foreign_key(out: &mut Vec<u8>, foreign_key: &ForeignKeyDef) {
+fn write_foreign_key<S: Sink>(out: &mut S, foreign_key: &ForeignKeyDef) {
     push_str(out, &foreign_key.name);
     push_str_list(out, &foreign_key.columns);
     push_str(out, &foreign_key.referenced_table);
     push_str_list(out, &foreign_key.referenced_columns);
     push_opt_str(out, foreign_key.referenced_schema.as_deref());
-    out.push(action_tag(foreign_key.on_delete));
-    out.push(action_tag(foreign_key.on_update));
+    out.write(&[action_tag(foreign_key.on_delete)]);
+    out.write(&[action_tag(foreign_key.on_update)]);
 }
 
 /// The tag byte of one foreign key action.
@@ -319,7 +366,7 @@ fn action_tag(action: ForeignKeyAction) -> u8 {
 }
 
 /// Appends one secondary or unique index with its optional attributes.
-fn write_index(out: &mut Vec<u8>, index: &IndexDef) {
+fn write_index<S: Sink>(out: &mut S, index: &IndexDef) {
     push_str(out, &index.name);
     push_str_list(out, &index.columns);
     push_bool(out, index.unique);

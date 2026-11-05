@@ -13,12 +13,14 @@ mod parser;
 ///
 /// Two catalogs compare equal exactly when they describe the same schema,
 /// whatever order their entities were declared in: equality is decided by the
-/// canonical byte encoding that [`checksum`](Self::checksum) digests, so two
-/// catalogs are equal precisely when their [`schema_hash`](Self::schema_hash)
-/// values are. The orders that carry meaning — the labels of an enum, the
-/// columns of a primary key, the column pairs of a foreign key, and the columns
-/// of an index — stay part of the comparison, exactly as they stay part of the
-/// digest.
+/// canonical encoding of the digest module, so two catalogs are equal precisely
+/// when their [`schema_hash`](Self::schema_hash) values are. The orders that
+/// carry meaning — the labels of an enum, the columns of a primary key, the
+/// column pairs of a foreign key, and the columns of an index — stay part of the
+/// comparison, exactly as they stay part of the digest.
+///
+/// The comparison digests both operands incrementally rather than encoding each
+/// of them into a buffer, so it allocates no full-schema stream.
 #[derive(Debug, Clone, Default)]
 pub struct SchemaCatalog {
     /// The tables of the schema.
@@ -33,7 +35,7 @@ pub struct SchemaCatalog {
 
 impl PartialEq for SchemaCatalog {
     fn eq(&self, other: &Self) -> bool {
-        super::digest::encode(self) == super::digest::encode(other)
+        self.checksum() == other.checksum()
     }
 }
 
@@ -93,7 +95,9 @@ impl SchemaCatalog {
     /// than over the rendered [`to_lock`](Self::to_lock) text: the line
     /// breaking, inline-table layout, and string escaping of that text are the
     /// `toml` writer's implementation detail, so a digest anchored to it would
-    /// move with a serializer upgrade against a schema that did not change.
+    /// move with a serializer upgrade against a schema that did not change. The
+    /// hasher receives each field of the catalog as the traversal reaches it,
+    /// so no encoded copy of the catalog is materialized to compute the digest.
     pub fn checksum(&self) -> Checksum {
         super::digest::checksum(self)
     }

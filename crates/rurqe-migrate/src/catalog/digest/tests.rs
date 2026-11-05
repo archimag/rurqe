@@ -81,8 +81,7 @@ fn full_fixture() -> SchemaCatalog {
     let accounts = TableDef::new(
         "accounts",
         vec![
-            ColumnDef::new("id", TypeKind::Int64, false)
-                .with_default("nextval('accounts_id_seq')"),
+            ColumnDef::new("id", TypeKind::Int64, false).with_default("nextval('accounts_id_seq')"),
             ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
             ColumnDef::new(
                 "moods",
@@ -112,12 +111,16 @@ fn full_fixture() -> SchemaCatalog {
     );
 
     SchemaCatalog::new(vec![accounts])
-        .with_enums(vec![
-            EnumDef::new("mood", vec!["happy".to_owned(), "sad".to_owned()]).with_schema("app"),
-        ])
-        .with_views(vec![
-            ViewDef::new("active_accounts", "SELECT id FROM accounts").with_schema("app"),
-        ])
+        .with_enums(vec![EnumDef::new(
+            "mood",
+            vec!["happy".to_owned(), "sad".to_owned()],
+        )
+        .with_schema("app")])
+        .with_views(vec![ViewDef::new(
+            "active_accounts",
+            "SELECT id FROM accounts",
+        )
+        .with_schema("app")])
         .with_triggers(vec![TriggerDef::new(
             "accounts_touch",
             "accounts",
@@ -277,6 +280,11 @@ fn the_full_vocabulary_fixture_matches_its_expected_stream() {
 }
 
 #[test]
+fn the_digest_of_the_full_vocabulary_fixture_hashes_its_expected_stream() {
+    assert_eq!(checksum(&full_fixture()), Checksum::of(&full_stream()));
+}
+
+#[test]
 fn the_stream_opens_with_the_domain_tag_and_the_version_prefix() {
     let stream = encode(&minimal_fixture());
     let mut prefix = Vec::new();
@@ -314,14 +322,11 @@ fn the_encoding_ignores_declaration_order() {
         ))
     };
 
-    let declared = SchemaCatalog::new(vec![
-        table("alpha", "a1", "a2"),
-        table("beta", "b1", "b2"),
-    ])
-    .with_enums(vec![
-        EnumDef::new("alpha", vec!["x".to_owned()]),
-        EnumDef::new("beta", vec!["x".to_owned()]),
-    ]);
+    let declared = SchemaCatalog::new(vec![table("alpha", "a1", "a2"), table("beta", "b1", "b2")])
+        .with_enums(vec![
+            EnumDef::new("alpha", vec!["x".to_owned()]),
+            EnumDef::new("beta", vec!["x".to_owned()]),
+        ]);
 
     let mut reordered = declared.clone();
     reordered.enums.reverse();
@@ -342,7 +347,11 @@ fn every_field_of_the_catalog_participates_in_the_stream() {
 
     let mut catalog = full_fixture();
     catalog.enums[0].variants[0] = "calm".to_owned();
-    assert_ne!(encode(&catalog), baseline, "an enum label must move the stream");
+    assert_ne!(
+        encode(&catalog),
+        baseline,
+        "an enum label must move the stream"
+    );
 
     let mut catalog = full_fixture();
     catalog.tables[0].columns[0].nullable = true;
