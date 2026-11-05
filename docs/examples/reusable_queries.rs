@@ -109,12 +109,11 @@ async fn main() -> Result<()> {
     }
 
     let document = r#"[{"user_id":1,"user_name":"root","user_email":"root@example.com"}]"#;
-    let documented = customers_from_document(document).map_err(|source| {
-        ExecutionError::RowDecode {
+    let documented =
+        customers_from_document(document).map_err(|source| ExecutionError::RowDecode {
             row_index: 0,
             source,
-        }
-    })?;
+        })?;
     for customer in &documented {
         println!("{} {} {}", customer.id, customer.name, customer.email);
     }

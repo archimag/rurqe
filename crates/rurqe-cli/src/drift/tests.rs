@@ -121,10 +121,17 @@ fn stale_schema_hash_mismatch_reports_the_structural_diff() {
 
     let err = verify_drift(&live, &lock, Some(&code)).unwrap_err();
     match &err {
-        DriftError::HashMismatch { expected, found_in_code, diff } => {
+        DriftError::HashMismatch {
+            expected,
+            found_in_code,
+            diff,
+        } => {
             assert_eq!(expected, &live_hash);
             assert_eq!(found_in_code, &stale_hash);
-            assert!(!diff.is_empty(), "a stale hash still carries the structural drift");
+            assert!(
+                !diff.is_empty(),
+                "a stale hash still carries the structural drift"
+            );
         }
         other => panic!("expected HashMismatch, got {other:?}"),
     }

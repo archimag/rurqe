@@ -459,9 +459,7 @@ fn an_ordered_aggregate_renders_its_criteria_inside_the_call() {
         func: AggregateFunc::ArrayAgg,
         distinct: false,
         arg: Some(Box::new(OrderId::expr_kind())),
-        filter: Some(Box::new(
-            Expr::column::<OrderUserId>().eq(1i64).into_kind(),
-        )),
+        filter: Some(Box::new(Expr::column::<OrderUserId>().eq(1i64).into_kind())),
         order_by: vec![OrderCriterion::new(
             OrderId::expr_kind(),
             OrderDirection::Desc,

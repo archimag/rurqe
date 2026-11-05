@@ -121,7 +121,12 @@ async fn main() -> Result<()> {
     // ANCHOR_END: depth2
     for user in &users_with_items {
         for order in &user.orders {
-            println!("{} #{}: {}", user.user_name, order.order_id, order.items.len());
+            println!(
+                "{} #{}: {}",
+                user.user_name,
+                order.order_id,
+                order.items.len()
+            );
         }
     }
 

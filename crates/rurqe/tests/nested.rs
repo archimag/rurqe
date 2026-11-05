@@ -121,7 +121,11 @@ fn grouped_statements_nest_inside_the_aggregation() {
 
     let many = users_with_order_groups!().build().expect("valid query");
     assert!(many.sql.contains("GROUP BY"), "{}", many.sql);
-    assert!(many.sql.contains("jsonb_agg(to_jsonb(\"__rurqe_sub\"))"), "{}", many.sql);
+    assert!(
+        many.sql.contains("jsonb_agg(to_jsonb(\"__rurqe_sub\"))"),
+        "{}",
+        many.sql
+    );
     assert!(many.params.is_empty());
 }
 
@@ -249,10 +253,7 @@ fn two_level_nested_collections_decode_from_a_live_database() {
         ),
         (
             "bob".to_owned(),
-            vec![(
-                20,
-                vec![("y".to_owned(), 3), ("z".to_owned(), 1)],
-            )],
+            vec![(20, vec![("y".to_owned(), 3), ("z".to_owned(), 1)])],
         ),
         // A user without orders decodes into an empty collection.
         ("carol".to_owned(), Vec::new()),

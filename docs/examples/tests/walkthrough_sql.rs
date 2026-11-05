@@ -143,8 +143,16 @@ fn the_walkthroughs_bind_the_parameters_their_statements_name() {
         ),
         ("crud.rs", "delete", vec![SqlVal::I64(1)]),
         ("crud.rs", "delete_using", Vec::new()),
-        ("crud.rs", "update_nullable", vec![SqlVal::Null, SqlVal::I64(1)]),
-        ("crud.rs", "insert_nullable", vec![SqlVal::I64(2), SqlVal::Null]),
+        (
+            "crud.rs",
+            "update_nullable",
+            vec![SqlVal::Null, SqlVal::I64(1)],
+        ),
+        (
+            "crud.rs",
+            "insert_nullable",
+            vec![SqlVal::I64(2), SqlVal::Null],
+        ),
         (
             "crud.rs",
             "nullable_equality",

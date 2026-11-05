@@ -176,9 +176,12 @@ fn a_failed_tail_entry_after_the_stage_marker_demands_a_repair() {
     cold_start(&mut backend, &stage(), &marker()).expect("the first run initialises the schema");
 
     let failed = Migration::parse("V1__init.sql", USERS).expect("a valid script name");
-    backend
-        .history
-        .push(SchemaHistoryEntry::failed(2, &failed, "2024-01-01 00:00:00", 3));
+    backend.history.push(SchemaHistoryEntry::failed(
+        2,
+        &failed,
+        "2024-01-01 00:00:00",
+        3,
+    ));
 
     let error = cold_start(&mut backend, &stage(), &marker())
         .expect_err("a failed tail entry stops the cold start");
@@ -194,7 +197,11 @@ fn a_failed_tail_entry_after_the_stage_marker_demands_a_repair() {
         error.to_string().contains("repair"),
         "the diagnostic names the remedy: {error}"
     );
-    assert_eq!(backend.history.len(), 2, "the recorded history stays intact");
+    assert_eq!(
+        backend.history.len(),
+        2,
+        "the recorded history stays intact"
+    );
     assert!(!backend.locked, "the lock is released on the way out");
 }
 

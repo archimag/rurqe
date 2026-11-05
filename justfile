@@ -44,6 +44,13 @@ test:
     # instead of depending on the feature set another workspace member requests.
     cargo test -p rurqe-postgres --features migrate --test migrate
 
+# Format
+[group('tauqe')]
+[doc('Rewrite source read from stdin onto stdout')]
+[metadata('timeout', '120')]
+format:
+    @rustfmt --emit stdout
+
 # Run integration tests against a live PostgreSQL database
 [group('tauqe')]
 [doc('Run integration tests against a live PostgreSQL database')]
@@ -80,26 +87,8 @@ doc-build:
 doc-serve:
     mdbook serve docs --dest-dir target/book --open
 
-# Format all workspace code
-[group('tauqe')]
-[doc('Format all workspace code')]
-fmt:
-    cargo fmt --all
-
-# Check formatting across all workspace targets
-[group('tauqe')]
-[doc('Check formatting across all workspace targets')]
-fmt-check:
-    cargo fmt --all -- --check
-
 # Install the rurqe CLI toolchain into ~/.cargo/bin (`cargo rurqe` and `rurqe`)
 [group('tauqe')]
 [doc('Install the rurqe CLI toolchain into ~/.cargo/bin')]
 install-cli:
     cargo install --path crates/rurqe-cli --force
-
-# Run rurqe CLI without installation
-[group('tauqe')]
-[doc('Run rurqe CLI without installation')]
-cli *ARGS:
-    cargo run -p rurqe-cli --bin rurqe -- {{ARGS}}

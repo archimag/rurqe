@@ -96,18 +96,10 @@ fn grouped_aggregates_decode_from_a_live_database() {
     let expected: Vec<(i64, Vec<String>, String)> = vec![
         (
             10,
-            vec![
-                "sku-a".to_owned(),
-                "sku-b".to_owned(),
-                "sku-c".to_owned(),
-            ],
+            vec!["sku-a".to_owned(), "sku-b".to_owned(), "sku-c".to_owned()],
             "sku-c, sku-b, sku-a".to_owned(),
         ),
-        (
-            20,
-            vec!["y".to_owned(), "z".to_owned()],
-            "z, y".to_owned(),
-        ),
+        (20, vec!["y".to_owned(), "z".to_owned()], "z, y".to_owned()),
     ];
     assert_eq!(rows, expected);
 

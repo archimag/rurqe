@@ -14,8 +14,7 @@
 use super::super::{MockDialect, Order, OrderTotal, OrderUserId};
 use super::{count_star, orders_statement, orders_user_id, scalar_subquery, sum_of};
 use crate::expr::{
-    AggregateFunc, BinaryOp, Expr, ExprKind, OrderCriterion, OrderDirection, SqlVal,
-    WindowExprKind,
+    AggregateFunc, BinaryOp, Expr, ExprKind, OrderCriterion, OrderDirection, SqlVal, WindowExprKind,
 };
 use crate::query::*;
 
