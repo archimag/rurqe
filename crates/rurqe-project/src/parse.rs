@@ -20,7 +20,7 @@ use std::ops::Range;
 use toml_edit::{ImDocument, Item, TableLike};
 
 use self::paths::read_required_path;
-use super::{ConfigError, DEFAULT_SCHEMA, OverridePath, ProjectConfig};
+use super::{ConfigError, OverridePath, ProjectConfig, DEFAULT_SCHEMA};
 
 mod paths;
 /// The document-root key naming the database schema every catalog digest describes.
@@ -716,7 +716,7 @@ fn position(contents: &str, span: Option<Range<usize>>) -> (usize, usize) {
 /// Builds a [`ConfigError::Syntax`] located at the start of `span`.
 ///
 /// The document is read from text the caller handed over, so the refusal names
-/// no file: the path is attached by `CodegenConfig::load`, which is the entry
+/// no file: the path is attached by [`ProjectConfig::load`], which is the entry
 /// point that knows which file it read.
 fn syntax_error(contents: &str, span: Option<Range<usize>>, message: String) -> ConfigError {
     let (line, column) = position(contents, span);

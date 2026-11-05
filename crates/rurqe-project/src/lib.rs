@@ -177,7 +177,7 @@ impl ProjectConfig {
     /// knows: the `rurqe.toml` of a working directory, or the file [`discover_config`]
     /// answered with. A project that keeps no configuration is an ordinary project, so an
     /// absent file means the engine-neutral defaults — and nothing else does. Every other
-    /// failure is reported exactly as [`CodegenConfig::load`] reports it: a file that exists
+    /// failure is reported exactly as [`ProjectConfig::load`] reports it: a file that exists
     /// but cannot be read is a [`ConfigError::Io`], and a malformed one is a
     /// [`ConfigError::Syntax`] carrying the position of the rejected declaration
     /// and the file it was read from.
@@ -369,9 +369,7 @@ impl ProjectConfig {
     pub fn checkpoint_path(&self, directory: &Path) -> PathBuf {
         match self.stage_checkpoint.as_deref() {
             Some(declared) => directory.join(declared),
-            None => self
-                .migrations_dir(directory)
-                .join(DEFAULT_CHECKPOINT_NAME),
+            None => self.migrations_dir(directory).join(DEFAULT_CHECKPOINT_NAME),
         }
     }
 
@@ -595,7 +593,12 @@ impl ConfigError {
     /// path of their own and pass through unchanged.
     fn locate(self, path: &Path) -> Self {
         match self {
-            ConfigError::Syntax { line, column, message, .. } => ConfigError::Syntax {
+            ConfigError::Syntax {
+                line,
+                column,
+                message,
+                ..
+            } => ConfigError::Syntax {
                 line,
                 column,
                 message,
