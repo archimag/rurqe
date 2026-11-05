@@ -405,6 +405,13 @@ const FRAGMENTS: &[Fragment] = &[
     },
     Fragment {
         file: "crud.rs",
+        anchor: "insert_nullable",
+        binding: "stored",
+        terminal: Terminal::Executed,
+        chapters: &["core/insert.md"],
+    },
+    Fragment {
+        file: "crud.rs",
         anchor: "values_many",
         binding: "query",
         terminal: Terminal::Assembled,
@@ -435,6 +442,13 @@ const FRAGMENTS: &[Fragment] = &[
         file: "crud.rs",
         anchor: "update",
         binding: "updated",
+        terminal: Terminal::Executed,
+        chapters: &["core/update.md"],
+    },
+    Fragment {
+        file: "crud.rs",
+        anchor: "update_nullable",
+        binding: "cleared",
         terminal: Terminal::Executed,
         chapters: &["core/update.md"],
     },

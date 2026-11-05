@@ -37,6 +37,14 @@ table!(
     }
 );
 
+table!(
+    /// The `settings` table, whose `locale` column is nullable.
+    Setting => "settings" {
+        SettingId => "id": i64,
+        SettingLocale => "locale": Option<String>,
+    }
+);
+
 table_alias! {
     /// The `u` alias of the `users` table.
     UserAlias => User as "u"

@@ -29,6 +29,14 @@ async fn main() -> Result<()> {
     // ANCHOR_END: insert
     println!("inserted {inserted:?}");
 
+    // ANCHOR: insert_nullable
+    let stored = insert_into(Setting)
+        .values((SettingId::set(2i64), SettingLocale::set(None::<String>)))
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: insert_nullable
+    println!("stored {stored} row(s)");
+
     // ANCHOR: update
     let updated = update(User)
         .set(UserName::set("admin"))
@@ -37,6 +45,15 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: update
     println!("updated {updated} row(s)");
+
+    // ANCHOR: update_nullable
+    let cleared = update(Setting)
+        .set(SettingLocale::set(None::<String>))
+        .where_(SettingId.eq(1i64))
+        .execute(&pool)
+        .await?;
+    // ANCHOR_END: update_nullable
+    println!("cleared {cleared} row(s)");
 
     // ANCHOR: delete
     let removed = delete_from(User)

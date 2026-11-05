@@ -29,6 +29,13 @@ crate::table!(
     }
 );
 
+crate::table!(
+    Setting => "settings" {
+        SettingId => "id": i64,
+        SettingLocale => "locale": Option<String>,
+    }
+);
+
 #[test]
 fn single_assignment_update_renders_set_and_where() {
     let built = UpdateQuery::<MockDialect, User>::new()
@@ -145,6 +152,56 @@ fn default_assignment_renders_default_keyword() {
         built.params,
         vec![SqlVal::Text("root".to_owned()), SqlVal::I64(0)]
     );
+}
+
+#[test]
+fn a_missing_nullable_value_binds_a_null_parameter() {
+    let built = UpdateQuery::<MockDialect, Setting>::new()
+        .set(SettingLocale::set(None::<String>))
+        .where_(Expr::column::<SettingId>().eq(1i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"settings\" SET \"locale\" = $1 WHERE (\"id\" = $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::Null, SqlVal::I64(1)]);
+}
+
+#[test]
+fn a_present_nullable_value_binds_the_parameter_of_the_value() {
+    let locale: Option<String> = Some("en-US".to_owned());
+
+    let built = UpdateQuery::<MockDialect, Setting>::new()
+        .set(SettingLocale::set(locale))
+        .where_(Expr::column::<SettingId>().eq(1i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"settings\" SET \"locale\" = $1 WHERE (\"id\" = $2)"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::Text("en-US".to_owned()), SqlVal::I64(1)]
+    );
+}
+
+#[test]
+fn the_default_keyword_of_a_nullable_column_stays_distinct_from_a_missing_value() {
+    let built = UpdateQuery::<MockDialect, Setting>::new()
+        .set(SettingLocale::default_value())
+        .where_(Expr::column::<SettingId>().eq(1i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"settings\" SET \"locale\" = DEFAULT WHERE (\"id\" = $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
 #[test]

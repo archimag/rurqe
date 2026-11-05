@@ -40,6 +40,13 @@ crate::table!(
     }
 );
 
+crate::table!(
+    Setting => "settings" {
+        SettingId => "id": i64,
+        SettingLocale => "locale": Option<String>,
+    }
+);
+
 /// The accepting engine of the aliased-target tests.
 ///
 /// PostgreSQL renders an alias on the `INSERT` target, so the dialect states
@@ -490,6 +497,63 @@ fn default_values_render_as_keyword() {
         "INSERT INTO \"users\" (\"id\", \"name\") VALUES (DEFAULT, $1)"
     );
     assert_eq!(built.params, vec![SqlVal::Text("root".to_owned())]);
+}
+
+#[test]
+fn a_values_row_binds_a_missing_nullable_value_as_null() {
+    let built = InsertQuery::<MockDialect, Setting>::new()
+        .values((SettingId::set(1i64), SettingLocale::set(None::<String>)))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"settings\" (\"id\", \"locale\") VALUES ($1, $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::Null]);
+}
+
+#[test]
+fn bulk_rows_keep_present_and_missing_nullable_values_apart() {
+    let present: Option<String> = Some("en-US".to_owned());
+    let absent: Option<String> = None;
+
+    let built = InsertQuery::<MockDialect, Setting>::new()
+        .values_many([
+            (SettingId::set(1i64), SettingLocale::set(present)),
+            (SettingId::set(2i64), SettingLocale::set(absent)),
+        ])
+        .expect("the row source is not empty")
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"settings\" (\"id\", \"locale\") VALUES ($1, $2), ($3, $4)"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::Text("en-US".to_owned()),
+            SqlVal::I64(2),
+            SqlVal::Null,
+        ]
+    );
+}
+
+#[test]
+fn the_default_keyword_of_a_nullable_column_stays_distinct_from_a_missing_value() {
+    let built = InsertQuery::<MockDialect, Setting>::new()
+        .values((SettingId::set(1i64), SettingLocale::default_value()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"settings\" (\"id\", \"locale\") VALUES ($1, DEFAULT)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
 #[test]

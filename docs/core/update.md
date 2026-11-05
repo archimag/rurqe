@@ -51,6 +51,21 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 ### `SET`: the value model
 
 The three constructors — `UserName::set("root")`, `UserName::default_value()`, and `UserName::set_expr(expr)` — behave here exactly as they do on an `INSERT`. An assignment tuple belongs to one table, so a statement cannot assign a column of a relation it does not update.
+
+### `SET`: a nullable column
+
+A column declared `Option<T>` accepts the optional value itself: `Some(value)` binds the parameter the value encodes, and `None` binds SQL `NULL`. The statement is otherwise the one every other assignment produces.
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:update_nullable}}
+```
+
+```sql
+UPDATE "settings" SET "locale" = $1 WHERE ("id" = $2)
+```
+
+The clause, the parameter count, and the row count are unchanged; only the value bound to `$1` is `NULL` instead of text. Two rules follow from the declaration. A nullable column is written through its optional type alone — a bare `T` is refused, because an assignment matches the declared type of the column. And a missing value is not the `DEFAULT` keyword: `.default_value()` delegates to the default definition of the column, while `None` stores the absence of a value.
+
 ### `FROM`: reading a second relation
 
 ```rust,no_run

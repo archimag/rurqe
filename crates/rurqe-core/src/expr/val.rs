@@ -394,6 +394,20 @@ impl ToSqlVal for &serde_json::Value {
     }
 }
 
+/// Converts an optional value into the parameter its content encodes.
+///
+/// A nullable column carries `Option<T>` as its declared Rust type, and an
+/// assignment binds its value through this conversion, so `None` becomes
+/// [`SqlVal::Null`] while `Some(value)` becomes the parameter `value` encodes
+/// on its own. The conversion delegates to the [`ToSqlVal`] implementation of
+/// `Option<T>`, which is where the absent case is defined, so the two paths
+/// cannot disagree about what a missing value binds.
+impl<T: ToSqlVal> From<Option<T>> for SqlVal {
+    fn from(value: Option<T>) -> Self {
+        value.to_sql_val()
+    }
+}
+
 impl From<i32> for SqlVal {
     fn from(value: i32) -> Self {
         value.to_sql_val()

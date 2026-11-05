@@ -66,6 +66,20 @@ INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id" A
 
 A tuple of assignments is accepted only when every element targets the same table, so a statement cannot mix columns of unrelated relations.
 
+### `VALUES`: a nullable column
+
+A column declared `Option<T>` accepts the optional value in a `VALUES` row exactly as it does in a `SET` clause: `Some(value)` binds the parameter the value encodes, and `None` binds SQL `NULL`.
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:insert_nullable}}
+```
+
+```sql
+INSERT INTO "settings" ("id", "locale") VALUES ($1, $2)
+```
+
+The column list and the parameter order are the ones the assignments state, so a nullable column changes nothing about the shape of the row. The value is written as `NULL` rather than through `DEFAULT`: `.default_value()` delegates to the default definition of the column, while `None` stores the absence of a value.
+
 ### `VALUES`: many rows
 
 ```rust,no_run

@@ -69,6 +69,39 @@ fn optional_values_encode_none_as_null() {
 }
 
 #[test]
+fn optional_values_convert_into_sql_values() {
+    assert_eq!(SqlVal::from(Some(7i64)), SqlVal::I64(7));
+    assert_eq!(SqlVal::from(None::<i64>), SqlVal::Null);
+    assert_eq!(
+        SqlVal::from(Some(String::from("root"))),
+        SqlVal::Text("root".to_owned())
+    );
+    assert_eq!(SqlVal::from(None::<String>), SqlVal::Null);
+    assert_eq!(SqlVal::from(Some("root")), SqlVal::Text("root".to_owned()));
+    let bytes: &[u8] = &[1, 2];
+    assert_eq!(SqlVal::from(Some(bytes)), SqlVal::Bytes(vec![1, 2]));
+}
+
+#[cfg(feature = "serde_json")]
+#[test]
+fn optional_json_values_convert_into_sql_values() {
+    assert_eq!(
+        SqlVal::from(Some(Json(1i64))),
+        SqlVal::Json(serde_json::json!(1))
+    );
+    assert_eq!(SqlVal::from(None::<Json<i64>>), SqlVal::Null);
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn an_optional_borrowed_decimal_converts_into_its_sql_value() {
+    let decimal = rust_decimal::Decimal::new(15_005, 3);
+
+    assert_eq!(SqlVal::from(Some(&decimal)), SqlVal::Decimal(decimal));
+    assert_eq!(SqlVal::from(None::<&rust_decimal::Decimal>), SqlVal::Null);
+}
+
+#[test]
 fn from_conversions_delegate_to_the_trait() {
     assert_eq!(SqlVal::from(7i64), 7i64.to_sql_val());
     assert_eq!(SqlVal::from(7u32), 7u32.to_sql_val());
