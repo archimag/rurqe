@@ -843,3 +843,201 @@ mod nullable_column {
             .expect("the fixture is dropped");
     }
 }
+
+/// Round-trips a value of a SQL type the library does not model.
+///
+/// The newtype declares the SQL type of the column it stands for, so the value
+/// travels as the declared name together with the raw wire payload. A driver
+/// with typed columns validates the name against the column it binds to and
+/// hands the octets to the server untouched, while a driver without column
+/// types stores the payload as a blob and reports no name at all. The declared
+/// newtype decodes both forms through the same `FromSqlValue` implementation.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod typed_wire {
+    use rurqe::prelude::*;
+
+    /// A PostgreSQL `interval` carried as its 16-byte binary representation.
+    ///
+    /// The live scenario never synthesises the layout: the octets travel from
+    /// the server into the newtype and back, and the server validates them on
+    /// the way in.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Interval(pub [u8; 16]);
+
+    impl AsRef<[u8]> for Interval {
+        fn as_ref(&self) -> &[u8] {
+            &self.0
+        }
+    }
+
+    impl TryFrom<&[u8]> for Interval {
+        type Error = &'static str;
+
+        fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+            bytes
+                .try_into()
+                .map(Interval)
+                .map_err(|_| "expected exactly 16 bytes")
+        }
+    }
+
+    rurqe::impl_sql_binary_newtype!(Interval, 16, sql_type = "interval");
+
+    table!(
+        /// A note whose value is a SQL type the library does not model.
+        IntervalNote => "rurqe_interval_notes" {
+            IntervalNoteId => "id": i64,
+            IntervalNoteValue => "value": Interval,
+        }
+    );
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_stores_a_typed_wire_value_as_the_blob_of_its_payload() {
+        use rurqe::sqlite::rusqlite::Connection;
+
+        let connection = Connection::open_in_memory().expect("the in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE rurqe_interval_notes ( \
+                     id INTEGER NOT NULL PRIMARY KEY, \
+                     value BLOB NOT NULL \
+                 );",
+            )
+            .expect("the fixture table is created");
+
+        let mut db = SqliteConnection::new(connection);
+
+        // SQLite has no column types, so the declared name cannot outlive a
+        // store: the payload is what the column keeps.
+        let interval = Interval([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+        let insert = insert_into::<Sqlite<Sqlite3_35>, IntervalNote>().values((
+            IntervalNoteId::set(1i64),
+            IntervalNoteValue::set(interval.clone()),
+        ));
+
+        let built = insert
+            .build()
+            .expect("a typed wire assignment renders a valid statement");
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::TypedWire {
+                    sql_type: "interval".to_owned(),
+                    payload: interval.0.to_vec(),
+                },
+            ]
+        );
+
+        let affected = db.execute(&insert).expect("the payload is stored");
+        assert_eq!(affected, 1);
+
+        let stored = select_from::<Sqlite<Sqlite3_35>, IntervalNote>().select((IntervalNoteValue,));
+
+        // The stored value carries no type name, so it reads back as the blob
+        // it was written as.
+        let rows = db
+            .fetch_raw(&stored.build().expect("valid query"))
+            .expect("the stored blob is read back");
+        assert_eq!(rows, vec![vec![SqlVal::Bytes(interval.0.to_vec())]]);
+
+        // The declared newtype decodes that blob through the same
+        // `FromSqlValue` implementation that reads a typed wire value.
+        let decoded = db
+            .fetch_all(&stored)
+            .expect("the stored blob decodes into the newtype");
+        assert_eq!(decoded, vec![(interval,)]);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_round_trips_a_server_produced_interval() {
+        let Some(url) = super::live_database_url() else {
+            return;
+        };
+
+        let client = postgres::Client::connect(&url, postgres::NoTls)
+            .expect("the test server accepts the connection");
+        let mut db = PgConnection::new(client);
+
+        // The fixture is created through the raw handle, which is the supported
+        // escape hatch for the DDL the typed builders do not model.
+        db.client_mut()
+            .batch_execute(
+                "DROP TABLE IF EXISTS rurqe_interval_notes; \
+                 CREATE TABLE rurqe_interval_notes ( \
+                     id BIGINT NOT NULL PRIMARY KEY, \
+                     value INTERVAL NOT NULL \
+                 ); \
+                 INSERT INTO rurqe_interval_notes (id, value) \
+                     VALUES (1, '30 days 12:00:00')",
+            )
+            .expect("the fixture is created");
+
+        // The server produces the binary representation of the interval, so the
+        // test never synthesises the octets of the value.
+        let produced = select_from::<Postgres, IntervalNote>().select((Expr::<Interval>::raw(
+            "'30 days 12:00:00'::interval",
+            Vec::new(),
+        )
+        .expect("a template without placeholders"),));
+        let rows = db
+            .fetch_raw(&produced.build().expect("valid query"))
+            .expect("the server produces the interval");
+        assert_eq!(rows.len(), 1);
+        let SqlVal::TypedWire { sql_type, payload } = rows[0][0].clone() else {
+            panic!(
+                "an unmodelled column type decodes into its declared name, got {:?}",
+                rows[0][0]
+            );
+        };
+        assert_eq!(sql_type, "interval");
+        assert_eq!(payload.len(), 16);
+
+        // The declared newtype decodes the typed wire value, and the stored
+        // column decodes through the same implementation.
+        let decoded = db
+            .fetch_all(&produced)
+            .expect("the produced interval decodes into the newtype");
+        assert_eq!(decoded.len(), 1);
+        let interval = decoded.into_iter().next().expect("one row").0;
+        assert_eq!(interval.0.to_vec(), payload);
+
+        let stored = select_from::<Postgres, IntervalNote>()
+            .select((IntervalNoteId, IntervalNoteValue))
+            .order_by_asc(IntervalNoteId);
+        assert_eq!(
+            db.fetch_all(&stored).expect("the stored interval decodes"),
+            vec![(1i64, interval.clone())]
+        );
+
+        // Binding the decoded value back writes the octets the server sent, and
+        // the server accepts them as the interval they describe.
+        let insert = insert_into::<Postgres, IntervalNote>().values((
+            IntervalNoteId::set(2i64),
+            IntervalNoteValue::set(interval.clone()),
+        ));
+        assert_eq!(
+            insert.build().expect("valid query").params,
+            vec![
+                SqlVal::I64(2),
+                SqlVal::TypedWire {
+                    sql_type: "interval".to_owned(),
+                    payload: interval.0.to_vec(),
+                },
+            ]
+        );
+        assert_eq!(db.execute(&insert).expect("the value is written back"), 1);
+
+        assert_eq!(
+            db.fetch_all(&stored).expect("both rows decode"),
+            vec![(1i64, interval.clone()), (2i64, interval.clone())]
+        );
+
+        db.client_mut()
+            .batch_execute("DROP TABLE rurqe_interval_notes")
+            .expect("the fixture is dropped");
+    }
+}
