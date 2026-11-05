@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{AggregateMarker, DialectInScope, Expr, NonAggregate};
+use crate::expr::{AggregateMarker, DialectInScope, Expr, NonAggregate, SelectAst};
 use crate::schema::{At, Column, ExprInScope, Table};
 
 use super::cte::{Cte, DerivedTable};
@@ -12,9 +12,8 @@ use super::select::{BuiltQuery, HasProjection, NoProjection, ProjectionPresent, 
 use super::selection::{AggregateInDialect, SelectTarget, Selection, SelectionFor};
 use super::window::WindowExpr;
 
-// The grouped query keeps one responsibility per file: the type-level column sets
-// and the membership checks live in `sets`, the `HAVING` clause in `having`, and
-// the ordering and pagination of the grouped rows in `ordering`.
+// The grouped query keeps one responsibility per file: column sets in `sets`, `HAVING`
+// in `having`, and the ordering and pagination of the grouped rows in `ordering`.
 mod having;
 mod ordering;
 mod sets;
@@ -772,6 +771,12 @@ impl<D: Dialect, Tables: TableScope, Output, GroupByCols, P: ProjectionPresent>
 impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
     GroupedQuery<D, Tables, Output, GroupByCols, HasProjection>
 {
+    /// Describes this grouped query as a statement AST, the way the nested
+    /// projections embed it, without leaving the grouped typestate.
+    pub(crate) fn to_ast(&self) -> SelectAst {
+        self.query.to_ast()
+    }
+
     /// Converts this grouped query into a CTE for the table `T`.
     pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
         Cte::new(self.query)

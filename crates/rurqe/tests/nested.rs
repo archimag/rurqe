@@ -69,6 +69,62 @@ macro_rules! users_with_orders {
     };
 }
 
+/// Assembles the statement nesting one grouped statement per order.
+///
+/// The articles of an order are grouped by the order and aggregated into one
+/// ordered list, and the group is read as a single nested row.
+macro_rules! orders_with_sku_lists {
+    () => {
+        select_from(NestOrder)
+            .select(cols! {
+                order_id: NestOrderId,
+                items: nest_one(
+                    select_from(NestItem)
+                        .where_(NestItemOrderId.eq(outer(NestOrderId)))
+                        .group_by(NestItemOrderId)
+                        .select(cols! {
+                            item_order_id: NestItemOrderId,
+                            skus: array_agg(NestItemSku).order_by_asc(NestItemSku),
+                        }),
+                ),
+            })
+            .order_by_asc(NestOrderId)
+    };
+}
+
+/// Assembles the statement nesting the grouped orders of every user as a collection.
+macro_rules! users_with_order_groups {
+    () => {
+        select_from(NestUser)
+            .select(cols! {
+                user_name: NestUserName,
+                groups: nest_many(
+                    select_from(NestOrder)
+                        .where_(NestOrderUserId.eq(outer(NestUserId)))
+                        .group_by(NestOrderUserId)
+                        .select(cols! {
+                            group_user_id: NestOrderUserId,
+                            order_ids: array_agg(NestOrderId).order_by_asc(NestOrderId),
+                        }),
+                ),
+            })
+            .order_by_asc(NestUserId)
+    };
+}
+
+#[test]
+fn grouped_statements_nest_inside_the_aggregation() {
+    let single = orders_with_sku_lists!().build().expect("valid query");
+    assert!(single.sql.contains("GROUP BY"), "{}", single.sql);
+    assert!(single.sql.contains("COALESCE(ARRAY_AGG("), "{}", single.sql);
+    assert!(single.params.is_empty());
+
+    let many = users_with_order_groups!().build().expect("valid query");
+    assert!(many.sql.contains("GROUP BY"), "{}", many.sql);
+    assert!(many.sql.contains("jsonb_agg(to_jsonb(\"__rurqe_sub\"))"), "{}", many.sql);
+    assert!(many.params.is_empty());
+}
+
 /// The endpoint the live scenario runs against, when the environment names one.
 fn live_database_url() -> Option<String> {
     match std::env::var("RURQE_TEST_POSTGRES_URL") {
@@ -203,6 +259,60 @@ fn two_level_nested_collections_decode_from_a_live_database() {
     ];
 
     assert_eq!(summary, expected);
+
+    // A grouped statement nests like a plain one: the articles of an order are
+    // grouped and aggregated into one ordered list, read as a single nested row.
+    let orders = orders_with_sku_lists!()
+        .fetch_all(&mut db)
+        .expect("the grouped nested statement runs and its documents decode");
+    let order_skus: Vec<(i64, Option<Vec<String>>)> = orders
+        .iter()
+        .map(|order| {
+            (
+                order.order_id,
+                order.items.as_ref().map(|group| group.skus.clone()),
+            )
+        })
+        .collect();
+    let expected_skus: Vec<(i64, Option<Vec<String>>)> = vec![
+        // An order without items has no group, so the nested row is absent.
+        (10, None),
+        (
+            11,
+            Some(vec![
+                "sku-a".to_owned(),
+                "sku-b".to_owned(),
+                "sku-c".to_owned(),
+            ]),
+        ),
+        (12, Some(vec!["x".to_owned()])),
+        (20, Some(vec!["y".to_owned(), "z".to_owned()])),
+    ];
+    assert_eq!(order_skus, expected_skus);
+
+    // The collection form: every user reads the groups of its orders.
+    let users_groups = users_with_order_groups!()
+        .fetch_all(&mut db)
+        .expect("the grouped nested collection runs and its documents decode");
+    let group_ids: Vec<(String, Vec<Vec<i64>>)> = users_groups
+        .iter()
+        .map(|user| {
+            (
+                user.user_name.clone(),
+                user.groups
+                    .iter()
+                    .map(|group| group.order_ids.clone())
+                    .collect(),
+            )
+        })
+        .collect();
+    let expected_ids: Vec<(String, Vec<Vec<i64>>)> = vec![
+        ("alice".to_owned(), vec![vec![10, 11, 12]]),
+        ("bob".to_owned(), vec![vec![20]]),
+        // A user without orders has no group.
+        ("carol".to_owned(), Vec::new()),
+    ];
+    assert_eq!(group_ids, expected_ids);
 
     db.client_mut()
         .batch_execute(

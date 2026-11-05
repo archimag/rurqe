@@ -25,7 +25,9 @@
 
 use crate::dialect::{Dialect, SupportsJsonAggregation};
 use crate::expr::{DialectInScope, ExprKind, SqlArrayElement, SqlVal, Subquery};
-use crate::query::{HasProjection, SelectQuery, SelectTarget, SelectTargetInScope, TableScope};
+use crate::query::{
+    GroupedQuery, HasProjection, SelectQuery, SelectTarget, SelectTargetInScope, TableScope,
+};
 use crate::schema::At;
 
 /// The row type a nested projection decodes into.
@@ -73,14 +75,12 @@ pub fn nest_one<Q>(query: Q) -> NestOne<Q> {
 }
 
 /// Builds the nested collection node of the statement `query`.
-fn nested_kind<D, S, Row>(query: &SelectQuery<D, S, Row, HasProjection>, single: bool) -> ExprKind
-where
-    D: Dialect,
-    S: TableScope,
-    Row: MultisetRow,
-{
+///
+/// The statement is taken as plain data, so a plain `SELECT` and a grouped one
+/// are embedded through the same node and decode into the same row type.
+fn nested_kind<Row: MultisetRow>(query: Subquery, single: bool) -> ExprKind {
     ExprKind::Multiset {
-        query: Subquery::new(query.to_ast()),
+        query,
         fields: Row::FIELDS.to_vec(),
         single,
     }
@@ -95,7 +95,20 @@ where
     type RustType = Vec<Row>;
 
     fn to_expr_kind(&self) -> ExprKind {
-        nested_kind(&self.0, false)
+        nested_kind::<Row>(Subquery::new(self.0.to_ast()), false)
+    }
+}
+
+impl<D, S, Row, G> SelectTarget for NestMany<GroupedQuery<D, S, Row, G, HasProjection>>
+where
+    D: Dialect,
+    S: TableScope,
+    Row: MultisetRow,
+{
+    type RustType = Vec<Row>;
+
+    fn to_expr_kind(&self) -> ExprKind {
+        nested_kind::<Row>(Subquery::new(self.0.to_ast()), false)
     }
 }
 
@@ -119,6 +132,20 @@ where
     type Output = Vec<Row>;
 }
 
+// A grouped statement is projected like a plain one: it reads from its own
+// relations, so it resolves at the same fixed position, and it has to be
+// rendered by a dialect with the JSON aggregation the document is assembled with.
+impl<Tables, InnerD, QueryD, S, Row, G> SelectTargetInScope<Tables, At<0>, QueryD>
+    for NestMany<GroupedQuery<InnerD, S, Row, G, HasProjection>>
+where
+    InnerD: Dialect + DialectInScope<QueryD>,
+    QueryD: SupportsJsonAggregation,
+    S: TableScope,
+    Row: MultisetRow,
+{
+    type Output = Vec<Row>;
+}
+
 impl<D, S, Row> SelectTarget for NestOne<SelectQuery<D, S, Row, HasProjection>>
 where
     D: Dialect,
@@ -128,7 +155,20 @@ where
     type RustType = Option<Row>;
 
     fn to_expr_kind(&self) -> ExprKind {
-        nested_kind(&self.0, true)
+        nested_kind::<Row>(Subquery::new(self.0.to_ast()), true)
+    }
+}
+
+impl<D, S, Row, G> SelectTarget for NestOne<GroupedQuery<D, S, Row, G, HasProjection>>
+where
+    D: Dialect,
+    S: TableScope,
+    Row: MultisetRow,
+{
+    type RustType = Option<Row>;
+
+    fn to_expr_kind(&self) -> ExprKind {
+        nested_kind::<Row>(Subquery::new(self.0.to_ast()), true)
     }
 }
 
@@ -137,6 +177,17 @@ where
 // carries the same dialect and aggregation requirements.
 impl<Tables, InnerD, QueryD, S, Row> SelectTargetInScope<Tables, At<0>, QueryD>
     for NestOne<SelectQuery<InnerD, S, Row, HasProjection>>
+where
+    InnerD: Dialect + DialectInScope<QueryD>,
+    QueryD: SupportsJsonAggregation,
+    S: TableScope,
+    Row: MultisetRow,
+{
+    type Output = Option<Row>;
+}
+
+impl<Tables, InnerD, QueryD, S, Row, G> SelectTargetInScope<Tables, At<0>, QueryD>
+    for NestOne<GroupedQuery<InnerD, S, Row, G, HasProjection>>
 where
     InnerD: Dialect + DialectInScope<QueryD>,
     QueryD: SupportsJsonAggregation,
