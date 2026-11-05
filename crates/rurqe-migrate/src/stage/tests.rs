@@ -171,6 +171,34 @@ fn a_diverged_stage_digest_is_rejected() {
 }
 
 #[test]
+fn a_failed_tail_entry_after_the_stage_marker_demands_a_repair() {
+    let mut backend = InMemoryBackend::new();
+    cold_start(&mut backend, &stage(), &marker()).expect("the first run initialises the schema");
+
+    let failed = Migration::parse("V1__init.sql", USERS).expect("a valid script name");
+    backend
+        .history
+        .push(SchemaHistoryEntry::failed(2, &failed, "2024-01-01 00:00:00", 3));
+
+    let error = cold_start(&mut backend, &stage(), &marker())
+        .expect_err("a failed tail entry stops the cold start");
+
+    assert_eq!(
+        error,
+        Error::FailedMigrationAlreadyApplied {
+            script: "V1__init.sql".to_owned(),
+            installed_rank: 2,
+        }
+    );
+    assert!(
+        error.to_string().contains("repair"),
+        "the diagnostic names the remedy: {error}"
+    );
+    assert_eq!(backend.history.len(), 2, "the recorded history stays intact");
+    assert!(!backend.locked, "the lock is released on the way out");
+}
+
+#[test]
 fn a_failing_script_aborts_the_cold_start() {
     let mut backend = InMemoryBackend::new();
     backend.failure_script = Some("BOOM".to_owned());
@@ -219,8 +247,8 @@ fn a_cold_start_that_cannot_commit_the_marker_leaves_the_database_cold() {
     let mut backend = InMemoryBackend::new();
     backend.fail_success_commit = true;
 
-    let error = cold_start(&mut backend, &stage(), &marker())
-        .expect_err("the marker cannot be committed");
+    let error =
+        cold_start(&mut backend, &stage(), &marker()).expect_err("the marker cannot be committed");
 
     assert!(matches!(error, Error::Backend(_)), "got {error:?}");
     assert!(backend.history.is_empty());
@@ -437,12 +465,11 @@ fn cold_start_async_initialises_the_database() {
         .build()
         .expect("build tokio runtime");
 
-    let (outcome, backend) = runtime
-        .block_on(cold_start_async(
-            InMemoryBackend::new(),
-            &stage(),
-            &marker(),
-        ));
+    let (outcome, backend) = runtime.block_on(cold_start_async(
+        InMemoryBackend::new(),
+        &stage(),
+        &marker(),
+    ));
 
     let report = outcome.expect("the blocking cold start succeeds");
     let backend = backend.expect("the backend is handed back with the report");
@@ -474,8 +501,7 @@ fn cold_start_async_surfaces_a_diverged_stage_digest() {
         .build()
         .expect("build tokio runtime");
 
-    let (outcome, backend) = runtime
-        .block_on(cold_start_async(backend, &stage(), &changed));
+    let (outcome, backend) = runtime.block_on(cold_start_async(backend, &stage(), &changed));
 
     match outcome {
         Err(Error::InvalidStage { .. }) => {}
@@ -511,8 +537,8 @@ fn cold_start_is_refused_inside_a_runtime_under_strict_async() {
         );
         assert!(!backend.locked);
 
-        let (outcome, backend) = cold_start_async(InMemoryBackend::new(), &stage(), &marker())
-            .await;
+        let (outcome, backend) =
+            cold_start_async(InMemoryBackend::new(), &stage(), &marker()).await;
 
         let report = outcome.expect("the sanctioned runtime path initialises the database");
         let backend = backend.expect("the backend is handed back with the report");
@@ -704,7 +730,10 @@ fn a_refused_non_transactional_script_keeps_the_marker_of_partial_application() 
     let mut backend = TransactionOnlyBackend(InMemoryBackend::new());
     let stage = DeclarativeStage::new(vec![
         StageScript::new("orders.sql", ORDERS),
-        StageScript::new("users.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users (id);"),
+        StageScript::new(
+            "users.notx.sql",
+            "CREATE INDEX CONCURRENTLY users_id ON users (id);",
+        ),
     ]);
 
     let error = cold_start(&mut backend, &stage, &marker())
@@ -717,7 +746,11 @@ fn a_refused_non_transactional_script_keeps_the_marker_of_partial_application() 
         other => panic!("expected NonTransactionalUnsupported, got {other:?}"),
     }
     assert!(
-        backend.0.executed_sql.iter().any(|sql| sql.as_str() == ORDERS),
+        backend
+            .0
+            .executed_sql
+            .iter()
+            .any(|sql| sql.as_str() == ORDERS),
         "the transactional script really ran"
     );
     assert_eq!(backend.0.history.len(), 1);

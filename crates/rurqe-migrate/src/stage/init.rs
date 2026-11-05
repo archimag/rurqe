@@ -42,7 +42,10 @@ pub struct ColdStartReport {
 /// same catalog digest is left untouched and reported as a no-op; any other
 /// history is rejected, because a cold start never overwrites an initialised
 /// database. A marker the migration tail advanced past is one such history: the
-/// database it describes is initialised, whatever the live catalog reports.
+/// database it describes is initialised, whatever the live catalog reports. A
+/// tail that failed after the marker is reported as the failed migration it
+/// recorded — the same diagnosis every other lifecycle operation gives — because
+/// `repair` clears that state and a second cold start never does.
 ///
 /// A stage holding a script marked non-transactional cannot be applied
 /// atomically, so the cold start commits an in-progress marker before the first
@@ -124,6 +127,18 @@ pub(crate) fn cold_start_guarded<B: MigrationBackend>(
             .filter(|entry| entry.installed_rank != existing.installed_rank)
             .max_by_key(|entry| entry.installed_rank)
         {
+            // A failed entry proves the tail of the initialised database never
+            // completed, so it is reported the way every other lifecycle
+            // operation reports it: the operator has to `repair` the history
+            // before the database can move on. Classifying it as an initialised
+            // baseline would name neither the failure nor a remedy.
+            if !later.success {
+                return Err(Error::FailedMigrationAlreadyApplied {
+                    script: later.script.clone(),
+                    installed_rank: later.installed_rank,
+                });
+            }
+
             return Err(already_initialised(later));
         }
 
