@@ -515,3 +515,106 @@ fn a_grouped_statement_nested_in_a_projection_is_validated_itself() {
         })
     );
 }
+
+/// `ABS(orders.<column>)`, a computed expression over one column of `orders`.
+fn abs_of(column: &'static str) -> ExprKind {
+    ExprKind::Function {
+        name: "ABS",
+        args: vec![ExprKind::Column {
+            table: "orders",
+            name: column,
+        }],
+    }
+}
+
+#[test]
+fn a_grouped_computed_expression_covers_the_equal_expression_everywhere() {
+    let mut ast = orders_statement(vec![abs_of("total"), count_star()]);
+    ast.group_by = vec![abs_of("total")];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(abs_of("total")),
+        rhs: Box::new(ExprKind::Value(SqlVal::F64(1.0))),
+    });
+    ast.order_by
+        .push(OrderCriterion::new(abs_of("total"), OrderDirection::Asc));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_variation_of_a_grouped_computed_expression_is_rejected() {
+    // The projection computes over `user_id`, a column neither grouped nor covered
+    // by the grouped expression over `total`.
+    let mut ast = orders_statement(vec![abs_of("user_id"), count_star()]);
+    ast.group_by = vec![abs_of("total")];
+
+    let error = ast
+        .validate()
+        .expect_err("a variation of the grouped expression");
+    assert!(matches!(error, BuildError::UngroupedExpression { .. }));
+    assert!(error.to_string().contains("ABS"));
+}
+
+#[test]
+fn a_bare_column_beside_a_grouped_computed_expression_is_rejected() {
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        count_star(),
+    ]);
+    ast.group_by = vec![abs_of("total")];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_having_variation_of_a_grouped_computed_expression_is_rejected() {
+    let mut ast = orders_statement(vec![abs_of("total"), count_star()]);
+    ast.group_by = vec![abs_of("total")];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(abs_of("user_id")),
+        rhs: Box::new(ExprKind::Value(SqlVal::F64(1.0))),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedHavingColumn {
+            table: "orders",
+            column: "user_id",
+        })
+    );
+}
+
+#[test]
+fn the_builder_refuses_an_ungrouped_variation_of_a_grouped_expression() {
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(
+            Expr::<f64>::fragments("ABS(")
+                .operand(OrderTotal)
+                .text(")")
+                .end(),
+        )
+        .select((
+            Expr::<f64>::fragments("ABS(")
+                .operand(OrderUserId)
+                .text(")")
+                .end(),
+            Expr::count_all(),
+        ));
+
+    assert!(matches!(
+        query.build(),
+        Err(BuildError::UngroupedExpression { .. })
+    ));
+}

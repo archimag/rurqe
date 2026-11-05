@@ -376,6 +376,13 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/group_by.md"],
     },
     Fragment {
+        file: "aggregates.rs",
+        anchor: "heat_map",
+        binding: "heat_map",
+        terminal: Terminal::Executed,
+        chapters: &["core/group_by.md"],
+    },
+    Fragment {
         file: "ordering.rs",
         anchor: "order_by",
         binding: "page",

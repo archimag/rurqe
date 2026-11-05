@@ -19,19 +19,47 @@ A single column or a tuple can be grouped: `.group_by((UserId, UserName))`.
 
 ## What can be projected
 
-Exactly four projection forms survive a grouping:
+Exactly five projection forms survive a grouping:
 
 | Projection | Condition |
 |---|---|
 | a column | it is part of `GROUP BY` |
 | an aggregate expression | the call folds the rows of the group |
 | a constant expression | it reads no table |
+| a computed expression | it is equal to a grouped expression, which the statement build checks |
 | a window expression | the window reads grouped columns, and so do the columns its operand aggregates |
 
-Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
+Projecting an ungrouped column marker is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
 > **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
-However the column is reached for, the rule holds: an expression built over a column keeps that column's relation. `outer(...)` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
+An expression built over a column keeps that column's relation, but the call site cannot tell it from an expression computed over several columns. Such a projection is therefore accepted by the compiler and refused when the statement is built, as `UngroupedColumn`, unless it equals a grouped expression (see below). `outer(...)` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
+
+## Grouping by a computed expression
+
+`group_by` accepts a per-row expression in the same position as a column. Its tables are checked against the statement like those of any other clause, and an aggregate is refused at compile time because SQL forbids an aggregate in `GROUP BY`. The example computes the day of a timestamp with a PostgreSQL function written once through operand fragments:
+
+```rust,no_run
+{{#rustdoc_include ../examples/aggregates.rs:heat_map_definition}}
+```
+
+The projection and the grouping use the same expression, and the statement counts the rows of each day:
+
+```rust,no_run
+{{#rustdoc_include ../examples/aggregates.rs:heat_map}}
+```
+
+```sql
+SELECT date_trunc('day', "created_at") AS "day", COUNT(*) AS "visits"
+FROM "visits"
+GROUP BY date_trunc('day', "created_at")
+```
+
+The rules of a grouped expression:
+
+- The columns inside a grouped expression do not become grouped columns. A bare `VisitCreatedAt` is not projectable beside `day_of(VisitCreatedAt)`.
+- A projection or a `HAVING` predicate reads the expression only as an expression structurally equal to the grouped one. The comparison runs inside `.build()` (Tier 2), because it compares the assembled expressions. A variation — another unit, another column — is refused as `UngroupedExpression`, and a bare column as `UngroupedColumn`.
+- A single `group_by` call takes a column, a tuple of columns, or one expression. Several groupings chain: `.group_by(UserId).group_by(day_of(VisitCreatedAt))`.
+- Write a constant of the grouped expression as literal text in the fragment. A value bound as a parameter is numbered per occurrence, so the projected copy and the grouped copy are rendered with different placeholders.
 
 ## The aggregate functions
 
@@ -111,6 +139,7 @@ The call site refuses a grouped query that reads a column the grouping dropped �
 | `UngroupedColumnWithAggregate` | a query without `GROUP BY` that projects an aggregate beside a bare column |
 | `UngroupedColumn` | a statement whose rows an aggregate collapsed, read through a column the collapse dropped — in a projection, in the ordering, in a `DISTINCT ON` expression, or in the operand of a window call |
 | `UngroupedHavingColumn` | a `HAVING` predicate reading a column that is neither aggregated nor grouped |
+| `UngroupedExpression` | a statement grouped by a computed expression whose projection or ordering is computed over columns that no grouped expression covers |
 
 `select_from(Order).select((OrderUserId, count_all()))` is the first row: it compiles, and the statement is refused when it is built, with a diagnostic asking for the grouping this chapter describes. The second row also governs the ordering of an aggregated query — projecting `count_all()` and ordering the result by `OrderTotal` names a per-row column the collapse removed — while a grouped query orders by a grouped column or by an aggregate, which is what its ordering methods accept.
 

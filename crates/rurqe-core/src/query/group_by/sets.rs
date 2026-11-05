@@ -8,14 +8,15 @@
 
 use core::marker::PhantomData;
 
-use crate::expr::ExprKind;
-use crate::schema::{At, Column, Next, TableInScope};
+use crate::expr::{DialectInScope, Expr, ExprKind, NonAggregate};
+use crate::query::scope::ScopePositions;
+use crate::schema::{At, Column, ExprInScope, Next, TableInScope};
 
 /// A column or tuple of columns for the `GROUP BY` clause.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a valid GROUP BY clause",
     label = "group by a column or a tuple of columns",
-    note = "group by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
+    note = "group by accepts column markers, tuples of column markers, or a non-aggregate expression, such as `UserId`, `(UserId, UserName)`, or an expression over a column"
 )]
 pub trait GroupBy {
     /// Appends the grouped column expressions to `out` in grouping order.
@@ -25,6 +26,16 @@ pub trait GroupBy {
 impl<C: Column> GroupBy for C {
     fn push_column_names(&self, out: &mut Vec<ExprKind>) {
         out.push(C::expr_kind());
+    }
+}
+
+// A computed expression is grouped by itself: it is recorded as the node it was
+// built from, and the statement build compares the projections against it. The
+// marker restricts the impl to non-aggregate expressions, because SQL forbids an
+// aggregate in `GROUP BY`.
+impl<T, Scope, D> GroupBy for Expr<T, Scope, NonAggregate, D> {
+    fn push_column_names(&self, out: &mut Vec<ExprKind>) {
+        out.push(self.kind().clone());
     }
 }
 
@@ -53,18 +64,29 @@ impl_group_by!(C1, C2, C3, C4, C5, C6, C7, C8);
     label = "the grouped column belongs to a table the query does not select from",
     note = "introduce the column's table with `from` or a join before grouping by it"
 )]
-pub trait GroupByInScope<Tables, Positions>: GroupBy {}
+pub trait GroupByInScope<Tables, Positions, D = ()>: GroupBy {}
 
-impl<Tables, C, P> GroupByInScope<Tables, P> for C
+impl<Tables, C, P, D> GroupByInScope<Tables, P, D> for C
 where
     C: Column,
     Tables: TableInScope<C::Table, P>,
 {
 }
 
+// A grouped expression reads the tables of the query like any other clause
+// expression does, and the dialect requirements it carries are met by the dialect
+// of the statement.
+impl<Tables, T, Scope, ExprD, P, D> GroupByInScope<Tables, P, D>
+    for Expr<T, Scope, NonAggregate, ExprD>
+where
+    Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    ExprD: DialectInScope<D>,
+{
+}
+
 macro_rules! impl_group_by_in_scope {
     ($($column:ident $position:ident),+) => {
-        impl<Tables, $($column, $position),+> GroupByInScope<Tables, ($($position,)+)>
+        impl<Tables, D, $($column, $position),+> GroupByInScope<Tables, ($($position,)+), D>
             for ($($column,)+)
         where
             $($column: Column, Tables: TableInScope<$column::Table, $position>,)+
@@ -127,6 +149,14 @@ pub trait GroupByColumns<Prev> {
 
 impl<Prev, C: Column> GroupByColumns<Prev> for C {
     type Columns = GroupSet<Prev, C>;
+}
+
+// A grouped expression does not extend the type-level set of grouped columns: the
+// columns inside it stay ungrouped, so a bare column is not projectable beside it.
+// Whether a projection equals the grouped expression is decided while the
+// statement is built.
+impl<Prev, T, Scope, D> GroupByColumns<Prev> for Expr<T, Scope, NonAggregate, D> {
+    type Columns = Prev;
 }
 
 impl<Prev, C1: Column> GroupByColumns<Prev> for (C1,) {

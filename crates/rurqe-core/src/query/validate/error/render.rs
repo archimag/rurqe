@@ -271,6 +271,16 @@ impl fmt::Display for BuildError {
                      or an aggregate; group the column via `.group_by(...)` or aggregate it"
                 )
             }
+            BuildError::UngroupedExpression { expression } => {
+                write!(
+                    f,
+                    "expression `{expression}` reads columns the GROUP BY clause does not cover; \
+                     a statement grouped by a computed expression may project, order by, or filter by it \
+                     only through an expression structurally equal to a grouped one; \
+                     repeat the grouped expression exactly, group by this expression via `.group_by(...)`, \
+                     or aggregate it"
+                )
+            }
             BuildError::AggregateInRowClause { clause, aggregate } => {
                 write!(
                     f,

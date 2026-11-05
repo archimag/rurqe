@@ -4,7 +4,22 @@
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
 use rurqe_examples::markers::*;
+table!(
+    /// The `visits` table.
+    Visit => "visits" {
+        VisitCreatedAt => "created_at": chrono::DateTime<chrono::Utc>,
+    }
+);
 
+// ANCHOR: heat_map_definition
+/// Truncates a timestamp column to the day, as PostgreSQL `date_trunc` does.
+fn day_of(column: VisitCreatedAt) -> Expr<chrono::DateTime<chrono::Utc>, Visit> {
+    Expr::<chrono::DateTime<chrono::Utc>>::fragments("date_trunc('day', ")
+        .operand(column)
+        .text(")")
+        .end()
+}
+// ANCHOR_END: heat_map_definition
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
@@ -51,6 +66,18 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: group_ordering
     println!("{}", top.len());
+
+    // ANCHOR: heat_map
+    let heat_map = select_from(Visit)
+        .group_by(day_of(VisitCreatedAt))
+        .select(cols! {
+            day: day_of(VisitCreatedAt),
+            visits: count_all(),
+        })
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: heat_map
+    println!("{}", heat_map.len());
 
     Ok(())
 }

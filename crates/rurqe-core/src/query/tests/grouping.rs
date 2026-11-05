@@ -319,3 +319,62 @@ fn order_by_expr_renders_the_direction_and_nulls_flavours() {
          ORDER BY MAX(\"total\") ASC NULLS LAST"
     );
 }
+
+/// `ABS("total")`, a per-row expression over one column.
+fn abs_total() -> Expr<f64, Order> {
+    Expr::<f64>::fragments("ABS(")
+        .operand(OrderTotal)
+        .text(")")
+        .end()
+}
+
+#[test]
+fn group_by_renders_a_computed_expression() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT ABS(\"total\"), COUNT(*) FROM \"orders\" GROUP BY ABS(\"total\")"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn having_reads_a_grouped_computed_expression() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .having(abs_total().gt(10.0))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT ABS(\"total\"), COUNT(*) FROM \"orders\" GROUP BY ABS(\"total\") \
+         HAVING (ABS(\"total\") > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(10.0)]);
+}
+
+#[test]
+fn group_by_chains_a_column_and_a_computed_expression() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .group_by(abs_total())
+        .select((OrderUserId, abs_total(), Expr::count_all()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", ABS(\"total\"), COUNT(*) FROM \"orders\" \
+         GROUP BY \"user_id\", ABS(\"total\")"
+    );
+}

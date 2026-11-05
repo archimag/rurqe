@@ -433,6 +433,23 @@ pub enum BuildError {
         /// The SQL identifier of the referenced column.
         column: &'static str,
     },
+    /// A clause expression of a statement grouped by a computed expression is not
+    /// covered by the grouping.
+    ///
+    /// A statement that groups by a computed expression — `date_trunc('day',
+    /// "created_at")`, for instance — reads that expression as a whole: the columns
+    /// inside it stay ungrouped, so a projection, an ordering criterion, or a
+    /// deduplication may use the expression only when it is structurally equal to a
+    /// grouped one. An expression computed over a column the grouping does not cover
+    /// — another unit, another column — leaves the engine without a per-group value:
+    /// PostgreSQL answers `column "..." must appear in the GROUP BY clause or be used
+    /// in an aggregate function`. The comparison matches assembled expressions, so
+    /// it is decided while the statement is built, before any SQL is rendered.
+    UngroupedExpression {
+        /// The expression as the clause wrote it, rendered with positional
+        /// placeholders.
+        expression: String,
+    },
     /// An aggregate call appears in a clause the engine evaluates row by row.
     ///
     /// An aggregate collapses the rows a statement produced into one value per

@@ -57,12 +57,47 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
     ///     .select((UserId,))
     ///     .group_by(UserId);
     /// ```
+    ///
+    /// A column is not the only thing a statement can group by: a per-row
+    /// expression is accepted in the same position, and its tables are checked
+    /// against the scope of the query like those of any other clause. SQL forbids
+    /// an aggregate in `GROUP BY`, so an aggregate expression is refused by the
+    /// compiler:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table!(
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// );
+    ///
+    /// // Fails to compile: an aggregate cannot be grouped by.
+    /// let _ = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .group_by(Expr::sum::<OrderTotal>());
+    /// ```
     pub fn group_by<G, Positions>(
         mut self,
         columns: G,
     ) -> GroupedQuery<D, Tables, (), <G as GroupByColumns<EmptyGroupSet>>::Columns, NoProjection>
     where
-        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
+        G: GroupBy + GroupByInScope<Tables, Positions, D> + GroupByColumns<EmptyGroupSet>,
     {
         columns.push_column_names(&mut self.group_by);
         GroupedQuery {

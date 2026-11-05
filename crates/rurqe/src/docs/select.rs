@@ -209,9 +209,11 @@
 //!     .where_(Expr::column::<UserId>().eq(Expr::column::<OrderId>()));
 //! ```
 //!
-//! Attempting to bypass `GROUP BY` column validation via `Expr::column` is rejected:
+//! Attempting to bypass `GROUP BY` column validation via `Expr::column` is accepted
+//! by the compiler, which cannot tell a bare column from a computed expression, and
+//! refused when the statement is built:
 //!
-//! ```compile_fail
+//! ```
 //! use rurqe::prelude::*;
 //!
 //! table!(
@@ -222,10 +224,12 @@
 //!     }
 //! );
 //!
-//! // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
-//! let _ = select_from::<TestDialect, Order>()
+//! // `OrderTotal` is neither grouped nor an aggregate.
+//! let built = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
-//!     .select((OrderUserId, Expr::column::<OrderTotal>()));
+//!     .select((OrderUserId, Expr::column::<OrderTotal>()))
+//!     .build();
+//! assert!(matches!(built, Err(BuildError::UngroupedColumn { .. })));
 //! ```
 //!
 //! Window specifications partitioned by an unjoined table are rejected:
@@ -468,10 +472,10 @@
 //! A `HAVING` predicate reads one value per group, so it is written over the rows
 //! an aggregate collapses. The aggregation marker of a comparison is derived from
 //! both of its operands, so comparing an aggregate with a bare column makes the
-//! whole predicate per-row and the clause is rejected at the call site instead of
-//! by the database:
+//! whole predicate per-row. The call site cannot tell such a predicate from one
+//! over a grouped expression, so the statement build refuses it instead:
 //!
-//! ```compile_fail
+//! ```
 //! use rurqe::prelude::*;
 //!
 //! table!(
@@ -482,18 +486,20 @@
 //!     }
 //! );
 //!
-//! // Fails to compile: the predicate compares an aggregate with a bare column, so
-//! // it computes one value per row instead of one value per group.
-//! let _ = select_from::<TestDialect, Order>()
+//! // The predicate compares an aggregate with a bare column, so it computes one
+//! // value per row instead of one value per group.
+//! let built = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
 //!     .select((OrderUserId, count_all()))
-//!     .having(sum(OrderTotal).gt(Expr::column::<OrderTotal>()));
+//!     .having(sum(OrderTotal).gt(Expr::column::<OrderTotal>()))
+//!     .build();
+//! assert!(matches!(built, Err(BuildError::UngroupedHavingColumn { .. })));
 //! ```
 //!
 //! The same rule keeps such a comparison out of the projection list of a grouped
 //! query, where it is neither grouped nor an aggregate:
 //!
-//! ```compile_fail
+//! ```
 //! use rurqe::prelude::*;
 //!
 //! table!(
@@ -504,11 +510,12 @@
 //!     }
 //! );
 //!
-//! // Fails to compile: the comparison computes one value per row, so it is neither
-//! // grouped nor an aggregate.
-//! let _ = select_from::<TestDialect, Order>()
+//! // The comparison computes one value per row, so the statement build refuses it.
+//! let built = select_from::<TestDialect, Order>()
 //!     .group_by(OrderUserId)
-//!     .select((OrderUserId, sum(OrderTotal).gt(Expr::column::<OrderTotal>())));
+//!     .select((OrderUserId, sum(OrderTotal).gt(Expr::column::<OrderTotal>())))
+//!     .build();
+//! assert!(matches!(built, Err(BuildError::UngroupedColumn { .. })));
 //! ```
 //!
 //! Comparing the aggregate with a bound value keeps the predicate an aggregate, so

@@ -104,12 +104,14 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
 /// operands instead of degrading into a constant, and it keeps the aggregation
 /// marker its operands contribute, so a call written over an aggregate stays an
 /// aggregate and remains projectable from a grouped query, while a call reading
-/// a bare column stays rejected unless that column is grouped:
+/// a bare column is accepted at the call site, which cannot tell it from an
+/// expression computed over several columns, and refused when the statement is
+/// built unless that column is grouped:
 ///
-/// ```compile_fail
+/// ```
 /// use rurqe_core::dialect::Dialect;
 /// use rurqe_core::expr::coalesce;
-/// use rurqe_core::query::SelectQuery;
+/// use rurqe_core::query::{BuildError, SelectQuery};
 ///
 /// struct MockDialect;
 ///
@@ -131,11 +133,13 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
 /// );
 ///
 /// fn main() {
-///     // Fails to compile: `coalesce` reads `total`, which is not grouped.
-///     let _ = SelectQuery::<MockDialect>::new()
+///     // `coalesce` reads `total`, which is not grouped.
+///     let built = SelectQuery::<MockDialect>::new()
 ///         .from::<Order>()
 ///         .group_by(OrderUserId)
-///         .select((OrderUserId, coalesce(OrderTotal, 0.0)));
+///         .select((OrderUserId, coalesce(OrderTotal, 0.0)))
+///         .build();
+///     assert!(matches!(built, Err(BuildError::UngroupedColumn { .. })));
 /// }
 /// ```
 #[allow(clippy::type_complexity)]

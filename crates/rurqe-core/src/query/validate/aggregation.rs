@@ -23,8 +23,11 @@
 //! statement alone, and a call written into this family is refused exactly like the
 //! aggregate placement above.
 
-use crate::expr::{AggregateFunc, ExprKind, StatementRef, WindowExprKind};
+use crate::dialect::Dialect;
+use crate::expr::{render_expr, AggregateFunc, ExprKind, SqlVal, StatementRef, WindowExprKind};
+use crate::schema::TableRef;
 
+use super::equivalence::equivalent_expressions;
 use super::rules::{column_reference, without_alias};
 use super::{BuildError, RowClause};
 
@@ -112,8 +115,11 @@ impl StatementRef<'_> {
         let Some(having) = &self.having else {
             return Ok(());
         };
+        // A `HAVING` predicate may read a grouped computed expression as a whole, so
+        // the walk skips the subtrees equal to one of them.
+        let covered = self.grouped_expressions();
         let mut columns = Vec::new();
-        collect_bare_columns(having, &mut columns);
+        collect_bare_columns_outside(having, &covered, &mut columns);
         for (table, column) in columns {
             if !self.groups_column(table, column) {
                 return Err(BuildError::UngroupedHavingColumn { table, column });
@@ -167,14 +173,36 @@ impl StatementRef<'_> {
     /// columns through `groups_column`, which resolves both node shapes of one
     /// column into the same canonical pair.
     fn reject_ungrouped_column(&self, expr: &ExprKind) -> Result<(), BuildError> {
+        let covered = self.grouped_expressions();
         let mut columns = Vec::new();
-        collect_bare_columns(expr, &mut columns);
+        collect_bare_columns_outside(expr, &covered, &mut columns);
         for (table, column) in columns {
-            if !self.groups_column(table, column) {
-                return Err(BuildError::UngroupedColumn { table, column });
+            if self.groups_column(table, column) {
+                continue;
             }
+            // A statement grouped by a computed expression reads a computed
+            // expression only through an expression equal to a grouped one, so the
+            // diagnostic names the expression instead of one of its columns.
+            if !covered.is_empty() && column_reference(without_alias(expr)).is_none() {
+                return Err(BuildError::UngroupedExpression {
+                    expression: describe_expression(expr, table),
+                });
+            }
+            return Err(BuildError::UngroupedColumn { table, column });
         }
         Ok(())
+    }
+
+    /// The computed expressions the `GROUP BY` clause groups by.
+    ///
+    /// A grouped column is covered through `groups_column`, while a computed
+    /// expression covers every subtree of a clause expression that is structurally
+    /// equal to it, which is the comparison `equivalent_expressions` states.
+    fn grouped_expressions(&self) -> Vec<&ExprKind> {
+        self.group_by
+            .iter()
+            .filter(|grouped| column_reference(without_alias(grouped)).is_none())
+            .collect()
     }
 
     /// Whether the `GROUP BY` clause groups by the column `(table, column)`.
@@ -405,6 +433,27 @@ pub(crate) fn collect_bare_columns(
     expr: &ExprKind,
     columns: &mut Vec<(&'static str, &'static str)>,
 ) {
+    collect_bare_columns_outside(expr, &[], columns);
+}
+
+/// Collects the bare column references of `expr`, skipping the subtrees equal to a
+/// grouped computed expression.
+///
+/// A statement grouped by `date_trunc('day', "created_at")` reads that expression
+/// as a whole, so the column inside it is not a bare reference of the clause. The
+/// subtrees in `covered` are compared in the canonical form of
+/// `equivalent_expressions`, and an empty list reproduces `collect_bare_columns`.
+fn collect_bare_columns_outside(
+    expr: &ExprKind,
+    covered: &[&ExprKind],
+    columns: &mut Vec<(&'static str, &'static str)>,
+) {
+    if covered
+        .iter()
+        .any(|grouped| equivalent_expressions(expr, grouped))
+    {
+        return;
+    }
     match expr {
         ExprKind::Column { table, name } => columns.push((table, name)),
         ExprKind::QualifiedColumn { table, column } => columns.push((table, column)),
@@ -419,42 +468,42 @@ pub(crate) fn collect_bare_columns(
             operands: values, ..
         } => {
             for value in values {
-                collect_bare_columns(value, columns);
+                collect_bare_columns_outside(value, covered, columns);
             }
         }
         ExprKind::InList {
             operand, values, ..
         } => {
-            collect_bare_columns(operand, columns);
+            collect_bare_columns_outside(operand, covered, columns);
             for value in values {
-                collect_bare_columns(value, columns);
+                collect_bare_columns_outside(value, covered, columns);
             }
         }
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
-            collect_bare_columns(lhs, columns);
-            collect_bare_columns(rhs, columns);
+            collect_bare_columns_outside(lhs, covered, columns);
+            collect_bare_columns_outside(rhs, covered, columns);
         }
         ExprKind::DistinctFrom { lhs, rhs, .. } => {
-            collect_bare_columns(lhs, columns);
-            collect_bare_columns(rhs, columns);
+            collect_bare_columns_outside(lhs, covered, columns);
+            collect_bare_columns_outside(rhs, covered, columns);
         }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
-            collect_bare_columns(operand, columns);
+            collect_bare_columns_outside(operand, covered, columns);
         }
         ExprKind::Like {
             operand, pattern, ..
         } => {
-            collect_bare_columns(operand, columns);
-            collect_bare_columns(pattern, columns);
+            collect_bare_columns_outside(operand, covered, columns);
+            collect_bare_columns_outside(pattern, covered, columns);
         }
         ExprKind::Between { operand, low, high } => {
-            collect_bare_columns(operand, columns);
-            collect_bare_columns(low, columns);
-            collect_bare_columns(high, columns);
+            collect_bare_columns_outside(operand, covered, columns);
+            collect_bare_columns_outside(low, covered, columns);
+            collect_bare_columns_outside(high, covered, columns);
         }
         ExprKind::Function { args, .. } => {
             for arg in args {
-                collect_bare_columns(arg, columns);
+                collect_bare_columns_outside(arg, covered, columns);
             }
         }
         ExprKind::Case {
@@ -462,11 +511,11 @@ pub(crate) fn collect_bare_columns(
             else_branch,
         } => {
             for branch in branches {
-                collect_bare_columns(&branch.condition, columns);
-                collect_bare_columns(&branch.result, columns);
+                collect_bare_columns_outside(&branch.condition, covered, columns);
+                collect_bare_columns_outside(&branch.result, covered, columns);
             }
             if let Some(fallback) = else_branch {
-                collect_bare_columns(fallback, columns);
+                collect_bare_columns_outside(fallback, covered, columns);
             }
         }
         ExprKind::Window {
@@ -477,25 +526,25 @@ pub(crate) fn collect_bare_columns(
         } => {
             match kind.as_ref() {
                 WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
-                    collect_bare_columns(column, columns);
+                    collect_bare_columns_outside(column, covered, columns);
                 }
-                WindowExprKind::Expr(inner) => collect_window_operand(inner, columns),
+                WindowExprKind::Expr(inner) => collect_window_operand(inner, covered, columns),
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
             }
             for partition in partition_by {
-                collect_bare_columns(partition, columns);
+                collect_bare_columns_outside(partition, covered, columns);
             }
             for criterion in order_by {
-                collect_bare_columns(&criterion.expr, columns);
+                collect_bare_columns_outside(&criterion.expr, covered, columns);
             }
         }
         ExprKind::Subquery { operand, .. } => {
             if let Some(operand) = operand {
-                collect_bare_columns(operand, columns);
+                collect_bare_columns_outside(operand, covered, columns);
             }
         }
         ExprKind::Multiset { .. } => {}
-        ExprKind::Aliased { expr, .. } => collect_bare_columns(expr, columns),
+        ExprKind::Aliased { expr, .. } => collect_bare_columns_outside(expr, covered, columns),
     }
 }
 
@@ -516,7 +565,11 @@ pub(crate) fn collect_bare_columns(
 /// groups, so it governs the column it reads and the grouping has nothing to say
 /// about it. Every other operand shape — a bare column, an arithmetic expression,
 /// a `CASE` — is decomposed by the same walk the enclosing expression uses.
-fn collect_window_operand(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
+fn collect_window_operand(
+    expr: &ExprKind,
+    covered: &[&ExprKind],
+    columns: &mut Vec<(&'static str, &'static str)>,
+) {
     match expr {
         ExprKind::Aggregate {
             arg,
@@ -525,18 +578,18 @@ fn collect_window_operand(expr: &ExprKind, columns: &mut Vec<(&'static str, &'st
             ..
         } => {
             if let Some(arg) = arg {
-                collect_bare_columns(arg, columns);
+                collect_bare_columns_outside(arg, covered, columns);
             }
             if let Some(filter) = filter {
-                collect_bare_columns(filter, columns);
+                collect_bare_columns_outside(filter, covered, columns);
             }
             // The ordering of a window aggregate reads the produced rows exactly
             // like its argument and its filter do.
             for criterion in order_by {
-                collect_bare_columns(&criterion.expr, columns);
+                collect_bare_columns_outside(&criterion.expr, covered, columns);
             }
         }
-        operand => collect_bare_columns(operand, columns),
+        operand => collect_bare_columns_outside(operand, covered, columns),
     }
 }
 
@@ -553,4 +606,41 @@ pub(crate) fn contains_bare_column(expr: &ExprKind) -> bool {
     let mut columns = Vec::new();
     collect_bare_columns(expr, &mut columns);
     !columns.is_empty()
+}
+
+/// The dialect the diagnostic of an ungrouped expression is rendered with.
+///
+/// The pre-flight pass knows no dialect, so the expression is shown with quoted
+/// identifiers and positional `?` placeholders.
+struct DisplayDialect;
+
+impl Dialect for DisplayDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        let _ = index;
+        out.push('?');
+    }
+}
+
+/// Describes `expr` for a diagnostic, falling back to its tree when it cannot be
+/// rendered against the relation `table`.
+fn describe_expression(expr: &ExprKind, table: &'static str) -> String {
+    let mut sql = String::new();
+    let mut params: Vec<SqlVal> = Vec::new();
+    let rendered = render_expr::<DisplayDialect>(
+        &mut sql,
+        &mut params,
+        without_alias(expr),
+        &[TableRef::plain(table)],
+    );
+    if rendered.is_ok() {
+        sql
+    } else {
+        format!("{:?}", without_alias(expr))
+    }
 }
