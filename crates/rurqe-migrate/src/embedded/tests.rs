@@ -822,8 +822,69 @@ fn duplicate_versions_are_rejected_when_the_run_starts() {
         }
     );
     assert!(
-        backend.history.is_empty(),
+        !backend.table_created,
+        "the refusal precedes the creation of the metadata table"
+    );
+    assert!(
+        backend.executed_sql.is_empty(),
         "no script of the refused run was applied"
     );
-    assert!(!backend.locked, "the refused run releases the run lock");
+    assert!(
+        backend.history.is_empty(),
+        "the refused run records no history entry"
+    );
+    assert!(
+        !backend.locked,
+        "the refusal precedes the acquisition of the run lock"
+    );
+}
+
+/// A malformed tail is refused before the cold start runs, so a target the
+/// collection would have initialised is left exactly as the run found it.
+///
+/// The refusal is decidable from the migration list alone, and the cold start
+/// commits the stage and its marker before the tail runs: validating afterwards
+/// would leave an initialised target behind a run that never applied a script.
+#[test]
+fn a_duplicate_version_is_refused_before_the_cold_start_runs() {
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[
+            ("V7__users.sql", "CREATE TABLE users (id INTEGER);"),
+            ("V7__orders.sql", "CREATE TABLE orders (id INTEGER);"),
+        ],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
+        schema_lock: None,
+    })
+    .expect("assembling the list needs no version to be unique");
+
+    let mut backend = InMemoryBackend::new();
+    let error = embedded
+        .migrate(&mut backend)
+        .expect_err("two scripts of one version cannot be applied in order");
+
+    assert_eq!(
+        error,
+        Error::DuplicateMigrationVersion {
+            version: "7".to_owned(),
+            first: "V7__users.sql".to_owned(),
+            second: "V7__orders.sql".to_owned(),
+        }
+    );
+    assert!(
+        !backend.table_created,
+        "the cold start never creates the metadata table"
+    );
+    assert!(
+        backend.executed_sql.is_empty(),
+        "the declarative stage is never applied"
+    );
+    assert!(
+        backend.history.is_empty(),
+        "no cold-start marker is recorded"
+    );
+    assert!(
+        !backend.locked,
+        "the refusal precedes the acquisition of the run lock"
+    );
 }

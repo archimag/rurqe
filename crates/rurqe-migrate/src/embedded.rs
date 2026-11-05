@@ -346,6 +346,12 @@ impl EmbeddedMigrations {
     ///   divergence describes the scripts this run applied rather than damage a
     ///   concurrent lifecycle operation could have caused.
     ///
+    /// The script checks of the run — two entries sharing one script name or one
+    /// version, a metadata value wider than its column — read the migration list
+    /// alone, so they run before the run takes the lock and before the cold start
+    /// creates anything: a list the run cannot apply leaves the target exactly as
+    /// it found it.
+    ///
     /// A collection built by [`new`](Self::new) or
     /// [`from_migrations`](Self::from_migrations) carries none of those artifacts,
     /// so it behaves exactly as the plain tail it describes.
@@ -364,6 +370,19 @@ impl EmbeddedMigrations {
     /// blocking-entry guard cannot tell a blocking-pool thread from a worker thread
     /// and would refuse work that is exactly where it belongs.
     fn migrate_core<B: MigrationBackend>(&self, backend: &mut B) -> Result<MigrationReport, Error> {
+        let migrator = match &self.checkpoint {
+            Some(checkpoint) => Migrator::with_checkpoint(checkpoint.clone()),
+            None => Migrator::new(),
+        };
+        // The script checks read the migration list alone, so they run before the
+        // run takes the lock and before any script executes — exactly where the
+        // classic lifecycle of `Migrator::migrate_core` runs them. A list the run
+        // cannot apply — two scripts sharing one version among them — is
+        // therefore refused before an empty target is initialised from the
+        // declarative stage and its marker committed: no connection work precedes
+        // a failure that was decidable from the list alone.
+        migrator.validate_scripts(&self.migrations)?;
+
         let mut report = MigrationReport::default();
         let mut cold_start_time = 0;
 
@@ -398,14 +417,6 @@ impl EmbeddedMigrations {
             None => history,
         };
 
-        let migrator = match &self.checkpoint {
-            Some(checkpoint) => Migrator::with_checkpoint(checkpoint.clone()),
-            None => Migrator::new(),
-        };
-        // The script checks run with the tail, exactly where the classic lifecycle
-        // runs them, so the embedded lifecycle keeps reporting a malformed list
-        // after the cold start rather than before it.
-        migrator.validate_scripts(&self.migrations)?;
         let tail = migrator.migrate_guarded(&mut guard, &self.migrations, &history)?;
 
         report.applied_scripts = tail.applied_scripts;
