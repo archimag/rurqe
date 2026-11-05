@@ -42,8 +42,7 @@ fn the_legacy_schema_key_stays_an_alias() {
 
 #[test]
 fn the_primary_schema_key_names_the_described_schema() {
-    let config =
-        ProjectConfig::parse("primary_schema = \"  app  \"\n").expect("the key parses");
+    let config = ProjectConfig::parse("primary_schema = \"  app  \"\n").expect("the key parses");
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(
         config.schema(),
@@ -73,7 +72,14 @@ fn declaring_schema_beside_primary_schema_is_refused() {
     .expect_err("two primary schema keys are refused");
 
     assert!(
-        matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                line: 2,
+                column: 1,
+                ..
+            }
+        ),
         "{err}"
     );
     let message = err.to_string();
@@ -91,7 +97,14 @@ fn declaring_schema_beside_primary_schema_is_refused() {
     .expect_err("two primary schema keys are refused in either order");
 
     assert!(
-        matches!(&err, ConfigError::Syntax { line: 1, column: 1, .. }),
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                line: 1,
+                column: 1,
+                ..
+            }
+        ),
         "{err}"
     );
     assert!(
@@ -195,7 +208,11 @@ fn schemas_with_duplicates_are_rejected() {
 #[test]
 fn a_schema_name_containing_a_dot_is_refused() {
     for (contents, key, name) in [
-        ("primary_schema = \"app.v2\"\n", "`primary_schema`", "app.v2"),
+        (
+            "primary_schema = \"app.v2\"\n",
+            "`primary_schema`",
+            "app.v2",
+        ),
         ("schema = \"  app.v2  \"\n", "`schema`", "app.v2"),
         (
             "schemas = [\"auth\", \" billing.v2 \"]\n",
@@ -247,7 +264,14 @@ fn schema_entries_are_reported_at_their_own_position() {
         let err = ProjectConfig::parse(contents).expect_err("the entry is rejected");
 
         assert!(
-            matches!(&err, ConfigError::Syntax { line: 3, column: 5, .. }),
+            matches!(
+                &err,
+                ConfigError::Syntax {
+                    line: 3,
+                    column: 5,
+                    ..
+                }
+            ),
             "the entry is reported where it is written: {err}"
         );
         assert!(
@@ -485,7 +509,9 @@ fn the_flat_rendering_and_the_parts_name_the_same_overrides() {
     // a consumer keyed by the path reads and the lookup a catalog drives can never
     // describe different overrides.
     for (path, rust_type) in &rendered {
-        let (head, column) = path.rsplit_once('.').expect("a rendered path carries a column");
+        let (head, column) = path
+            .rsplit_once('.')
+            .expect("a rendered path carries a column");
         let (schema, table) = match head.rsplit_once('.') {
             Some((schema, table)) => (Some(schema), table),
             None => (None, head),
@@ -520,13 +546,9 @@ fn override_paths_carry_two_or_three_segments() {
 fn override_path_segments_must_be_non_empty() {
     for spelling in ["\"users.\"", "\".id\"", "\"auth..id\""] {
         let contents = format!("[codegen.type_overrides]\n{spelling} = \"uuid::Uuid\"\n");
-        let err =
-            ProjectConfig::parse(&contents).expect_err("an empty segment names nothing");
+        let err = ProjectConfig::parse(&contents).expect_err("an empty segment names nothing");
 
-        assert!(
-            matches!(&err, ConfigError::Syntax { line: 2, .. }),
-            "{err}"
-        );
+        assert!(matches!(&err, ConfigError::Syntax { line: 2, .. }), "{err}");
         assert!(err.to_string().contains("empty"), "{err}");
     }
 }
@@ -541,8 +563,8 @@ fn an_empty_quoted_key_contributes_an_empty_segment() {
         "[codegen.type_overrides]\n\"\" = { users.id = \"uuid::Uuid\" }\n",
         "[codegen.type_overrides.users]\n\"\" = \"uuid::Uuid\"\n",
     ] {
-        let err = ProjectConfig::parse(contents)
-            .expect_err("an empty key names an empty path segment");
+        let err =
+            ProjectConfig::parse(contents).expect_err("an empty key names an empty path segment");
 
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
 
@@ -614,7 +636,14 @@ fn a_vacuous_override_table_is_reported_at_the_key_that_opens_it() {
         .expect_err("an inline table that declares no column records no override");
 
     assert!(
-        matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                line: 2,
+                column: 1,
+                ..
+            }
+        ),
         "{err}"
     );
     assert!(
@@ -733,7 +762,14 @@ fn unknown_root_scalar_keys_are_reported_as_keys() {
         let err = ProjectConfig::parse(contents).expect_err("an unknown root key is rejected");
 
         assert!(
-            matches!(&err, ConfigError::Syntax { line: 1, column: 1, .. }),
+            matches!(
+                &err,
+                ConfigError::Syntax {
+                    line: 1,
+                    column: 1,
+                    ..
+                }
+            ),
             "the diagnostic is located at the declaration: {err}"
         );
 
@@ -759,12 +795,12 @@ fn unknown_codegen_keys_are_rejected() {
 
 #[test]
 fn domain_types_in_codegen_section() {
-    let config = ProjectConfig::parse("[codegen]\ndomain_types = true\n")
-        .expect("codegen section parsed");
+    let config =
+        ProjectConfig::parse("[codegen]\ndomain_types = true\n").expect("codegen section parsed");
     assert!(config.domain_types());
 
-    let config_false = ProjectConfig::parse("[codegen]\ndomain_types = false\n")
-        .expect("codegen section parsed");
+    let config_false =
+        ProjectConfig::parse("[codegen]\ndomain_types = false\n").expect("codegen section parsed");
     assert!(!config_false.domain_types());
 }
 
@@ -782,9 +818,7 @@ fn domain_types_are_off_by_default() {
 fn invalid_domain_types_is_rejected() {
     let err = ProjectConfig::parse("[codegen]\ndomain_types = \"not_a_bool\"\n")
         .expect_err("non-boolean rejected");
-    assert!(
-        err.to_string().contains("domain_types") || err.to_string().contains("invalid type")
-    );
+    assert!(err.to_string().contains("domain_types") || err.to_string().contains("invalid type"));
 }
 
 #[test]
@@ -817,8 +851,7 @@ fn malformed_entries_are_reported_with_their_line() {
     let bad_section = ProjectConfig::parse("[codegen.type_overrides\n")
         .expect_err("an unterminated section header is rejected");
     assert!(
-        bad_section.to_string().contains("section")
-            || bad_section.to_string().contains("expected")
+        bad_section.to_string().contains("section") || bad_section.to_string().contains("expected")
     );
 }
 
@@ -878,10 +911,7 @@ impl Drop for TemporaryProject {
 
 /// A private temporary directory a test builds its project tree in.
 fn temporary_project(label: &str) -> TemporaryProject {
-    let path = std::env::temp_dir().join(format!(
-        "rurqe-project-{label}-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("rurqe-project-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("the temporary project directory is created");
     TemporaryProject { path }
@@ -1262,7 +1292,10 @@ fn declared_artifact_paths_resolve_against_the_configuration_directory() {
         config.migrations_dir(directory),
         directory.join("db").join("migrations")
     );
-    assert_eq!(config.stage_dir(directory), directory.join("db").join("schema"));
+    assert_eq!(
+        config.stage_dir(directory),
+        directory.join("db").join("schema")
+    );
     assert_eq!(
         config.checkpoint_path(directory),
         directory.join("db").join("migrations").join("marker.toml")
@@ -1281,7 +1314,10 @@ fn the_checkpoint_default_follows_the_resolved_migration_directory() {
 
     assert_eq!(
         config.checkpoint_path(directory),
-        directory.join("db").join("migrations").join("checkpoint.toml")
+        directory
+            .join("db")
+            .join("migrations")
+            .join("checkpoint.toml")
     );
 }
 
@@ -1300,7 +1336,10 @@ fn dotted_forms_of_the_artifact_keys_are_read() {
         config.migrations_dir(directory),
         directory.join("db").join("migrations")
     );
-    assert_eq!(config.stage_dir(directory), directory.join("db").join("schema"));
+    assert_eq!(
+        config.stage_dir(directory),
+        directory.join("db").join("schema")
+    );
     assert_eq!(
         config.checkpoint_path(directory),
         directory.join("db").join("migrations").join("marker.toml")
@@ -1323,8 +1362,7 @@ fn discovery_answers_with_the_nearest_configuration_file() {
     std::fs::write(root.join(DEFAULT_CONFIG_PATH), "root = \"outer\"\n")
         .expect("the outer configuration is written");
     let nearest = nested.join(DEFAULT_CONFIG_PATH);
-    std::fs::write(&nearest, "root = \"inner\"\n")
-        .expect("the inner configuration is written");
+    std::fs::write(&nearest, "root = \"inner\"\n").expect("the inner configuration is written");
 
     let discovered = discover_config(&nested).expect("every candidate on the walk is classified");
 
@@ -1425,7 +1463,11 @@ fn a_dangling_symlink_at_a_candidate_reads_as_absence() {
     );
 
     let discovered = discover_or_default(&nested).expect("the walk answers or reports a failure");
-    let Discovered { config: configuration, file, directory } = discovered;
+    let Discovered {
+        config: configuration,
+        file,
+        directory,
+    } = discovered;
 
     assert_eq!(configuration.root(), "outer");
     assert_eq!(file, Some(root.join(DEFAULT_CONFIG_PATH)));
@@ -1454,11 +1496,7 @@ fn a_directory_tree_without_a_configuration_file_yields_none() {
 fn an_absolute_declared_path_is_rejected() {
     for (contents, key, line) in [
         ("root = \"/var/rurqe\"\n", "root", 1),
-        (
-            "[migrations]\ndir = \"/etc/rurqe\"\n",
-            "migrations.dir",
-            2,
-        ),
+        ("[migrations]\ndir = \"/etc/rurqe\"\n", "migrations.dir", 2),
         ("[stage]\ndir = \"/srv/schema\"\n", "stage.dir", 2),
         (
             "[stage]\ncheckpoint = \"/srv/checkpoint.toml\"\n",
@@ -1490,6 +1528,7 @@ fn an_absolute_declared_path_is_rejected() {
 #[test]
 fn a_declared_path_carrying_a_parent_segment_is_rejected() {
     for (contents, key) in [
+        ("root = \"../artifacts\"\n", "root"),
         ("[migrations]\ndir = \"../db\"\n", "migrations.dir"),
         ("[stage]\ndir = \"ddl/../schema\"\n", "stage.dir"),
         (
@@ -1523,7 +1562,14 @@ fn a_parent_segment_is_refused_even_when_it_stays_inside_the_project() {
         .expect_err("a `..` round trip inside the project is refused like one that leaves it");
 
     assert!(
-        matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                line: 2,
+                column: 1,
+                ..
+            }
+        ),
         "{err}"
     );
 
@@ -1632,7 +1678,11 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
     .expect("the configuration is written");
 
     let discovered = discover_or_default(&member).expect("the configuration is discovered");
-    let Discovered { config: configuration, file, directory } = discovered;
+    let Discovered {
+        config: configuration,
+        file,
+        directory,
+    } = discovered;
 
     assert_eq!(configuration.primary_schema(), Some("app"));
     assert_eq!(
@@ -1641,7 +1691,8 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
     );
     assert_eq!(file, Some(root.join(DEFAULT_CONFIG_PATH)));
     assert_eq!(
-        directory, root.to_path_buf(),
+        directory,
+        root.to_path_buf(),
         "the configuration is anchored at its directory"
     );
 }
@@ -1659,7 +1710,11 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
     let chain = [nested.as_path(), root];
     let answer = discover_or_default_in(&nested, chain);
     let discovered = answer.expect("no configuration is declared");
-    let Discovered { config: configuration, file, directory } = discovered;
+    let Discovered {
+        config: configuration,
+        file,
+        directory,
+    } = discovered;
 
     assert_eq!(configuration, ProjectConfig::default());
     assert_eq!(file, None);
@@ -1688,8 +1743,9 @@ fn a_malformed_document_reports_the_file_it_was_read_from() {
         "the refusal names the file it was read from: {err}"
     );
     assert!(
-        err.to_string()
-            .contains(&format!("invalid configuration in `{declared}` at line 2, column 1:")),
+        err.to_string().contains(&format!(
+            "invalid configuration in `{declared}` at line 2, column 1:"
+        )),
         "the rendered diagnostic identifies the file: {err}"
     );
 }
@@ -1716,7 +1772,8 @@ fn a_discovered_malformed_document_reports_the_file_the_walk_selected() {
         "the walk names the file it selected among the ancestors: {err}"
     );
     assert!(
-        err.to_string().contains("unknown configuration key `roots`"),
+        err.to_string()
+            .contains("unknown configuration key `roots`"),
         "{err}"
     );
 }
@@ -1767,7 +1824,11 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
 
     let answer = read_discovered(&path, &member);
     let discovered = answer.expect("an absent file is the walk's own tier");
-    let Discovered { config: configuration, file, directory } = discovered;
+    let Discovered {
+        config: configuration,
+        file,
+        directory,
+    } = discovered;
     assert_eq!(configuration, ProjectConfig::default());
     assert_eq!(file, None);
     assert_eq!(
@@ -1800,8 +1861,7 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
 
     // The removed file is the walk's own absence tier: the read answers the defaults
     // anchored at the caller's directory, exactly as a tree that declares none does.
-    let vanished =
-        read_discovered(&path, &member).expect("an absent file is the walk's own tier");
+    let vanished = read_discovered(&path, &member).expect("an absent file is the walk's own tier");
     assert_eq!(vanished.config, ProjectConfig::default());
     assert_eq!(vanished.file, None);
     assert_eq!(vanished.directory, member);
@@ -1828,7 +1888,8 @@ fn a_discovered_malformed_configuration_never_falls_back_to_the_defaults() {
 
     assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
     assert!(
-        err.to_string().contains("`stage.dir` requires a non-empty value"),
+        err.to_string()
+            .contains("`stage.dir` requires a non-empty value"),
         "{err}"
     );
 }
@@ -1847,7 +1908,10 @@ fn only_an_unreadable_configuration_carries_a_source() {
         .expect_err("an absent path is not a configuration");
 
     assert!(matches!(&syntax, ConfigError::Syntax { .. }), "{syntax}");
-    assert!(syntax.source().is_none(), "a malformed document has no cause");
+    assert!(
+        syntax.source().is_none(),
+        "a malformed document has no cause"
+    );
 
     assert!(matches!(&absent, ConfigError::NotFound { .. }), "{absent}");
     assert!(absent.source().is_none(), "an absence has no cause");
