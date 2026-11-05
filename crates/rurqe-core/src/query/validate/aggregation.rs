@@ -510,12 +510,22 @@ pub(crate) fn collect_bare_columns(
 /// a `CASE` — is decomposed by the same walk the enclosing expression uses.
 fn collect_window_operand(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
     match expr {
-        ExprKind::Aggregate { arg, filter, .. } => {
+        ExprKind::Aggregate {
+            arg,
+            filter,
+            order_by,
+            ..
+        } => {
             if let Some(arg) = arg {
                 collect_bare_columns(arg, columns);
             }
             if let Some(filter) = filter {
                 collect_bare_columns(filter, columns);
+            }
+            // The ordering of a window aggregate reads the produced rows exactly
+            // like its argument and its filter do.
+            for criterion in order_by {
+                collect_bare_columns(&criterion.expr, columns);
             }
         }
         operand => collect_bare_columns(operand, columns),

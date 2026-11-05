@@ -590,12 +590,20 @@ pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), Bu
             reject_columns_without_relations(lhs)?;
             reject_columns_without_relations(rhs)
         }
-        ExprKind::Aggregate { arg, filter, .. } => {
+        ExprKind::Aggregate {
+            arg,
+            filter,
+            order_by,
+            ..
+        } => {
             if let Some(arg) = arg {
                 reject_columns_without_relations(arg)?;
             }
             if let Some(filter) = filter {
                 reject_columns_without_relations(filter)?;
+            }
+            for criterion in order_by {
+                reject_columns_without_relations(&criterion.expr)?;
             }
             Ok(())
         }

@@ -121,7 +121,11 @@ where
         // type keeps promising, which the panic-free invariant of the crate
         // forbids just as much as unwinding would.
         let ExprKind::Aggregate {
-            func, arg, filter, ..
+            func,
+            arg,
+            filter,
+            order_by,
+            ..
         } = self.kind
         else {
             // Only an aggregate call accepts the modifier, so the public API
@@ -148,6 +152,7 @@ where
             distinct: true,
             arg,
             filter,
+            order_by,
         })
     }
 
@@ -286,6 +291,7 @@ where
             distinct,
             arg,
             filter,
+            order_by,
         } = self.kind
         else {
             // Only an aggregate call accepts the clause, so the public API never
@@ -321,6 +327,7 @@ where
             distinct,
             arg,
             filter: Some(new_filter),
+            order_by,
         })
     }
 }

@@ -99,6 +99,7 @@ fn without_scope_qualifies_the_expression_a_window_evaluates() {
                 column: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
 }

@@ -64,6 +64,7 @@ fn a_compound_ordering_by_an_aggregate_is_rejected() {
             distinct: false,
             arg: None,
             filter: None,
+            order_by: Vec::new(),
         },
         OrderDirection::Asc,
     ));

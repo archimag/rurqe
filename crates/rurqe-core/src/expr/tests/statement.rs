@@ -289,6 +289,7 @@ fn an_aggregate_evaluated_over_a_window_keeps_its_argument() {
             distinct: false,
             arg: Some(Box::new(UserId::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })),
         partition_by: Vec::new(),
         order_by: Vec::new(),
@@ -450,4 +451,28 @@ fn the_left_operand_keeps_its_own_tail_inside_its_parentheses() {
          (SELECT \"id\" FROM \"users\" LIMIT 1) UNION ALL SELECT \"id\" FROM \"users\""
     );
     assert!(params.is_empty());
+}
+
+#[test]
+fn an_ordered_aggregate_renders_its_criteria_inside_the_call() {
+    let aggregate = ExprKind::Aggregate {
+        func: AggregateFunc::ArrayAgg,
+        distinct: false,
+        arg: Some(Box::new(OrderId::expr_kind())),
+        filter: Some(Box::new(
+            Expr::column::<OrderUserId>().eq(1i64).into_kind(),
+        )),
+        order_by: vec![OrderCriterion::new(
+            OrderId::expr_kind(),
+            OrderDirection::Desc,
+        )],
+    };
+
+    let (sql, params) = render(&aggregate);
+
+    assert_eq!(
+        sql,
+        "ARRAY_AGG(\"id\" ORDER BY \"id\" DESC) FILTER (WHERE (\"user_id\" = ?))"
+    );
+    assert_eq!(params, vec![SqlVal::I64(1)]);
 }

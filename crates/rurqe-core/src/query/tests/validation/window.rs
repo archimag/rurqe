@@ -13,7 +13,10 @@
 
 use super::super::{MockDialect, Order, OrderTotal, OrderUserId};
 use super::{count_star, orders_statement, orders_user_id, scalar_subquery, sum_of};
-use crate::expr::{AggregateFunc, BinaryOp, Expr, ExprKind, SqlVal, WindowExprKind};
+use crate::expr::{
+    AggregateFunc, BinaryOp, Expr, ExprKind, OrderCriterion, OrderDirection, SqlVal,
+    WindowExprKind,
+};
 use crate::query::*;
 
 /// Builds `operand OVER (PARTITION BY ...)` over the given partition expressions.
@@ -38,6 +41,7 @@ fn sum_of_sum_over(
             distinct: false,
             arg: Some(Box::new(sum_of(table, name))),
             filter: None,
+            order_by: Vec::new(),
         },
         partition_by,
     )
@@ -153,6 +157,7 @@ fn a_window_filter_reading_an_ungrouped_column_is_rejected() {
             }),
             rhs: Box::new(ExprKind::Value(SqlVal::F64(100.0))),
         })),
+        order_by: Vec::new(),
     };
 
     let mut ast = orders_statement(vec![
@@ -395,4 +400,26 @@ fn build_error_display_window_operand_not_call() {
     assert!(msg.contains("a bound value"));
     assert!(msg.contains("OVER"));
     assert!(msg.contains("function application"));
+}
+
+#[test]
+fn an_aggregate_ordering_its_own_rows_by_a_bare_column_stays_aggregate() {
+    // The criteria of an aggregate order the rows the call consumes, so a column
+    // they read is inside the aggregate exactly like its argument.
+    let ordered = ExprKind::Aggregate {
+        func: AggregateFunc::ArrayAgg,
+        distinct: false,
+        arg: Some(Box::new(orders_user_id())),
+        filter: None,
+        order_by: vec![OrderCriterion::new(
+            ExprKind::Column {
+                table: "orders",
+                name: "total",
+            },
+            OrderDirection::Asc,
+        )],
+    };
+    let ast = orders_statement(vec![ordered]);
+
+    assert_eq!(ast.validate(), Ok(()));
 }

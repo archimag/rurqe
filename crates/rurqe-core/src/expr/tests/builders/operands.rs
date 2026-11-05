@@ -191,6 +191,7 @@ fn a_column_marker_folds_the_aggregation_marker_of_the_compared_aggregate() {
                     name: "total",
                 })),
                 filter: None,
+                order_by: Vec::new(),
             }),
             rhs: Box::new(ExprKind::Value(SqlVal::F64(0.0))),
         }
@@ -211,6 +212,7 @@ fn a_column_marker_folds_the_aggregation_marker_of_the_compared_aggregate() {
                     name: "total",
                 })),
                 filter: None,
+                order_by: Vec::new(),
             }),
             rhs: Box::new(ExprKind::Column {
                 table: "orders",

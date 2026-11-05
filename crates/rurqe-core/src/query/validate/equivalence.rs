@@ -112,18 +112,21 @@ pub(super) fn equivalent_expressions(lhs: &ExprKind, rhs: &ExprKind) -> bool {
                 distinct: lhs_distinct,
                 arg: lhs_arg,
                 filter: lhs_filter,
+                order_by: lhs_order,
             },
             ExprKind::Aggregate {
                 func: rhs_func,
                 distinct: rhs_distinct,
                 arg: rhs_arg,
                 filter: rhs_filter,
+                order_by: rhs_order,
             },
         ) => {
             lhs_func == rhs_func
                 && lhs_distinct == rhs_distinct
                 && equivalent_optional(lhs_arg.as_deref(), rhs_arg.as_deref())
                 && equivalent_optional(lhs_filter.as_deref(), rhs_filter.as_deref())
+                && equivalent_criteria(lhs_order, rhs_order)
         }
         (
             ExprKind::IsNull {

@@ -302,6 +302,7 @@ pub fn render_expr<D: Dialect>(
             distinct,
             arg,
             filter,
+            order_by,
         } => {
             sql.push_str(func.as_str());
             sql.push('(');
@@ -311,6 +312,12 @@ pub fn render_expr<D: Dialect>(
             match arg {
                 Some(inner) => render_expr::<D>(sql, params, inner, relations)?,
                 None => sql.push('*'),
+            }
+            // The ordering of the aggregated rows is part of the call, so it is
+            // written inside the parentheses, ahead of the optional filter.
+            if !order_by.is_empty() {
+                sql.push_str(" ORDER BY ");
+                render_ordered_expressions::<D>(sql, params, order_by, relations)?;
             }
             sql.push(')');
             if let Some(cond) = filter {

@@ -521,6 +521,10 @@ pub enum AggregateFunc {
     Min,
     /// `MAX`
     Max,
+    /// `ARRAY_AGG`
+    ArrayAgg,
+    /// `STRING_AGG`
+    StringAgg,
 }
 
 impl AggregateFunc {
@@ -532,6 +536,8 @@ impl AggregateFunc {
             AggregateFunc::Avg => "AVG",
             AggregateFunc::Min => "MIN",
             AggregateFunc::Max => "MAX",
+            AggregateFunc::ArrayAgg => "ARRAY_AGG",
+            AggregateFunc::StringAgg => "STRING_AGG",
         }
     }
 }

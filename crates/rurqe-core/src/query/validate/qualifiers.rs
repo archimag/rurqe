@@ -345,12 +345,20 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             validate_expr_tree(lhs, scope)?;
             validate_expr_tree(rhs, scope)
         }
-        ExprKind::Aggregate { arg, filter, .. } => {
+        ExprKind::Aggregate {
+            arg,
+            filter,
+            order_by,
+            ..
+        } => {
             if let Some(arg) = arg {
                 validate_expr_tree(arg, scope)?;
             }
             if let Some(filter) = filter {
                 validate_expr_tree(filter, scope)?;
+            }
+            for criterion in order_by {
+                validate_expr_tree(&criterion.expr, scope)?;
             }
             Ok(())
         }
@@ -527,20 +535,10 @@ fn walk_qualifiers(
     embedded: EmbeddedStatements,
 ) -> Result<(), BuildError> {
     match expr {
-        // A plain column reference names its own table without spelling a
-        // qualifier, so it resolves by that name against the relations the
-        // statement addresses and the relations every statement enclosing it
-        // provides. The renderer expands the reference to `"qualifier"."column"`
-        // as soon as the statement addresses more than one relation, or one under
-        // an alias, and leaves it bare otherwise, while a reference naming none of
-        // the statement's own relations is written verbatim. A name no relation in
-        // either scope carries therefore names a table the engine cannot find: a
-        // statement that addresses no relation at all writes the bare name of the
-        // reference, and one addressing other relations writes a qualifier none of
-        // them declares. An enclosing relation answers to the name its own
-        // statement renders it by alone, because an alias is substituted only
-        // against the relations of the statement being rendered. All of them are
-        // rejected here.
+        // A plain column reference names its own table, so it resolves by that
+        // name against the relations the statement addresses and the relations
+        // of every enclosing statement; an enclosing relation answers to the name
+        // its own statement renders it by. A name no relation carries is rejected.
         ExprKind::Column { table, name } => {
             if resolves_plain_column(table, relations, outer_relations) {
                 Ok(())
@@ -576,12 +574,20 @@ fn walk_qualifiers(
             walk_qualifiers(lhs, relations, outer_relations, embedded)?;
             walk_qualifiers(rhs, relations, outer_relations, embedded)
         }
-        ExprKind::Aggregate { arg, filter, .. } => {
+        ExprKind::Aggregate {
+            arg,
+            filter,
+            order_by,
+            ..
+        } => {
             if let Some(arg) = arg {
                 walk_qualifiers(arg, relations, outer_relations, embedded)?;
             }
             if let Some(filter) = filter {
                 walk_qualifiers(filter, relations, outer_relations, embedded)?;
+            }
+            for criterion in order_by {
+                walk_qualifiers(&criterion.expr, relations, outer_relations, embedded)?;
             }
             Ok(())
         }
@@ -589,12 +595,9 @@ fn walk_qualifiers(
             if let Some(operand) = operand {
                 walk_qualifiers(operand, relations, outer_relations, embedded)?;
             }
-            // The embedded statement resolves its own references through its
-            // `FROM` scope and reaches an enclosing one by correlation, so the
-            // relations in scope here become the outer scope of that statement.
-            // The structural pass reaches the same statement through
-            // `validate_expr_tree` with that namespace, so the walk descends into
-            // it only when it is the only pass running.
+            // The embedded statement reaches the relations in scope here by
+            // correlation. The structural pass reaches it through
+            // `validate_expr_tree`, so the walk descends only when it runs alone.
             match embedded {
                 EmbeddedStatements::Resolve => {
                     let enclosing = enclosing_scope(relations, outer_relations);
@@ -735,24 +738,14 @@ fn resolves_qualifier(
 
 /// Whether `table` names a relation the statement addresses or reaches.
 ///
-/// A plain column reference carries the name of the relation it reads instead of a
-/// rendered qualifier, so it resolves by that name against the relations the
-/// statement addresses itself and the relations every statement enclosing it
-/// provides for correlation. The two scopes answer to different spellings, because
-/// the renderer qualifies a reference against the first one alone: a relation of
-/// the statement itself answers to the table name it is declared under — which the
-/// renderer substitutes with the alias of an aliased occurrence — and to the alias
-/// itself, while an enclosing relation answers to the name the statement enclosing
-/// it renders it by alone, the alias the occurrence carries rather than the table
-/// name behind it. A correlated reference is qualified verbatim, so the base name
-/// of an aliased occurrence names a relation no rendered statement declares: the
-/// enclosing statement writes `FROM "users" AS "u"`, where PostgreSQL answers
-/// `"users"."id"` with `missing FROM-clause entry for table "users"`.
-///
-/// A name no relation in either scope carries leaves the reference unresolvable —
-/// the statement renders a qualifier it never declares, or a bare table name when
-/// it declares no relation at all — so the reference is rejected as
-/// [`BuildError::UnresolvedColumn`].
+/// A plain column reference carries the name of the relation it reads, so it
+/// resolves by that name against the relations of the statement itself and the
+/// relations of every enclosing statement. A relation of the statement answers
+/// to its table name or its alias, while an enclosing relation answers to the
+/// name its statement renders it by alone — the alias, because a correlated
+/// reference is qualified verbatim and the base name of an aliased occurrence
+/// would draw `missing FROM-clause entry`. A name no relation carries is
+/// rejected as [`BuildError::UnresolvedColumn`].
 fn resolves_plain_column(
     table: &'static str,
     relations: &[TableRef],

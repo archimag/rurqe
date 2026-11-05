@@ -52,6 +52,7 @@ impl<T> Expr<T, ()> {
             distinct: false,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -68,6 +69,7 @@ impl<T> Expr<T, ()> {
             distinct: true,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -87,6 +89,7 @@ impl<T> Expr<T, ()> {
             distinct: false,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -106,6 +109,7 @@ impl<T> Expr<T, ()> {
             distinct: false,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 }

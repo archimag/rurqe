@@ -79,6 +79,7 @@ fn count_star() -> ExprKind {
         distinct: false,
         arg: None,
         filter: None,
+        order_by: Vec::new(),
     }
 }
 
@@ -89,6 +90,7 @@ fn sum_of(table: &'static str, name: &'static str) -> ExprKind {
         distinct: false,
         arg: Some(Box::new(ExprKind::Column { table, name })),
         filter: None,
+        order_by: Vec::new(),
     }
 }
 

@@ -85,6 +85,10 @@ pub enum ExprKind {
         arg: Option<Box<ExprKind>>,
         /// The optional `FILTER (WHERE ...)` condition restricting aggregated rows.
         filter: Option<Box<ExprKind>>,
+        /// The criteria ordering the rows the aggregate consumes, rendered inside
+        /// the call as `AGG(arg ORDER BY ...)`; empty for an aggregate that does
+        /// not order its input.
+        order_by: Vec<OrderCriterion>,
     },
     /// A raw SQL expression with bound parameters and dialect-aware placeholder rendering.
     Raw {
@@ -263,6 +267,7 @@ impl Expr<i64> {
             distinct: false,
             arg: None,
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -281,6 +286,7 @@ impl Expr<i64> {
             distinct: false,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -299,6 +305,7 @@ impl Expr<i64> {
             distinct: true,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 }
@@ -319,6 +326,7 @@ impl Expr<f64> {
             distinct: false,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -337,6 +345,7 @@ impl Expr<f64> {
             distinct: true,
             arg: Some(Box::new(C::expr_kind())),
             filter: None,
+            order_by: Vec::new(),
         })
     }
 }

@@ -41,11 +41,19 @@ pub(super) fn qualify_references(kind: ExprKind) -> ExprKind {
             distinct,
             arg,
             filter,
+            order_by,
         } => ExprKind::Aggregate {
             func,
             distinct,
             arg: qualify_optional(arg),
             filter: qualify_optional(filter),
+            order_by: order_by
+                .into_iter()
+                .map(|criterion| OrderCriterion {
+                    expr: qualify_references(criterion.expr),
+                    ..criterion
+                })
+                .collect(),
         },
         ExprKind::DialectOp { op, lhs, rhs } => ExprKind::DialectOp {
             op,

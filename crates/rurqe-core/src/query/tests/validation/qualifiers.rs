@@ -213,6 +213,7 @@ fn a_having_predicate_qualified_by_a_name_nothing_declares_is_rejected() {
                 column: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }),
         rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
     });

@@ -131,6 +131,7 @@ fn aggregate_expressions_build_expected_ast() {
             distinct: false,
             arg: None,
             filter: None,
+            order_by: Vec::new(),
         }
     );
     assert_eq!(
@@ -143,6 +144,7 @@ fn aggregate_expressions_build_expected_ast() {
                 name: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
     assert_eq!(
@@ -155,6 +157,7 @@ fn aggregate_expressions_build_expected_ast() {
                 name: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
     assert_eq!(
@@ -167,6 +170,7 @@ fn aggregate_expressions_build_expected_ast() {
                 name: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
     assert_eq!(
@@ -179,6 +183,7 @@ fn aggregate_expressions_build_expected_ast() {
                 name: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
     assert_eq!(
@@ -191,6 +196,7 @@ fn aggregate_expressions_build_expected_ast() {
                 name: "name",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
 }
@@ -466,6 +472,7 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
                 name: "id",
             })),
             filter: None,
+            order_by: Vec::new(),
         }
     );
 
@@ -487,6 +494,7 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
                 }),
                 rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
             })),
+            order_by: Vec::new(),
         }
     );
 
