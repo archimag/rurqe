@@ -298,6 +298,55 @@ where
         .query(statement, &[&schemas])
         .map_err(|error| query_error(label, error))
 }
+/// Fetches one catalog section through a synchronous client.
+///
+/// The section is fetched by the `query` helper beside it, so a statement the
+/// driver refuses is reported under the label the section carries.
+macro_rules! fetch_section_sync {
+    ($client:expr, $statement:expr, $schemas:expr, $label:expr) => {
+        query(&mut *$client, $statement, $schemas, $label)
+    };
+}
+
+/// Fetches one catalog section through an asynchronous client.
+///
+/// The statement, its binding, and the error mapping are the ones the
+/// synchronous path uses; only the awaiting call differs.
+#[cfg(feature = "tokio-postgres")]
+macro_rules! fetch_section_async {
+    ($client:expr, $statement:expr, $schemas:expr, $label:expr) => {
+        $client
+            .query($statement, &[&$schemas])
+            .await
+            .map_err(|error| query_error($label, error))
+    };
+}
+
+/// Declares every section of [`CatalogRows`] once for both drivers.
+///
+/// A section is its field, the catalog statement that fills it, and the label
+/// that statement is reported under. The list is expanded with
+/// `fetch_section_sync` and with `fetch_section_async`, so a new section is
+/// appended here alone and the synchronous and asynchronous catalogs cannot
+/// drift apart: the golden equation and the drift check compare them byte for
+/// byte.
+macro_rules! catalog_rows {
+    ($fetch:ident, $client:expr, $schemas:expr) => {
+        Ok(CatalogRows {
+            tables: $fetch!($client, POSTGRES_TABLES, $schemas, "tables")?,
+            columns: $fetch!($client, POSTGRES_COLUMNS, $schemas, "columns")?,
+            primary_keys: $fetch!($client, POSTGRES_PRIMARY_KEYS, $schemas, "primary keys")?,
+            foreign_keys: $fetch!($client, POSTGRES_FOREIGN_KEYS, $schemas, "foreign keys")?,
+            indexes: $fetch!($client, POSTGRES_INDEXES, $schemas, "indexes")?,
+            enums: $fetch!($client, POSTGRES_ENUMS, $schemas, "enums")?,
+            checks: $fetch!($client, POSTGRES_CHECKS, $schemas, "checks")?,
+            views: $fetch!($client, POSTGRES_VIEWS, $schemas, "views")?,
+            triggers: $fetch!($client, POSTGRES_TRIGGERS, $schemas, "triggers")?,
+        })
+    };
+}
+
+/// Runs every catalog statement of `schemas` through a synchronous client.
 ///
 /// Reading the rows first is what lets one decoding serve both drivers: the
 /// statements and their binding are shared, while only the call that awaits them
@@ -309,27 +358,7 @@ pub(crate) fn query_catalog_rows<C>(
 where
     C: postgres::GenericClient,
 {
-    Ok(CatalogRows {
-        tables: query(&mut *client, POSTGRES_TABLES, schemas, "tables")?,
-        columns: query(&mut *client, POSTGRES_COLUMNS, schemas, "columns")?,
-        primary_keys: query(
-            &mut *client,
-            POSTGRES_PRIMARY_KEYS,
-            schemas,
-            "primary keys",
-        )?,
-        foreign_keys: query(
-            &mut *client,
-            POSTGRES_FOREIGN_KEYS,
-            schemas,
-            "foreign keys",
-        )?,
-        indexes: query(&mut *client, POSTGRES_INDEXES, schemas, "indexes")?,
-        enums: query(&mut *client, POSTGRES_ENUMS, schemas, "enums")?,
-        checks: query(&mut *client, POSTGRES_CHECKS, schemas, "checks")?,
-        views: query(&mut *client, POSTGRES_VIEWS, schemas, "views")?,
-        triggers: query(&mut *client, POSTGRES_TRIGGERS, schemas, "triggers")?,
-    })
+    catalog_rows!(fetch_section_sync, client, schemas)
 }
 
 /// Runs every catalog statement of `schemas` through an asynchronous client.
@@ -345,44 +374,7 @@ pub(crate) async fn query_catalog_rows_async<C>(
 where
     C: tokio_postgres::GenericClient,
 {
-    Ok(CatalogRows {
-        tables: client
-            .query(POSTGRES_TABLES, &[&schemas])
-            .await
-            .map_err(|error| query_error("tables", error))?,
-        columns: client
-            .query(POSTGRES_COLUMNS, &[&schemas])
-            .await
-            .map_err(|error| query_error("columns", error))?,
-        primary_keys: client
-            .query(POSTGRES_PRIMARY_KEYS, &[&schemas])
-            .await
-            .map_err(|error| query_error("primary keys", error))?,
-        foreign_keys: client
-            .query(POSTGRES_FOREIGN_KEYS, &[&schemas])
-            .await
-            .map_err(|error| query_error("foreign keys", error))?,
-        indexes: client
-            .query(POSTGRES_INDEXES, &[&schemas])
-            .await
-            .map_err(|error| query_error("indexes", error))?,
-        enums: client
-            .query(POSTGRES_ENUMS, &[&schemas])
-            .await
-            .map_err(|error| query_error("enums", error))?,
-        checks: client
-            .query(POSTGRES_CHECKS, &[&schemas])
-            .await
-            .map_err(|error| query_error("checks", error))?,
-        views: client
-            .query(POSTGRES_VIEWS, &[&schemas])
-            .await
-            .map_err(|error| query_error("views", error))?,
-        triggers: client
-            .query(POSTGRES_TRIGGERS, &[&schemas])
-            .await
-            .map_err(|error| query_error("triggers", error))?,
-    })
+    catalog_rows!(fetch_section_async, client, schemas)
 }
 
 /// Reads the column at `index` of `row` as a `T`, naming the query and column.
