@@ -155,3 +155,7 @@ path = "pool_transactions.rs"
 [[example]]
 name = "sync_pool_transactions"
 path = "sync_pool_transactions.rs"
+
+[[example]]
+name = "reusable_queries"
+path = "reusable_queries.rs"

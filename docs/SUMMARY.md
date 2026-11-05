@@ -19,6 +19,7 @@
 - [Projections and Result Types](core/projections.md)
 - [Common Table Expressions (WITH)](core/cte.md)
 - [Nested Results (MULTISET)](core/nested.md)
+- [Reusable Query Patterns (macro_rules!)](core/reusable_queries.md)
 
 # Data Modification
 
