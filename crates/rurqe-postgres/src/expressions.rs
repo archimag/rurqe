@@ -1,12 +1,57 @@
 //! PostgreSQL-specific expression extensions and text search functions.
 
+use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::{
-    Expr, ExprKind, IntoExpr, MergeDialect, MergeScope, Merged, MergedDialect, NonAggregate,
+    AggregateFunc, BinaryOp, DialectInScope, Expr, ExprKind, IntoExpr, MergeDialect, MergeScope,
+    Merged, MergedDialect, NonAggregate, OrderCriterion, OrderDirection, RawFragments,
     SqlArrayElement, SqlVal, ToSqlVal,
 };
 use rurqe_core::query::MakeNullable;
 use rurqe_core::row::{FromSqlValue, RowDecodeError};
 use rurqe_core::schema::Column;
+
+use crate::dialect::{PgVersion, Postgres};
+
+/// Quotes `identifier` the way the PostgreSQL dialect does.
+fn quote_identifier(identifier: &str) -> String {
+    let mut quoted = String::new();
+    <Postgres as Dialect>::push_quoted_identifier(&mut quoted, identifier);
+    quoted
+}
+
+/// The text of the reference to the column `C`, qualified by its table.
+///
+/// The delimiter of `string_agg` shares the argument list of the call with the
+/// column, so the reference is written into the argument as text. Qualifying it
+/// keeps the reference unambiguous in a statement spanning several relations.
+fn qualified_reference<C: Column>() -> String {
+    let (table, column) = match C::expr_kind() {
+        ExprKind::Column { table, name } => (table, name),
+        ExprKind::QualifiedColumn { table, column } => (table, column),
+        _ => return quote_identifier(C::NAME),
+    };
+    format!("{}.{}", quote_identifier(table), quote_identifier(column))
+}
+
+/// Wraps `aggregate` into `COALESCE(<aggregate>, <empty>)`.
+///
+/// An aggregate over no rows yields NULL, which a `Vec<T>` or a `String` cannot
+/// decode, so the call falls back to the literal `empty` of its result type.
+fn coalesced<T, V: PgVersion>(
+    aggregate: ExprKind,
+    empty: &'static [&'static str],
+) -> Expr<T, (), NonAggregate, Postgres<V>> {
+    Expr::from_kind(ExprKind::Function {
+        name: "COALESCE",
+        args: vec![
+            aggregate,
+            ExprKind::Raw {
+                fragments: RawFragments::Static(empty),
+                params: Vec::new(),
+            },
+        ],
+    })
+}
 
 /// A column value the PostgreSQL regex operators read.
 ///
@@ -800,6 +845,140 @@ where
     }
 }
 
+/// Collects the values of a column of a group into a list (`ARRAY_AGG`).
+///
+/// The call renders `COALESCE(ARRAY_AGG("sku"), '{}')`, so a group without rows
+/// yields an empty list instead of NULL. The expression is bound to the
+/// PostgreSQL dialect: a statement of another engine does not accept it. The
+/// ordering of the collected values and a `FILTER (WHERE ...)` clause are added
+/// through [`PgAggregateExpressions`].
+pub fn array_agg<C, V>(_column: C) -> Expr<Vec<C::RustType>, (), NonAggregate, Postgres<V>>
+where
+    C: Column,
+    C::RustType: SqlArrayElement,
+    V: PgVersion,
+{
+    let aggregate = ExprKind::Aggregate {
+        func: AggregateFunc::ArrayAgg,
+        distinct: false,
+        arg: Some(Box::new(C::expr_kind())),
+        filter: None,
+        order_by: Vec::new(),
+    };
+    coalesced(aggregate, &["'{}'"])
+}
+
+/// Joins the text values of a column of a group with a delimiter (`STRING_AGG`).
+///
+/// The call renders `COALESCE(STRING_AGG("table"."sku", $1), '')`, so a group
+/// without rows yields an empty text instead of NULL. The delimiter binds as one
+/// text parameter. The expression is bound to the PostgreSQL dialect.
+pub fn string_agg<C, V>(_column: C, delimiter: &str) -> Expr<String, (), NonAggregate, Postgres<V>>
+where
+    C: Column,
+    C::RustType: PgTextValue,
+    V: PgVersion,
+{
+    // The column and the delimiter form the argument list of the call, which the
+    // aggregate node holds as one expression, so the list is written as a raw
+    // fragment with the delimiter bound as its only parameter.
+    let arguments = ExprKind::Raw {
+        fragments: RawFragments::from(vec![
+            format!("{}, ", qualified_reference::<C>()),
+            String::new(),
+        ]),
+        params: vec![SqlVal::Text(delimiter.to_owned())],
+    };
+    let aggregate = ExprKind::Aggregate {
+        func: AggregateFunc::StringAgg,
+        distinct: false,
+        arg: Some(Box::new(arguments)),
+        filter: None,
+        order_by: Vec::new(),
+    };
+    coalesced(aggregate, &["''"])
+}
+
+/// Applies `edit` to the ordering and the filter of the aggregate call inside an
+/// expression built by [`array_agg`] or [`string_agg`].
+///
+/// An expression of any other shape is returned unchanged: the method never
+/// panics, and it never rewrites a tree it does not recognise.
+fn with_aggregate<T, V: PgVersion>(
+    expr: Expr<T, (), NonAggregate, Postgres<V>>,
+    edit: impl FnOnce(&mut Vec<OrderCriterion>, &mut Option<Box<ExprKind>>),
+) -> Expr<T, (), NonAggregate, Postgres<V>> {
+    let mut kind = expr.into_kind();
+    if let ExprKind::Function { args, .. } = &mut kind {
+        if let Some(ExprKind::Aggregate {
+            order_by, filter, ..
+        }) = args.first_mut()
+        {
+            edit(order_by, filter);
+        }
+    }
+    Expr::from_kind(kind)
+}
+
+/// Clauses of the PostgreSQL aggregates [`array_agg`] and [`string_agg`].
+///
+/// - `order_by_asc` and `order_by_desc` order the values the call consumes and
+///   render inside the call: `ARRAY_AGG("sku" ORDER BY "sku" ASC)`.
+/// - `filter_where` restricts the rows the call consumes and renders
+///   `FILTER (WHERE ...)`; repeated calls combine their conditions with `AND`.
+///
+/// The columns of both clauses are checked against the relations of the
+/// statement while it is built.
+pub trait PgAggregateExpressions: Sized {
+    /// The dialect the aggregate is bound to.
+    type Engine;
+
+    /// Orders the aggregated values ascending by `column`.
+    fn order_by_asc<C: Column>(self, column: C) -> Self;
+
+    /// Orders the aggregated values descending by `column`.
+    fn order_by_desc<C: Column>(self, column: C) -> Self;
+
+    /// Restricts the aggregated rows to those satisfying `predicate`.
+    fn filter_where<P, PD>(self, predicate: Expr<bool, P, NonAggregate, PD>) -> Self
+    where
+        PD: DialectInScope<Self::Engine>;
+}
+
+impl<T, V: PgVersion> PgAggregateExpressions for Expr<T, (), NonAggregate, Postgres<V>> {
+    type Engine = Postgres<V>;
+
+    fn order_by_asc<C: Column>(self, _column: C) -> Self {
+        with_aggregate(self, |order_by, _| {
+            order_by.push(OrderCriterion::new(C::expr_kind(), OrderDirection::Asc));
+        })
+    }
+
+    fn order_by_desc<C: Column>(self, _column: C) -> Self {
+        with_aggregate(self, |order_by, _| {
+            order_by.push(OrderCriterion::new(C::expr_kind(), OrderDirection::Desc));
+        })
+    }
+
+    fn filter_where<P, PD>(self, predicate: Expr<bool, P, NonAggregate, PD>) -> Self
+    where
+        PD: DialectInScope<Postgres<V>>,
+    {
+        let predicate = predicate.into_kind();
+        with_aggregate(self, |_, filter| {
+            let combined = match filter.take() {
+                Some(existing) => Box::new(ExprKind::Binary {
+                    op: BinaryOp::And,
+                    lhs: existing,
+                    rhs: Box::new(predicate),
+                }),
+                None => Box::new(predicate),
+            };
+            *filter = Some(combined);
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1210,5 +1389,49 @@ mod tests {
 
         assert_json_column::<DocMetadata>();
         assert_json_column::<DocLegacy>();
+    }
+    #[test]
+    fn array_agg_wraps_an_ordered_aggregate_in_coalesce() {
+        use super::{array_agg, PgAggregateExpressions};
+
+        let expr: Expr<Vec<String>, (), NonAggregate, Postgres> =
+            array_agg(DocContent).order_by_asc(DocContent);
+        let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
+
+        assert_eq!(
+            sql,
+            "COALESCE(ARRAY_AGG(\"content\" ORDER BY \"content\" ASC), '{}')"
+        );
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn string_agg_binds_the_delimiter_and_orders_inside_the_call() {
+        use super::{string_agg, PgAggregateExpressions};
+
+        let expr: Expr<String, (), NonAggregate, Postgres> =
+            string_agg(DocContent, ", ").order_by_desc(DocContent);
+        let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
+
+        assert_eq!(
+            sql,
+            "COALESCE(STRING_AGG(\"docs\".\"content\", $1 ORDER BY \"content\" DESC), '')"
+        );
+        assert_eq!(params, vec![SqlVal::Text(", ".to_owned())]);
+    }
+
+    #[test]
+    fn an_aggregate_filter_renders_inside_the_coalesce() {
+        use super::{array_agg, PgAggregateExpressions};
+
+        let expr: Expr<Vec<String>, (), NonAggregate, Postgres> =
+            array_agg(DocContent).filter_where(DocContent.regex_match("^a"));
+        let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
+
+        assert_eq!(
+            sql,
+            "COALESCE(ARRAY_AGG(\"content\") FILTER (WHERE (\"content\" ~ $1)), '{}')"
+        );
+        assert_eq!(params, vec![SqlVal::Text("^a".to_owned())]);
     }
 }

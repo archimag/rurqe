@@ -138,6 +138,38 @@ SELECT "id" AS "profile_id" FROM "profiles" WHERE ("tags" @> $1)
 
 The argument binds as one parameter: `array_contains`, `array_contained_by`, and `array_overlaps` bind a `Vec<T>` as one array value, while `any` and `all` bind the single element they compare.
 
+## Aggregate Arrays and Strings
+
+Two aggregate functions collect the values of a group: `array_agg` into a list and `string_agg` into one text. Both are PostgreSQL expressions, so a statement of another engine does not accept them.
+
+| SQL form | Function | Result |
+|---|---|---|
+| `COALESCE(ARRAY_AGG("sku"), '{}')` | `array_agg(column)` | `Vec<T>` |
+| `COALESCE(STRING_AGG("order_items"."sku", $1), '')` | `string_agg(column, delimiter)` | `String` |
+
+An aggregate over no rows yields NULL in SQL, which neither a list nor a text can hold, so the call falls back to an empty list or an empty text and the result always decodes into `Vec<T>` or `String`.
+
+`array_agg` accepts a column whose type can be an array element. `string_agg` accepts a text column and binds its delimiter as one text parameter. The column of `string_agg` is written qualified with its table name.
+
+Two clauses restrict the call itself:
+
+- `order_by_asc(column)` and `order_by_desc(column)` render `ORDER BY` inside the call and order the values the aggregate consumes. Repeated calls append further criteria.
+- `filter_where(predicate)` renders `FILTER (WHERE ...)` and restricts the consumed rows. Repeated calls combine their conditions with `AND`.
+
+The columns named by both clauses are checked against the relations of the statement while it is built, before any SQL is rendered.
+
+```rust,no_run
+{{#rustdoc_include ../../examples/dialects.rs:array_agg}}
+```
+
+The statement renders:
+
+```sql
+SELECT "order_id", COALESCE(ARRAY_AGG("sku" ORDER BY "sku" ASC), '{}'), COALESCE(STRING_AGG("order_items"."sku", $1 ORDER BY "sku" DESC), '') FROM "order_items" GROUP BY "order_id"
+```
+
+The delimiter binds as the first parameter.
+
 ## Row Locking
 
 Inside a transaction, a query can claim the rows it selects until the transaction ends:

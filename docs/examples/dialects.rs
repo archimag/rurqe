@@ -85,6 +85,21 @@ fn main() -> Result<(), BuildError> {
     // ANCHOR_END: regex
     println!("{}", matching.sql);
 
+    // ANCHOR: array_agg
+    // Each group reports its articles as a list and as one text. The ordering
+    // sits inside the aggregate call, and an aggregate over no rows yields an
+    // empty list and an empty text instead of NULL.
+    let summaries = select_from(OrderItem)
+        .group_by(OrderItemOrderId)
+        .select((
+            OrderItemOrderId,
+            array_agg(OrderItemSku).order_by_asc(OrderItemSku),
+            string_agg(OrderItemSku, ", ").order_by_desc(OrderItemSku),
+        ))
+        .build()?;
+    // ANCHOR_END: array_agg
+    println!("{}", summaries.sql);
+
     // ANCHOR: for_update
     // A query claims the rows it selects until the transaction ends, and
     // `SKIP LOCKED` passes over the rows another transaction already holds.

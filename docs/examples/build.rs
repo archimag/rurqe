@@ -320,6 +320,13 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/dialects/sqlite.md"],
     },
     Fragment {
+        file: "dialects.rs",
+        anchor: "array_agg",
+        binding: "summaries",
+        terminal: Terminal::Built,
+        chapters: &["core/dialects/postgres.md"],
+    },
+    Fragment {
         file: "nested.rs",
         anchor: "collection",
         binding: "parents",

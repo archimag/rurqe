@@ -545,10 +545,10 @@ pub mod prelude {
         feature = "r2d2"
     ))]
     pub use rurqe_postgres::{
-        JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions,
-        /* PgConnection is imported below */ PgJson, PgJsonExpressions, PgJsonValue, PgJsonb,
-        PgJsonbExpressions, PgJsonbValue, PgRegexExpressions, PgTextSearchExpressions,
-        PgTextSearchValue, PgTextValue, PgVersion, Postgres,
+        array_agg, string_agg, JsonKey, Pg14, Pg15, Pg16, PgAggregateExpressions, PgArrayElements,
+        PgArrayExpressions, /* PgConnection is imported below */ PgJson, PgJsonExpressions,
+        PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue, PgRegexExpressions,
+        PgTextSearchExpressions, PgTextSearchValue, PgTextValue, PgVersion, Postgres,
     };
 
     /// The synchronous `postgres` adapter, compiled by the `postgres` feature and

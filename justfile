@@ -53,7 +53,7 @@ test-postgres url="postgres://rurqe@localhost:5433/rurqe-test":
     # The facade suites read the refusal a live server reported and the nested
     # collections it aggregated, so their scenarios are driven by the same
     # variable and report a skip without it.
-    RURQE_TEST_POSTGRES_URL="{{url}}" cargo test -p rurqe --test dml --test nested
+    RURQE_TEST_POSTGRES_URL="{{url}}" cargo test -p rurqe --test dml --test nested --test aggregates
 
 alias test-db := test-postgres
 # Verify the book: example coverage guard and a clean mdBook build
