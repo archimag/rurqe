@@ -100,6 +100,42 @@ fn schema_code_without_a_hash_constant_is_rejected() {
 }
 
 #[test]
+fn stale_schema_hash_mismatch_reports_the_structural_diff() {
+    let snapshot = SchemaCatalog::new(vec![users_table(Vec::new())]);
+    let lock = snapshot.to_lock();
+
+    // The live database added a column after codegen, so the schema code embeds
+    // a stale hash: the mismatch still has to report what actually drifted.
+    let live = SchemaCatalog::new(vec![TableDef::new(
+        "users",
+        vec![
+            ColumnDef::new("id", TypeKind::Int64, false),
+            ColumnDef::new("email", TypeKind::Text, false),
+            ColumnDef::new("phone_number", TypeKind::Text, true),
+        ],
+        vec!["id".to_owned()],
+    )]);
+    let stale_hash = snapshot.schema_hash();
+    let live_hash = live.schema_hash();
+    let code = format!("pub const SCHEMA_HASH: &str = \"{}\";", stale_hash);
+
+    let err = verify_drift(&live, &lock, Some(&code)).unwrap_err();
+    match &err {
+        DriftError::HashMismatch { expected, found_in_code, diff } => {
+            assert_eq!(expected, &live_hash);
+            assert_eq!(found_in_code, &stale_hash);
+            assert!(!diff.is_empty(), "a stale hash still carries the structural drift");
+        }
+        other => panic!("expected HashMismatch, got {other:?}"),
+    }
+
+    let message = err.to_string();
+    assert!(message.contains("SCHEMA_HASH mismatch in schema code"));
+    assert!(message.contains("phone_number"));
+    assert!(message.contains("cargo rurqe codegen"));
+}
+
+#[test]
 fn drift_detected_when_column_added_in_database() {
     let baseline_catalog = SchemaCatalog::new(vec![TableDef::new(
         "users",
