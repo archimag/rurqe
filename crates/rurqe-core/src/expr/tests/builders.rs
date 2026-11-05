@@ -668,3 +668,72 @@ fn borrowed_and_owned_fragments_compare_by_their_text() {
 
     assert_eq!(borrowed.kind(), owned.kind());
 }
+
+crate::table!(
+    Note => "notes" {
+        NoteId => "id": i64,
+        NoteBody => "body": Option<String>,
+        NoteScore => "score": Option<i64>,
+    }
+);
+
+#[test]
+fn a_nullable_column_compares_against_a_value_of_its_inner_type() {
+    let equality = NoteBody.eq("draft");
+    assert_eq!(equality, Expr::column::<NoteBody>().eq("draft"));
+    let (sql, params) = render(equality.kind());
+    assert_eq!(sql, "(\"body\" = ?)");
+    assert_eq!(params, vec![SqlVal::Text("draft".to_owned())]);
+
+    let inequality = NoteBody.ne("final");
+    assert_eq!(inequality, Expr::column::<NoteBody>().ne("final"));
+    let (sql, params) = render(inequality.kind());
+    assert_eq!(sql, "(\"body\" <> ?)");
+    assert_eq!(params, vec![SqlVal::Text("final".to_owned())]);
+
+    let range = NoteScore.between(10i64, 20i64);
+    assert_eq!(range, Expr::column::<NoteScore>().between(10i64, 20i64));
+    let (sql, params) = render(range.kind());
+    assert_eq!(sql, "(\"score\" BETWEEN ? AND ?)");
+    assert_eq!(params, vec![SqlVal::I64(10), SqlVal::I64(20)]);
+
+    let membership = NoteBody.in_list(vec!["draft", "final"]);
+    assert_eq!(
+        membership,
+        Expr::column::<NoteBody>().in_list(vec!["draft", "final"])
+    );
+    let (sql, params) = render(membership.kind());
+    assert_eq!(sql, "(\"body\" IN (?, ?))");
+    assert_eq!(
+        params,
+        vec![
+            SqlVal::Text("draft".to_owned()),
+            SqlVal::Text("final".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn a_nullable_column_tests_absence_with_the_null_predicates() {
+    let absent = NoteBody.is_null();
+    assert_eq!(absent, Expr::column::<NoteBody>().is_null());
+    assert_eq!(
+        absent.kind(),
+        &ExprKind::IsNull {
+            operand: Box::new(ExprKind::Column {
+                table: "notes",
+                name: "body",
+            }),
+            negated: false,
+        }
+    );
+    let (sql, params) = render(absent.kind());
+    assert_eq!(sql, "(\"body\" IS NULL)");
+    assert!(params.is_empty());
+
+    let present = NoteBody.is_not_null();
+    assert_eq!(present, Expr::column::<NoteBody>().is_not_null());
+    let (sql, params) = render(present.kind());
+    assert_eq!(sql, "(\"body\" IS NOT NULL)");
+    assert!(params.is_empty());
+}

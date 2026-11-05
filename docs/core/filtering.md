@@ -40,6 +40,32 @@ SQL has no `= NULL`: an equality against an absent value is never true, which is
 
 An empty membership list is a syntax error in every dialect (`x IN ()`), so the builder degenerates it into a constant: `IN []` renders as `1 = 0`, and `NOT IN []` as `1 = 1`. A statement built from a filter list that happens to be empty therefore stays valid.
 
+## Nullable columns
+
+A column declared `Option<T>` is compared with a value of `T`. The comparison renders the ordinary operator over a bound parameter, so it selects the rows whose value equals the operand and no row storing `NULL`: SQL compares an absent value as unknown, which is neither true nor false.
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:nullable_equality}}
+```
+
+```sql
+SELECT "id", "locale" FROM "settings" WHERE ("locale" = $1)
+```
+
+Absence is a predicate of its own, and the null predicates are the ones that select it:
+
+```rust,no_run
+{{#rustdoc_include ../examples/crud.rs:nullable_absence}}
+```
+
+```sql
+SELECT "id" FROM "settings" WHERE ("locale" IS NULL)
+```
+
+`is_not_null()` states the opposite of `is_null()`. Over the rows `('en')`, `(NULL)`, and `('fr')` the equality above selects the first row, `is_null()` the second, and `ne("en")` the third — a row storing `NULL` matches neither a comparison nor its negation, which is why the null predicates exist.
+
+An `Option<T>` value is not an operand of a comparison. `eq`, `ne`, `gt`, `lt`, `between`, and `in_list` take the inner value, and the operator they render is fixed when the statement is written: binding `None` as a parameter would produce a predicate that never matches, and choosing the operator from a runtime value would let the value decide which clause the statement carries. A condition that depends on whether a value is present is composed from `.when(...)` or `.if_some(...)` above.
+
 ## Filters assembled at runtime
 
 Given `only_active: bool` and `name: Option<&str>`, a handler builds the statement without losing the chain:

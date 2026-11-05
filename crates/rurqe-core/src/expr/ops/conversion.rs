@@ -8,6 +8,8 @@ use crate::expr::builder::{Expr, NonAggregate};
 use crate::expr::val::ToSqlVal;
 use crate::schema::Column;
 
+mod nullable;
+
 /// A value or expression that can be compared with an expression of type `T`.
 ///
 /// Operand values are encoded through [`ToSqlVal`], so the parameter
@@ -26,6 +28,35 @@ use crate::schema::Column;
 /// The trait is the single gate of operand-type compatibility, so a value of a
 /// type with no conversion is rejected here with the diagnostic below, at the
 /// call site of the comparison.
+///
+/// A nullable column compares against a value of its inner type. A column
+/// declared `Option<T>` reports `Option<T>` as its column type, and the operand
+/// surface of that column is the surface of `T`, so the value arrives in the
+/// form it already has:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, Expression};
+///
+/// rurqe_core::table!(
+///     /// The `notes` table.
+///     Note => "notes" {
+///         NoteBody => "body": Option<String>,
+///     }
+/// );
+///
+/// let predicate = NoteBody.eq("draft");
+///
+/// assert_eq!(predicate, Expr::column::<NoteBody>().eq("draft"));
+/// ```
+///
+/// The comparison renders the operator it would render for a column of `T`, so
+/// it matches the rows whose value equals the operand and no row storing
+/// `NULL`. An `Option<T>` value is not one of these forms: binding `None` as a
+/// parameter would compare the column with `NULL` — a predicate that is never
+/// true — and deriving the operator from a runtime value would let the value
+/// decide which clause the statement carries. Absence is stated by
+/// [`Expr::is_null`](crate::expr::Expr::is_null) and
+/// [`Expr::is_not_null`](crate::expr::Expr::is_not_null).
 ///
 /// A column marker is an operand of the comparison as it stands, and the tree it
 /// produces is the one its explicit expression produces:

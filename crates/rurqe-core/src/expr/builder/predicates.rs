@@ -15,6 +15,13 @@
 //! aggregate call still collapses the rows of its group and stays projectable
 //! from a grouped query, while `DISTINCT` and `FILTER (WHERE ...)` stay
 //! reachable on the aggregate call alone.
+//!
+//! A column declared `Option<T>` compares against a value of `T`. The optional
+//! operand forms lift each value into its optional counterpart, so the
+//! comparison renders the operator the inner type would render and matches no
+//! row storing `NULL`; absence is selected through [`is_null`](Expr::is_null)
+//! and [`is_not_null`](Expr::is_not_null), which name the SQL operator in the
+//! statement itself.
 
 use super::{Expr, NonAggregate};
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect, SubqueryOp};
@@ -28,6 +35,10 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///
     /// The predicate compares against SQL `NULL` itself instead of a bound
     /// parameter, so it works for any expression type, optional or not.
+    ///
+    /// On a column declared `Option<T>` the predicate is how absence is
+    /// selected: the comparison methods take a value of the inner type and
+    /// render the ordinary operator, which matches no row storing `NULL`.
     ///
     /// The predicate roots a new node, so the aggregate marker of the tested
     /// expression degrades exactly as it does in an arithmetic combination: a
@@ -176,6 +187,11 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// aggregate a grouped query accepts in `HAVING`, while the same aggregate
     /// compared with a bare column computes one value per row, so the grouped
     /// query rejects the predicate unless the column is grouped.
+    ///
+    /// A column declared `Option<T>` accepts a value of `T`, exactly as a column
+    /// of `T` does. The comparison renders the ordinary operator, so it matches
+    /// no row storing `NULL`; absence is selected by
+    /// [`is_null`](Self::is_null).
     ///
     /// ```
     /// use rurqe_core::expr::{Aggregate, Expr, NonAggregate};

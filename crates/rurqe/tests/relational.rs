@@ -1724,3 +1724,87 @@ fn an_ordering_can_fix_where_nulls_sort() {
     );
     assert!(built.params.is_empty());
 }
+
+/// Live verification of the nullable-column comparison discipline.
+///
+/// The rendered shapes are asserted by the unit tests of the expression layer;
+/// this module executes the same predicates against an in-memory SQLite
+/// database, so the parameter a nullable column binds is proven by a driver
+/// rather than by a rendered text. A comparison against an absent value matches
+/// no row, which is the SQL rule the null predicates exist for.
+#[cfg(feature = "sqlite")]
+mod nullable_comparisons {
+    use rurqe::sqlite::prelude::*;
+    use rurqe::sqlite::rusqlite::Connection;
+
+    table!(
+        /// The `notes` table, whose `body` column accepts the SQL `NULL` value.
+        Note => "notes" {
+            NoteId => "id": i64,
+            NoteBody => "body": Option<String>,
+        }
+    );
+
+    /// Opens an in-memory database holding three notes, one of them unset.
+    fn database() -> SqliteConnection {
+        let connection = Connection::open_in_memory().expect("open the in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE notes (id INTEGER NOT NULL PRIMARY KEY, body TEXT); \
+                 INSERT INTO notes (id, body) VALUES (1, 'draft'), (2, NULL), (3, 'final');",
+            )
+            .expect("create the notes table");
+        SqliteConnection::new(connection)
+    }
+
+    #[test]
+    fn a_nullable_column_compares_against_a_value_of_its_inner_type() {
+        let mut db = database();
+
+        let drafts = select_from(Note)
+            .select((NoteId,))
+            .where_(NoteBody.eq("draft"))
+            .order_by_asc(NoteId)
+            .fetch_all(&mut db)
+            .expect("the filter runs");
+        assert_eq!(drafts, vec![(1i64,)]);
+
+        // SQL compares an absent value as unknown, so the row storing `NULL`
+        // matches neither the equality nor its negation.
+        let others = select_from(Note)
+            .select((NoteId,))
+            .where_(NoteBody.ne("draft"))
+            .order_by_asc(NoteId)
+            .fetch_all(&mut db)
+            .expect("the filter runs");
+        assert_eq!(others, vec![(3i64,)]);
+
+        let listed = select_from(Note)
+            .select((NoteId,))
+            .where_(NoteBody.in_list(vec!["draft", "final"]))
+            .order_by_asc(NoteId)
+            .fetch_all(&mut db)
+            .expect("the filter runs");
+        assert_eq!(listed, vec![(1i64,), (3i64,)]);
+    }
+
+    #[test]
+    fn a_nullable_column_selects_absence_through_the_null_predicates() {
+        let mut db = database();
+
+        let unset = select_from(Note)
+            .select((NoteId,))
+            .where_(NoteBody.is_null())
+            .fetch_all(&mut db)
+            .expect("the filter runs");
+        assert_eq!(unset, vec![(2i64,)]);
+
+        let set = select_from(Note)
+            .select((NoteId,))
+            .where_(NoteBody.is_not_null())
+            .order_by_asc(NoteId)
+            .fetch_all(&mut db)
+            .expect("the filter runs");
+        assert_eq!(set, vec![(1i64,), (3i64,)]);
+    }
+}

@@ -516,6 +516,20 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/delete.md"],
     },
     Fragment {
+        file: "crud.rs",
+        anchor: "nullable_equality",
+        binding: "localised",
+        terminal: Terminal::Executed,
+        chapters: &["core/filtering.md"],
+    },
+    Fragment {
+        file: "crud.rs",
+        anchor: "nullable_absence",
+        binding: "unset",
+        terminal: Terminal::Executed,
+        chapters: &["core/filtering.md"],
+    },
+    Fragment {
         file: "aliasing.rs",
         anchor: "self_join",
         binding: "managed",

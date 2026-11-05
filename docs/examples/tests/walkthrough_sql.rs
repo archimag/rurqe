@@ -145,6 +145,12 @@ fn the_walkthroughs_bind_the_parameters_their_statements_name() {
         ("crud.rs", "delete_using", Vec::new()),
         ("crud.rs", "update_nullable", vec![SqlVal::Null, SqlVal::I64(1)]),
         ("crud.rs", "insert_nullable", vec![SqlVal::I64(2), SqlVal::Null]),
+        (
+            "crud.rs",
+            "nullable_equality",
+            vec![SqlVal::Text("en".to_owned())],
+        ),
+        ("crud.rs", "nullable_absence", Vec::new()),
     ];
 
     for (file, anchor, expected) in cases {

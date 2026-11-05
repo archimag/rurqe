@@ -29,6 +29,33 @@ use super::InSubquery;
 ///
 /// assert_eq!(predicate, Expr::column::<UserId>().gt(10i64));
 /// ```
+///
+/// A nullable column implements the trait for its optional type, so its
+/// comparison methods take a value of the inner type exactly as a column of
+/// that type does:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, Expression};
+///
+/// rurqe_core::table!(
+///     /// The `notes` table.
+///     Note => "notes" {
+///         NoteBody => "body": Option<String>,
+///     }
+/// );
+///
+/// let present = NoteBody.eq("draft");
+/// let absent = NoteBody.is_null();
+///
+/// assert_eq!(present, Expr::column::<NoteBody>().eq("draft"));
+/// assert_eq!(absent, Expr::column::<NoteBody>().is_null());
+/// ```
+///
+/// The comparison renders the operator over a bound parameter and matches no row
+/// storing `NULL`, which [`is_null`](Self::is_null) and
+/// [`is_not_null`](Self::is_not_null) select instead; an `Option<T>` value is
+/// not an operand form of a comparison.
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an expression of type `{T}`",
     label = "neither a column marker nor a built expression",

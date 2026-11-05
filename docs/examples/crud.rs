@@ -1,5 +1,9 @@
 //! Row mutations: `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, and upsert.
 //!
+//! The nullable `settings` table is read here as well, because a column declared
+//! `Option<T>` is written by a mutation and matched by a filter, and both
+//! operations are demonstrated against the same declaration.
+//!
 //! Every mutation except the bulk insert terminates against an asynchronous
 //! pool, so a chapter includes the shape an application actually writes; the
 //! bulk insert is assembled as a build fragment of its own.
@@ -220,6 +224,24 @@ async fn main() -> Result<()> {
         Ok(rows) => println!("wrote {rows} row(s)"),
     }
     // ANCHOR_END: server_refusal
+
+    // ANCHOR: nullable_equality
+    let localised = select_from(Setting)
+        .select((SettingId, SettingLocale))
+        .where_(SettingLocale.eq("en"))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: nullable_equality
+    println!("{} row(s)", localised.len());
+
+    // ANCHOR: nullable_absence
+    let unset = select_from(Setting)
+        .select((SettingId,))
+        .where_(SettingLocale.is_null())
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: nullable_absence
+    println!("{} row(s)", unset.len());
 
     Ok(())
 }
