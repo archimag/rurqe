@@ -556,15 +556,35 @@ pub mod prelude {
     #[cfg(any(feature = "postgres", feature = "r2d2"))]
     pub use rurqe_postgres::PgConnection;
 
-    #[cfg(feature = "tokio-postgres")]
+    /// The asynchronous driver adapters, compiled by the `tokio-postgres`
+    /// feature and by `deadpool-postgres`, which pools that driver.
+    ///
+    /// The pool feature carries the driver feature in the adapter crate, so a
+    /// build that enables only `deadpool-postgres` still compiles the
+    /// connection and its scope. The scope travels with the connection because
+    /// a pooled transaction hands one to its closure, so naming the pool
+    /// without naming the scope would describe half of the adapter.
+    #[cfg(any(feature = "tokio-postgres", feature = "deadpool-postgres"))]
     pub use rurqe_postgres::{PgAsyncConnection, PgAsyncScope};
 
     // The adapter failure and the refusal it describes travel together, so the
     // driver's description of a refusal is named beside the error carrying it.
-    #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
+    // Every adapter feature compiles that error: `r2d2` carries the synchronous
+    // driver and `deadpool-postgres` the asynchronous one, so the error reaches
+    // the prelude with exactly the features that name an adapter.
+    #[cfg(any(
+        feature = "postgres",
+        feature = "tokio-postgres",
+        feature = "deadpool-postgres",
+        feature = "r2d2"
+    ))]
     pub use rurqe_postgres::{DbError, PgError, SqlState};
 
-    #[cfg(feature = "sqlite")]
+    // The SQLite surface is compiled whenever either feature links the adapter
+    // crate: `sqlite` does it directly, and `r2d2` does it because it pools that
+    // driver. A pool of connections is only usable through the dialect it hands
+    // out, so the dialect markers reach the prelude with the pool.
+    #[cfg(any(feature = "sqlite", feature = "r2d2"))]
     pub use rurqe_sqlite::{
         Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_25, Sqlite3_30, Sqlite3_35, Sqlite3_38,
         SqliteConnection, SqliteVersion,
