@@ -11,9 +11,9 @@ A `SELECT` projecting exactly one column is also a scalar operand, so it slots d
 ```
 
 ```sql
-SELECT "id" AS "product_id", "name" AS "product_name",
-       "price" AS "product_price"
-FROM "products" WHERE ("price" > (SELECT AVG("price") FROM "products"))
+SELECT "id" AS "product_id", "name" AS "product_name", "price" AS "product_price"
+FROM "products"
+WHERE ("price" > (SELECT AVG("price") FROM "products"))
 ```
 
 The same conversion exists through `From`, so `.into()` works where the target type is unambiguous, and `Expr::subquery(query)` names it explicitly where it is not — inside a `CASE` branch or a tuple comparison, for example.
@@ -41,7 +41,8 @@ The reference `outer(UserId)` is a correlated one: it reads a column of the stat
 ```
 
 ```sql
-SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
+SELECT "id" AS "user_id", "name" AS "user_name"
+FROM "users"
 WHERE ("id" IN (SELECT "user_id" FROM "orders"))
 ```
 
