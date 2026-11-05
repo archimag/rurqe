@@ -87,7 +87,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// A deduplicated statement cannot request a row-level lock, so the query
     /// moves out of [`NoLock`] and [`SelectQuery::for_update`] and
-    /// [`SelectQuery::for_share`] stop applying to it:
+    /// [`SelectQuery::for_share`] stop applying to it.
     ///
     /// A statement requests one deduplication flavour. `distinct_on` records the
     /// other one on the state this call leaves the query in, so

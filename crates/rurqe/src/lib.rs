@@ -383,8 +383,8 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 
 /// Starts an `INSERT` statement over the table `T` for the dialect `D`.
 ///
-/// is checked against its column's Rust type at the call site.
-///
+/// Each row is a set of typed column assignments, so every assigned value is
+/// checked against its column's Rust type at the call site.
 ///
 /// The statement renders the assigned columns and one placeholder per assigned
 /// value, in the order the assignments were written.
@@ -419,7 +419,6 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 /// The builder starts in the unfiltered typestate, where `build` stays
 /// unavailable: either call `where_` to restrict the affected rows or
 /// `allow_all` to confirm a full-table deletion explicitly.
-///
 ///
 /// The statement renders the filter that restricts the deleted rows.
 pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> {
