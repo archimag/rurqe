@@ -62,7 +62,7 @@ impl Subquery {
     /// of the pre-flight pass, so a statement whose `FROM` and `JOIN` address one
     /// relation is rejected here just as it is at the top level:
     ///
-    /// 
+    /// ```
     /// use rurqe_core::dialect::Dialect;
     /// use rurqe_core::expr::{ExprKind, JoinAst, JoinKind, SelectAst, Subquery};
     /// use rurqe_core::query::BuildError;
@@ -122,7 +122,7 @@ impl Subquery {
     /// );
     /// assert!(sql.is_empty());
     /// assert!(params.is_empty());
-    /// 
+    /// ```
     pub fn render<D: Dialect>(
         &self,
         sql: &mut String,
