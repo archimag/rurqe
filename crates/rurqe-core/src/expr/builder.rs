@@ -17,8 +17,10 @@
 mod aggregates;
 mod arithmetic;
 mod predicates;
+mod slots;
 
 pub use aggregates::{AcceptsAggregateClause, AggregateMarker, DirectAggregate, FilteredAggregate};
+pub use slots::FragmentsBuilder;
 
 use core::marker::PhantomData;
 
@@ -428,6 +430,49 @@ impl<T> Expr<T, ()> {
     /// declared, so a `CASE` expression without branches does not compile.
     pub fn case() -> CaseBuilder<T> {
         CaseBuilder::new()
+    }
+
+    /// Starts an expression assembled from literal SQL text and operand slots.
+    ///
+    /// `T` is the Rust type the call decodes to. The builder starts with the text
+    /// `first` and grows by [`text`](FragmentsBuilder::text) pieces,
+    /// [`operand`](FragmentsBuilder::operand) slots holding a column or an
+    /// expression, and [`value`](FragmentsBuilder::value) slots binding a Rust
+    /// value as a parameter; [`end`](FragmentsBuilder::end) closes the call. A
+    /// user-defined SQL function is an ordinary Rust function returning the
+    /// expression this builder produces.
+    ///
+    /// The text of the fragments is trusted exactly like the template of `sql!`,
+    /// while the operands stay under the checks of every expression: the tables
+    /// they read, their parameters, and their aggregation behaviour.
+    ///
+    /// ```
+    /// use rurqe_core::expr::{Expr, ExprKind, RawFragments};
+    ///
+    /// rurqe_core::table!(
+    ///     User => "users" {
+    ///         UserName => "name": String,
+    ///     }
+    /// );
+    ///
+    /// let lowered = Expr::<String>::fragments("lower(")
+    ///     .operand(UserName)
+    ///     .text(")")
+    ///     .end();
+    ///
+    /// assert_eq!(
+    ///     lowered.kind(),
+    ///     &ExprKind::Fragments {
+    ///         fragments: RawFragments::Owned(vec!["lower(".to_owned(), ")".to_owned()]),
+    ///         operands: vec![ExprKind::Column {
+    ///             table: "users",
+    ///             name: "name",
+    ///         }],
+    ///     }
+    /// );
+    /// ```
+    pub fn fragments(first: &str) -> FragmentsBuilder<T> {
+        FragmentsBuilder::new(first)
     }
 
     /// Builds a scalar subquery expression producing values of type `T`.

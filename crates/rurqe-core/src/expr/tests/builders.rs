@@ -2,6 +2,7 @@ use super::*;
 
 mod composition;
 mod dialect;
+mod fragments;
 mod operands;
 mod window;
 

@@ -23,7 +23,10 @@ use crate::expr::ExprKind;
 /// operand is a function application and the clause attaches to it.
 pub(super) fn window_operand_shape(operand: &ExprKind) -> Option<&'static str> {
     match operand {
-        ExprKind::Aggregate { .. } | ExprKind::Function { .. } | ExprKind::Raw { .. } => None,
+        ExprKind::Aggregate { .. }
+        | ExprKind::Function { .. }
+        | ExprKind::Raw { .. }
+        | ExprKind::Fragments { .. } => None,
         ExprKind::Column { .. } | ExprKind::QualifiedColumn { .. } => Some("a column reference"),
         ExprKind::Excluded { .. } => Some("an `EXCLUDED` column reference"),
         ExprKind::Row { .. } => Some("a row value"),

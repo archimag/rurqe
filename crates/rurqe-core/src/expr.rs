@@ -39,7 +39,7 @@ pub use ast::{
 };
 pub use builder::{
     AcceptsAggregateClause, Aggregate, AggregateMarker, DirectAggregate, Expr, FilteredAggregate,
-    NonAggregate,
+    FragmentsBuilder, NonAggregate,
 };
 pub use fragments::RawFragments;
 pub use functions::{

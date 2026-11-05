@@ -350,6 +350,21 @@ pub fn render_expr<D: Dialect>(
                 }
             }
         }
+        ExprKind::Fragments {
+            fragments,
+            operands,
+        } => {
+            // The text pieces are written verbatim, and every operand sits between
+            // two consecutive pieces. An operand is rendered like any other
+            // expression, so the dialect quotes its identifiers and its parameters
+            // continue the numbering of the statement.
+            for (index, fragment) in fragments.iter().enumerate() {
+                sql.push_str(fragment);
+                if let Some(operand) = operands.get(index) {
+                    render_expr::<D>(sql, params, operand, relations)?;
+                }
+            }
+        }
         ExprKind::DialectOp { op, lhs, rhs } => {
             sql.push('(');
             render_expr::<D>(sql, params, lhs, relations)?;

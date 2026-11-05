@@ -634,6 +634,13 @@ const FRAGMENTS: &[Fragment] = &[
         terminal: Terminal::Executed,
         chapters: &["core/expressions.md"],
     },
+    Fragment {
+        file: "expressions.rs",
+        anchor: "custom_function",
+        binding: "heat_map",
+        terminal: Terminal::Executed,
+        chapters: &["core/expressions.md"],
+    },
 ];
 
 fn main() {

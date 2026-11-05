@@ -583,9 +583,11 @@ pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), Bu
         // Raw fragments are user text: a reference inside them reached the
         // template already rendered.
         ExprKind::Raw { .. } => Ok(()),
-        ExprKind::Row { values } | ExprKind::InList { values, .. } => {
-            reject_columns_without_relations_each(values)
-        }
+        ExprKind::Row { values }
+        | ExprKind::InList { values, .. }
+        | ExprKind::Fragments {
+            operands: values, ..
+        } => reject_columns_without_relations_each(values),
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
             reject_columns_without_relations(lhs)?;
             reject_columns_without_relations(rhs)

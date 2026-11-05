@@ -250,7 +250,10 @@ fn contains_window_call(expr: &ExprKind) -> bool {
         | ExprKind::Raw { .. }
         | ExprKind::Aggregate { .. }
         | ExprKind::Multiset { .. } => false,
-        ExprKind::Row { values } => any_window_call_in(values),
+        ExprKind::Row { values }
+        | ExprKind::Fragments {
+            operands: values, ..
+        } => any_window_call_in(values),
         ExprKind::InList {
             operand, values, ..
         } => contains_window_call(operand) || any_window_call_in(values),
@@ -305,7 +308,9 @@ fn first_aggregate(expr: &ExprKind) -> Option<AggregateFunc> {
         // A raw fragment reached the template already rendered, so the calls it
         // spells are not described by the expression tree.
         | ExprKind::Raw { .. } => None,
-        ExprKind::Row { values } => first_aggregate_in(values),
+        ExprKind::Row { values } | ExprKind::Fragments { operands: values, .. } => {
+            first_aggregate_in(values)
+        }
         ExprKind::InList { operand, values, .. } => {
             first_aggregate(operand).or_else(|| first_aggregate_in(values))
         }
@@ -409,7 +414,10 @@ pub(crate) fn collect_bare_columns(
         ExprKind::Excluded { .. } => {}
         ExprKind::Value(_) => {}
         ExprKind::Raw { .. } => {}
-        ExprKind::Row { values } => {
+        ExprKind::Row { values }
+        | ExprKind::Fragments {
+            operands: values, ..
+        } => {
             for value in values {
                 collect_bare_columns(value, columns);
             }

@@ -335,7 +335,11 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             }
             Ok(())
         }
-        ExprKind::Row { values } | ExprKind::InList { values, .. } => {
+        ExprKind::Row { values }
+        | ExprKind::InList { values, .. }
+        | ExprKind::Fragments {
+            operands: values, ..
+        } => {
             for v in values {
                 validate_expr_tree(v, scope)?;
             }
@@ -567,9 +571,11 @@ fn walk_qualifiers(
                 Err(BuildError::UnresolvedQualifier { name: qualifier })
             }
         }
-        ExprKind::Row { values } | ExprKind::InList { values, .. } => {
-            walk_qualifiers_each(values, relations, outer_relations, embedded)
-        }
+        ExprKind::Row { values }
+        | ExprKind::InList { values, .. }
+        | ExprKind::Fragments {
+            operands: values, ..
+        } => walk_qualifiers_each(values, relations, outer_relations, embedded),
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
             walk_qualifiers(lhs, relations, outer_relations, embedded)?;
             walk_qualifiers(rhs, relations, outer_relations, embedded)

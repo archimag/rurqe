@@ -2,7 +2,7 @@
 
 Everything that produces a value in SQL is an expression: a column, a literal, a comparison, an arithmetic operation, a function call. An expression is a typed value: it decodes to one Rust type, and it records which tables it reads, so an expression cannot name a table the statement does not introduce. A correlated reference is the single exception, and it is marked as one rather than written as a bare column.
 
-A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, null-safe comparison, and the correlated reference an enclosing statement resolves.
+A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, null-safe comparison, custom SQL functions, and the correlated reference an enclosing statement resolves.
 
 ## Arithmetic
 
@@ -76,6 +76,37 @@ The operand is any expression, so a column marker and a whole built predicate ar
 ```rust,no_run
 {{#rustdoc_include ../examples/subqueries.rs:exists}}
 ```
+
+## Custom SQL functions
+
+A function the typed surface does not model — a PostgreSQL `date_trunc`, an extension function — is written once as an ordinary Rust function that returns an expression. `Expr::<T>::fragments(...)` assembles the call from literal SQL text and operand slots, where `T` is the Rust type the call decodes to:
+
+- `.text(sql)` appends literal SQL text.
+- `.operand(x)` inserts a column or an expression as a slot. The slot renders like any other expression of the statement: the dialect quotes its identifiers, and its bound parameters join the parameter numbering of the statement.
+- `.value(v)` binds a Rust value as a parameter, the way `sql!` binds its arguments.
+- `.end()` closes the call.
+
+```rust,no_run
+{{#rustdoc_include ../examples/expressions.rs:custom_function_definition}}
+```
+
+The function is called wherever an expression is accepted, here as a named field of a projection:
+
+```rust,no_run
+{{#rustdoc_include ../examples/expressions.rs:custom_function}}
+```
+
+```sql
+SELECT "id" AS "order_id", date_trunc($1, "created_at") AS "day" FROM "orders"
+```
+
+The slots keep the checks every expression has:
+
+- A column slot names a table of the statement. A column of a table the statement does not introduce is refused at the call site.
+- An aggregate slot makes the whole call an aggregate, so the call projects from a grouped query. A column slot makes the call a per-row expression, so a grouped projection accepts it only when that column is grouped.
+- A value bound with `.value(v)` reads no table and leaves the rest of the call as it is.
+
+The responsibility is split at the slots. The text between them is written into the statement verbatim and carries the same trust as the template of `sql!`: the author makes sure it spells a call the engine knows. The operands are checked by the library: their types, the tables they read, their bound parameters, and how they combine with grouping.
 
 ## The escape hatch
 

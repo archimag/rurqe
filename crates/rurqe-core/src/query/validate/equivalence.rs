@@ -261,6 +261,16 @@ pub(super) fn equivalent_expressions(lhs: &ExprKind, rhs: &ExprKind) -> bool {
                 && equivalent_optional(lhs_operand.as_deref(), rhs_operand.as_deref())
                 && lhs_query == rhs_query
         }
+        (
+            ExprKind::Fragments {
+                fragments: lhs_fragments,
+                operands: lhs_operands,
+            },
+            ExprKind::Fragments {
+                fragments: rhs_fragments,
+                operands: rhs_operands,
+            },
+        ) => lhs_fragments == rhs_fragments && equivalent_lists(lhs_operands, rhs_operands),
         (lhs, rhs) => lhs == rhs,
     }
 }

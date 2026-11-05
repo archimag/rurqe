@@ -13,6 +13,18 @@ table!(
     }
 );
 
+// ANCHOR: custom_function_definition
+/// Truncates a timestamp column to the day, as PostgreSQL `date_trunc` does.
+fn date_trunc_day(column: OrderCreatedAt) -> Expr<chrono::DateTime<chrono::Utc>, Order> {
+    Expr::<chrono::DateTime<chrono::Utc>>::fragments("date_trunc(")
+        .value("day")
+        .text(", ")
+        .operand(column)
+        .text(")")
+        .end()
+}
+// ANCHOR_END: custom_function_definition
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
@@ -74,6 +86,19 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: period_analytics
     println!("{}", recent_orders.len());
+
+    // ANCHOR: custom_function
+    let heat_map = select_from(Order)
+        .select(cols!(
+            order_id: OrderId,
+            day: date_trunc_day(OrderCreatedAt),
+        ))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: custom_function
+    for row in heat_map {
+        println!("{} {}", row.order_id, row.day);
+    }
 
     Ok(())
 }

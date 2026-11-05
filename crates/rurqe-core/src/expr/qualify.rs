@@ -152,6 +152,15 @@ pub(super) fn qualify_references(kind: ExprKind) -> ExprKind {
                 .collect(),
             frame,
         },
+        // The operands are ordinary expressions of the statement, so they are
+        // rewritten like any other operand; the text pieces stay as written.
+        ExprKind::Fragments {
+            fragments,
+            operands,
+        } => ExprKind::Fragments {
+            fragments,
+            operands: operands.into_iter().map(qualify_references).collect(),
+        },
         // The remaining nodes either name their relation already or carry no
         // operand of their own.
         other @ (ExprKind::QualifiedColumn { .. }

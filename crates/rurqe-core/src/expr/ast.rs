@@ -97,6 +97,23 @@ pub enum ExprKind {
         /// The bound parameter values to insert between fragments.
         params: Vec<SqlVal>,
     },
+    /// Literal SQL text fragments interleaved with typed operand expressions.
+    ///
+    /// The fragments are written verbatim and every operand sits between two
+    /// consecutive fragments, so a list holds exactly one fragment more than the
+    /// operands it interleaves. An operand is an ordinary expression: it is
+    /// rendered by the dialect of the enclosing statement, its identifiers are
+    /// quoted and qualified like those of any other expression, and its bound
+    /// parameters continue the placeholder numbering of the statement. The
+    /// builder [`Expr::fragments`](crate::expr::Expr::fragments) is the only
+    /// constructor the typed API offers, and it keeps the interleaving by
+    /// construction.
+    Fragments {
+        /// The literal SQL text pieces, in statement order.
+        fragments: RawFragments,
+        /// The operand expressions between consecutive fragments.
+        operands: Vec<ExprKind>,
+    },
     /// A dialect-specific binary operator applied to two symbolic operands.
     ///
     /// Unlike [`ExprKind::Raw`], both operands stay symbolic until the enclosing
