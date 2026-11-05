@@ -1,6 +1,6 @@
 //! Translation between typed SQL values and the `rusqlite` parameter interface.
 
-use ::rusqlite::types::{ToSql, ToSqlOutput, ValueRef};
+use rusqlite::types::{ToSql, ToSqlOutput, ValueRef};
 
 use rurqe_core::expr::SqlVal;
 
@@ -22,6 +22,12 @@ impl ToSql for SqlValParam<'_> {
             SqlVal::Bool(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value as i64))),
             SqlVal::Text(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes()))),
             SqlVal::Bytes(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Blob(value.as_slice()))),
+            // SQLite carries no column types, so the declared SQL type of a
+            // typed wire value cannot survive a store: the value binds as the
+            // blob of its payload, and a column reads it back as a plain blob.
+            SqlVal::TypedWire { payload, .. } => {
+                Ok(ToSqlOutput::Borrowed(ValueRef::Blob(payload.as_slice())))
+            }
             // SQLite has no array column type, so an array binds as the JSON
             // document of its elements: that is the form
             // `Vec<T>::from_sql_value` parses back into the elements of the
@@ -187,4 +193,32 @@ pub(super) fn value_ref_to_sql_val(
         }
         ValueRef::Blob(bytes) => SqlVal::Bytes(bytes.to_vec()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rurqe_core::expr::SqlVal;
+    use rusqlite::types::{ToSql, ToSqlOutput, ValueRef};
+
+    use super::SqlValParam;
+
+    /// SQLite carries no column types, so the declared name of a typed wire
+    /// value cannot survive a store: the value binds as the blob of its
+    /// payload, and a column reads it back as a plain blob.
+    #[test]
+    fn a_typed_wire_value_binds_as_the_blob_of_its_payload() {
+        let payload = vec![0u8, 1, 2, 3];
+        let value = SqlVal::TypedWire {
+            sql_type: "interval".to_owned(),
+            payload: payload.clone(),
+        };
+        let param = SqlValParam(&value);
+
+        match param.to_sql().expect("a typed wire value binds") {
+            ToSqlOutput::Borrowed(ValueRef::Blob(octets)) => {
+                assert_eq!(octets, payload.as_slice());
+            }
+            _ => panic!("a typed wire value binds as the blob of its payload"),
+        }
+    }
 }

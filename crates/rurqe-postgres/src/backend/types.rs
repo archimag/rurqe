@@ -51,8 +51,6 @@ use self::wire::{base_type, wire_of, Wire};
 pub enum PgError {
     /// The PostgreSQL driver failed to execute the statement.
     Driver(DriverError),
-    /// A result column holds a type that cannot be decoded into a [`SqlVal`].
-    UnsupportedType(String),
     /// A result column holds a value that does not decode as its declared type.
     InvalidValue {
         /// Name of the column type the value was read as.
@@ -118,10 +116,6 @@ impl fmt::Display for PgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PgError::Driver(error) => write!(f, "{}", driver_failure(error)),
-            PgError::UnsupportedType(name) => write!(
-                f,
-                "unsupported PostgreSQL column type `{name}`: cannot decode into a SQL value"
-            ),
             PgError::InvalidValue {
                 column_type,
                 reason,
@@ -147,7 +141,6 @@ impl StdError for PgError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             PgError::Driver(error) => Some(error),
-            PgError::UnsupportedType(_) => None,
             PgError::InvalidValue { .. } => None,
             PgError::Catalog(_) => None,
             PgError::ConnectionPoisoned { cause, .. } => cause
@@ -171,16 +164,15 @@ impl PgError {
     /// SQLSTATE class is inspected programmatically instead of being matched
     /// against the rendered message.
     ///
-    /// A failure that never reached the server reports `None`: an unsupported
-    /// column type, a value that does not decode, an unreadable catalog, a
-    /// poisoned connection, an abandoned checkout, and a pool refusal carry no
-    /// server description. The failure a poison record was written for stays
-    /// reachable through [`source`](std::error::Error::source).
+    /// A failure that never reached the server reports `None`: a value that
+    /// does not decode, an unreadable catalog, a poisoned connection, an
+    /// abandoned checkout, and a pool refusal carry no server description.
+    /// The failure a poison record was written for stays reachable through
+    /// [`source`](std::error::Error::source).
     pub fn as_db_error(&self) -> Option<&DbError> {
         match self {
             PgError::Driver(error) => error.as_db_error(),
-            PgError::UnsupportedType(_)
-            | PgError::InvalidValue { .. }
+            PgError::InvalidValue { .. }
             | PgError::Catalog(_)
             | PgError::ConnectionPoisoned { .. }
             | PgError::AbandonedTransaction { .. } => None,
@@ -385,6 +377,19 @@ impl ToSql for SqlValParam<'_> {
             return encode_array(self.0, ty, out);
         }
 
+        // A typed wire value carries the octets of a SQL type the adapter does
+        // not model, together with the declared name of that type. The server
+        // reads the payload through the type of the parameter, so a value whose
+        // declared name is the name the column is declared over is written
+        // verbatim: no codec of this adapter takes part in the encoding.
+        if let SqlVal::TypedWire { payload, .. } = self.0 {
+            if !declares_type(self.0, ty) {
+                return Err(unusable_value(self.0, ty));
+            }
+            out.extend_from_slice(payload);
+            return Ok(IsNull::No);
+        }
+
         // The binary layout of a value follows the type its column is declared
         // over: a domain carries the representation of that type. Resolving the
         // domain chain here keeps a domain column binding the same octets as the
@@ -518,17 +523,36 @@ impl ToSql for SqlValParam<'_> {
     /// Encodes the parameter, rejecting columns of a type the adapter cannot bind.
     ///
     /// `NULL` is bindable for any column type, so an optional parameter keeps
-    /// working regardless of the column it is bound to.
+    /// working regardless of the column it is bound to. A typed wire value is
+    /// bindable for the column whose declared type it names.
     fn to_sql_checked(
         &self,
         ty: &Type,
         out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
-        if matches!(self.0, SqlVal::Null) || Self::accepts(ty) {
+        // Three cases reach the encoder: `NULL`, which every column accepts, a
+        // typed wire value declaring the type of the target column, and a
+        // column of a type the adapter models itself.
+        if matches!(self.0, SqlVal::Null) || Self::accepts(ty) || declares_type(self.0, ty) {
             return self.to_sql(ty, out);
         }
 
         Err(unusable_value(self.0, ty))
+    }
+}
+
+/// Reports whether `value` declares the SQL type the column `ty` is declared
+/// over.
+///
+/// A typed wire value carries the octets of a SQL type the adapter does not
+/// model, and the server reads them through the type of the parameter. The
+/// declared name is therefore compared against the type the column is declared
+/// over, with its domain chain resolved, so a domain accepts the value of the
+/// type it is declared over exactly like a column of that type.
+fn declares_type(value: &SqlVal, ty: &Type) -> bool {
+    match value {
+        SqlVal::TypedWire { sql_type, .. } => sql_type.as_str() == base_type(ty).name(),
+        _ => false,
     }
 }
 
@@ -853,7 +877,6 @@ fn decode_row<R: ResultRow>(plans: &[ColumnPlan], row: &R) -> Result<Vec<SqlVal>
 /// Describes a column payload that cannot be decoded into a [`SqlVal`].
 fn column_error(failure: DecodeError, column_ty: &Type) -> PgError {
     match failure {
-        DecodeError::Unsupported => PgError::UnsupportedType(column_ty.name().to_owned()),
         DecodeError::Invalid(reason) => PgError::InvalidValue {
             column_type: column_ty.name().to_owned(),
             reason,
@@ -864,8 +887,6 @@ fn column_error(failure: DecodeError, column_ty: &Type) -> PgError {
 /// Why the binary payload of a column cannot be decoded into a [`SqlVal`].
 #[derive(Debug)]
 enum DecodeError {
-    /// The declared column type has no known binary representation.
-    Unsupported,
     /// The payload does not decode as its declared type.
     Invalid(String),
 }
@@ -874,9 +895,6 @@ impl DecodeError {
     /// Describes the failure as one message.
     fn describe(self) -> String {
         match self {
-            DecodeError::Unsupported => {
-                "the declared type has no known binary representation".to_owned()
-            }
             DecodeError::Invalid(reason) => reason,
         }
     }
@@ -1010,7 +1028,16 @@ fn extended_value(ty: &Type, wire: Option<Wire>, payload: &[u8]) -> Result<SqlVa
             .decode(payload)
             .map(SqlVal::Text)
             .map_err(DecodeError::Invalid),
-        None => Err(DecodeError::Unsupported),
+        // A type outside every family and every wire codec — `interval`, a
+        // range, or an extension type — keeps the octets the server sent,
+        // together with the name the column is declared under. A newtype
+        // bridged with that SQL type reads the value, while a column decoded
+        // into a primitive Rust type reports a row-decoding mismatch naming
+        // both sides.
+        None => Ok(SqlVal::TypedWire {
+            sql_type: ty.name().to_owned(),
+            payload: payload.to_vec(),
+        }),
     }
 }
 

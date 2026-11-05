@@ -238,8 +238,10 @@ Because network addresses travel through the adapter as `SqlVal::Text`, the code
 
 ## Temporal INTERVAL Columns
 
-The PostgreSQL `interval` data type models spans of time. Native binary encoding and decoding for `interval` values are not yet included in the typed AST (scheduled in roadmap item 6).
+The PostgreSQL `interval` data type models spans of time. The typed AST carries no dedicated `interval` value (scheduled in roadmap item 6), so an `interval` column is read and written through a typed wire value: the adapter hands the value to the row as the declared SQL type name together with the octets the server sent, and a value whose declared name matches the type of the target column binds back verbatim.
 
-Attempting to query a raw `interval` column directly returns a driver error: `PgError::UnsupportedType("interval")`. Applications working with interval values can use the following patterns:
+A binary domain newtype bridged with `impl_sql_binary_newtype!(Interval, sql_type = "interval")` reads such a column and writes it back, because the macro declares the SQL type the newtype stands for. Reading an `interval` column into a primitive Rust type reports a row-decoding mismatch naming both sides.
+
+Applications that do not model the value as a newtype can use the following patterns:
 - **Reading intervals:** cast the column to text (`cast::<String>(col)` or `sql!(<String> "duration::text")`), or extract units numerically (`sql!(<f64> "EXTRACT(EPOCH FROM duration)")`).
 - **Date and timestamp arithmetic:** construct interval expressions through the `sql!` escape hatch, e.g. `sql!("created_at > now() - ?::interval", "30 days")`.

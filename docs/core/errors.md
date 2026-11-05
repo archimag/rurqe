@@ -95,7 +95,6 @@ The enumeration implements `From<E>`, so `?` on a driver error inside a function
 | Variant | Meaning |
 |---|---|
 | `Driver(DriverError)` | The driver refused the statement; the message, the detail, and the hint the server sent are rendered into the diagnostic. |
-| `UnsupportedType(String)` | A result column holds a type that cannot be decoded into a value. |
 | `InvalidValue { column_type, reason }` | A result column holds a value that does not decode as its declared type. |
 | `Catalog(String)` | A catalog query or one of its columns could not be read. |
 | `ConnectionPoisoned { reason, cause }` | The connection can no longer be proven outside a transaction, so every further statement and transaction is refused before it reaches the server; the cause the adapter traced is handed back through `source()`. |
@@ -114,6 +113,10 @@ The enumeration implements `From<E>`, so `?` on a driver error inside a function
 | `AbandonedTransaction(rusqlite::Error)` | The checked-out connection could not be returned to an idle session, so it is not handed out. |
 
 Either pool type converts from the failures its own paths raise — `From<r2d2::Error>`, `From<rusqlite::Error>`, and `From<PgError>` — so a checkout failure and a block failure propagate with `?` into a function returning the pool error type.
+## Reading a column of an unmodelled type
+
+A result column of a type the adapter does not model — `interval`, a range, or an extension type — is not a failure: the value reaches the row as a typed wire value, which carries the declared SQL type name together with the octets the server sent. A domain newtype bridged with that SQL type decodes it, while a column read into a primitive Rust type reports `RowDecodeError::TypeMismatch` naming both sides. The value binds back to a column of the same SQL type, because the adapter writes the payload verbatim when the declared name matches the type of the target column.
+
 ## Reading a server refusal
 
 A refusal the server reported stays inspectable after it crosses the adapter boundary. A statement the engine rejects arrives as `ExecutionError::Backend`, the PostgreSQL adapter keeps the driver failure whole in `PgError::Driver`, and the driver records what the server sent — the SQLSTATE, the message, the detail, and the constraint, the table, and the column the refusal names — as a `DbError`. `PgError::as_db_error()` borrows that value, so the SQLSTATE class is read programmatically while the rendered message stays the human-readable summary that carries no code of its own.
@@ -134,7 +137,7 @@ INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3)
 | constraint | `constraint()` | the constraint the refusal names, absent when no constraint caused it |
 | table | `table()` | the relation the refusal names, absent when it names none |
 
-The accessor reports `None` for a failure that never reached the server: an unsupported column type, a value that does not decode, an unreadable catalog, a poisoned connection, an abandoned checkout, and a pool refusal carry no server description. A poison record keeps the failure it was written for reachable through `source()`, so the description of a refusal behind a poison is read from that cause.
+The accessor reports `None` for a failure that never reached the server: a value that does not decode, an unreadable catalog, a poisoned connection, an abandoned checkout, and a pool refusal carry no server description. A poison record keeps the failure it was written for reachable through `source()`, so the description of a refusal behind a poison is read from that cause.
 
 ## Migrations
 

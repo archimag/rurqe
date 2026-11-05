@@ -33,6 +33,10 @@ pub(super) fn value_fits(column_ty: &Type, value: &SqlVal) -> bool {
         SqlVal::Decimal(_) => integer || float || text,
         SqlVal::Text(_) => text || is_textual_target(column_ty),
         SqlVal::Bytes(_) => column_ty == &Type::BYTEA,
+        // A typed wire value declares the SQL type whose octets it carries, so
+        // it fits exactly the column declared over that type. The binding gate
+        // compares the same names before the encoder is reached.
+        SqlVal::TypedWire { sql_type, .. } => sql_type.as_str() == column_ty.name(),
         #[cfg(feature = "uuid")]
         SqlVal::Uuid(_) => column_ty == &Type::UUID || text,
         #[cfg(feature = "chrono")]

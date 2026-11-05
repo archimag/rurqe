@@ -560,3 +560,121 @@ fn detail_and_hint_follow_the_message_the_server_sent() {
         "refused (the detail); hint: the hint"
     );
 }
+
+/// A result column of a type the adapter does not model decodes into a typed
+/// wire value: the declared name of the SQL type together with the octets the
+/// server sent, so a newtype bridged with that type reads the value.
+#[test]
+fn a_column_of_an_unmodelled_type_decodes_into_a_typed_wire_value() {
+    let interval = synthetic("interval", 1186, Kind::Simple);
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&86_400_000_000i64.to_be_bytes());
+    payload.extend_from_slice(&1i32.to_be_bytes());
+    payload.extend_from_slice(&2i32.to_be_bytes());
+
+    let mut decoder = RowDecoder::new();
+    let row = SyntheticRow {
+        columns: vec![(&interval, Some(payload.as_slice()))],
+    };
+    let values = decoder.decode(&row).expect("the value decodes");
+
+    assert_eq!(
+        values,
+        vec![SqlVal::TypedWire {
+            sql_type: "interval".to_owned(),
+            payload: payload.clone(),
+        }]
+    );
+}
+
+/// A domain over a type the adapter does not model decodes under the type it
+/// is declared over, which is the name its payload is read through.
+#[test]
+fn a_domain_over_an_unmodelled_type_decodes_under_its_base_type() {
+    let interval = synthetic("interval", 1186, Kind::Simple);
+    let duration = synthetic("duration", 65_500, Kind::Domain(interval));
+    let payload = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+    let mut decoder = RowDecoder::new();
+    let row = SyntheticRow {
+        columns: vec![(&duration, Some(payload.as_slice()))],
+    };
+    let values = decoder.decode(&row).expect("the value decodes");
+
+    assert_eq!(
+        values,
+        vec![SqlVal::TypedWire {
+            sql_type: "interval".to_owned(),
+            payload: payload.clone(),
+        }]
+    );
+}
+
+/// A typed wire value binds to the column it names, and its payload reaches
+/// the wire verbatim instead of passing through a codec of the adapter.
+#[test]
+fn a_typed_wire_value_binds_to_the_column_it_names() {
+    let interval = synthetic("interval", 1186, Kind::Simple);
+    let payload = vec![0u8, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3];
+    let value = SqlVal::TypedWire {
+        sql_type: "interval".to_owned(),
+        payload: payload.clone(),
+    };
+
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&value)
+            .to_sql_checked(&interval, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+    assert_eq!(buffer.to_vec(), payload);
+}
+
+/// The value a column of an unmodelled type decodes into binds back to the
+/// same column, so a value read from a column stays writable to it.
+#[test]
+fn a_decoded_typed_wire_value_binds_back_to_its_column() {
+    let interval = synthetic("interval", 1186, Kind::Simple);
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1_000_000i64.to_be_bytes());
+    payload.extend_from_slice(&2i32.to_be_bytes());
+    payload.extend_from_slice(&3i32.to_be_bytes());
+
+    let mut decoder = RowDecoder::new();
+    let row = SyntheticRow {
+        columns: vec![(&interval, Some(payload.as_slice()))],
+    };
+    let value = decoder
+        .decode(&row)
+        .expect("the value decodes")
+        .into_iter()
+        .next()
+        .expect("the row carries one value");
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&value)
+        .to_sql_checked(&interval, &mut buffer)
+        .expect("the decoded value binds back to its column");
+    assert_eq!(buffer.to_vec(), payload);
+}
+
+/// A typed wire value whose declared name is not the type of the target column
+/// is refused before any octet reaches the wire.
+#[test]
+fn a_typed_wire_value_is_rejected_for_a_column_of_another_type() {
+    let value = SqlVal::TypedWire {
+        sql_type: "interval".to_owned(),
+        payload: vec![0u8; 16],
+    };
+
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&value).to_sql_checked(&Type::TEXT, &mut buffer) {
+        Ok(_) => panic!("an interval value cannot fill a text column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("typed wire"));
+    assert!(error.to_string().contains("text"));
+    assert!(buffer.is_empty());
+}
