@@ -41,6 +41,13 @@ use super::types::{value_ref_to_sql_val, SqlValParam};
 /// protocol keeps running through the transaction-control path, because the
 /// rollback a dropping scope issues and the retry of the next transaction
 /// entry are exactly the statements that end the state.
+///
+/// The other half of the same hazard is a transaction the adapter never
+/// recorded: a raw driver handle opens one through the supported escape hatch,
+/// so the next typed transaction entry would join it — SQLite refuses the
+/// `BEGIN` outright — and a bare statement would run inside work nobody
+/// commits. Every typed transaction entry therefore returns an unproven session
+/// to an idle state before its block opens.
 pub struct SqliteConnection<B = Connection> {
     connection: B,
     status: TransactionStatus<::rusqlite::Error>,
@@ -91,6 +98,16 @@ impl<B: Borrow<Connection>> SqliteConnection<B> {
 
 impl<B: BorrowMut<Connection>> SqliteConnection<B> {
     /// Returns a mutable reference to the wrapped connection.
+    ///
+    /// The accessor is a supported escape hatch for behaviour the typed API does
+    /// not model, on par with the raw SQL macros: the statements issued through it
+    /// stay outside the transaction bookkeeping of the adapter, so a manual
+    /// `BEGIN` leaves the connection inside a transaction the adapter never
+    /// records. The caller owns that state and leaves the connection idle when it
+    /// is done. A session the caller leaves open is rolled back at the next typed
+    /// transaction entry, before its block opens, in every build configuration,
+    /// and the checkout of the pool repairs it on the way out, so the leak is
+    /// contained instead of degrading the connection until it is discarded.
     pub fn connection_mut(&mut self) -> &mut Connection {
         self.connection.borrow_mut()
     }
@@ -103,11 +120,19 @@ impl<B: BorrowMut<Connection>> SqliteConnection<B> {
     /// statements while the enclosing transaction stays intact. A panic raised by
     /// `f` is rolled back as well, so the transaction can never be left
     /// half-finished.
+    ///
+    /// The session is returned to an idle state before the block opens, so a
+    /// transaction a raw driver handle left open is rolled back here instead of
+    /// making the `BEGIN` of the block fail. A session the bookkeeping records as
+    /// open or poisoned is left to the recovery of the guard itself: a nested
+    /// block belongs to the enclosing transaction, and a poisoned connection is
+    /// repaired by retrying the statement the driver refused.
     pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut SqliteConnection<B>) -> Result<T, E>,
         E: From<::rusqlite::Error>,
     {
+        self.repair_idle_session().map_err(E::from)?;
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
@@ -133,6 +158,30 @@ impl<B: BorrowMut<Connection>> SqliteConnection<B> {
         } else {
             Err(error)
         }
+    }
+
+    /// Returns a session an untyped driver handle left inside a transaction to an
+    /// idle state.
+    ///
+    /// A typed entry point is the only place where the adapter can still tell
+    /// that the caller is about to open a transaction of its own, so the session
+    /// is handed to [`ensure_idle`] here, in every build configuration: SQLite
+    /// refuses `BEGIN` inside an open transaction, so a leak through the raw
+    /// handle would otherwise degrade the connection until it is discarded and
+    /// the work of the block would never run.
+    ///
+    /// The repair runs only while the bookkeeping records neither an open
+    /// transaction nor a poisoning: a nested savepoint block belongs to the
+    /// enclosing transaction and must not be reset, and a poisoned connection
+    /// belongs to the recovery of [`TransactionGuard`], which retries the
+    /// statement the driver refused instead of closing the transaction behind its
+    /// back. The observation is the engine's own autocommit flag, so a session
+    /// that is already idle pays no statement at all.
+    fn repair_idle_session(&mut self) -> Result<(), ::rusqlite::Error> {
+        if self.status.is_open() || self.status.is_poisoned() {
+            return Ok(());
+        }
+        ensure_idle(self.connection.borrow_mut())
     }
 }
 
@@ -207,7 +256,13 @@ fn poison_refusal(error: &::rusqlite::Error) -> ::rusqlite::Error {
 fn quoted_savepoint(name: &str) -> String {
     Sqlite::<Sqlite3_35>::quote_identifier(name)
 }
-/// Returns the session of a checked-out connection to a provably idle state.
+/// Returns the session of a connection the adapter cannot vouch for to a
+/// provably idle state.
+///
+/// Two callers need the same observation: the checkout of a pool, which hands a
+/// recycled session to the next block, and the entry of a typed transaction,
+/// which opens a block of its own on a session a raw driver handle may have left
+/// inside one.
 ///
 /// A connection recycled by a pool carries the session state of the block that
 /// drove it last: a transaction a raw handle opened, a `BEGIN` whose `COMMIT`
@@ -227,7 +282,6 @@ fn quoted_savepoint(name: &str) -> String {
 /// A reset the driver refuses means the connection could not be brought back to
 /// a known state, so the failure is reported instead of handing the connection
 /// to a caller that would run its work inside the abandoned transaction.
-#[cfg_attr(not(feature = "r2d2"), allow(dead_code))]
 pub(crate) fn ensure_idle(connection: &mut Connection) -> Result<(), ::rusqlite::Error> {
     if connection.is_autocommit() {
         return Ok(());
@@ -434,7 +488,7 @@ pub(super) fn execute_raw_with(
 
 #[cfg(test)]
 mod tests {
-    use super::quoted_savepoint;
+    use super::{quoted_savepoint, SqliteConnection};
 
     #[test]
     fn a_generated_name_renders_as_a_quoted_identifier() {
@@ -451,5 +505,75 @@ mod tests {
             "\"sp\"\"; DROP TABLE users; --\""
         );
         assert_eq!(quoted_savepoint("sp'or"), "\"sp'or\"");
+    }
+
+    /// Opens an in-memory adapter holding one fixture table.
+    fn database() -> SqliteConnection {
+        let connection = SqliteConnection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("CREATE TABLE account (id INTEGER PRIMARY KEY)")
+            .expect("create the fixture table");
+        connection
+    }
+
+    /// Counts the rows of the fixture table through the wrapped handle.
+    fn accounts(connection: &SqliteConnection) -> i64 {
+        connection
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM account",
+                ::rusqlite::params![],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count the rows of the fixture table")
+    }
+
+    #[test]
+    fn a_raw_transaction_is_rolled_back_before_the_block_opens() {
+        let mut db = database();
+
+        // The raw handle is a supported escape hatch, so the transaction it opens
+        // stays outside the bookkeeping of the adapter.
+        db.connection_mut()
+            .execute_batch("BEGIN")
+            .expect("the raw handle opens a transaction");
+        db.connection_mut()
+            .execute_batch("INSERT INTO account (id) VALUES (1)")
+            .expect("the raw insert runs inside it");
+        assert!(
+            !db.connection().is_autocommit(),
+            "the raw transaction is open"
+        );
+
+        db.transaction(|tx| tx.execute_batch("INSERT INTO account (id) VALUES (2)"))
+            .expect("the typed block opens on a repaired session");
+
+        assert_eq!(
+            accounts(&db),
+            1,
+            "the abandoned transaction was rolled back and only the block committed"
+        );
+    }
+
+    #[test]
+    fn a_nested_block_never_repairs_the_enclosing_transaction() {
+        let mut db = database();
+
+        db.transaction(|tx| -> Result<(), ::rusqlite::Error> {
+            tx.execute_batch("INSERT INTO account (id) VALUES (1)")?;
+            let nested = tx.transaction(|inner| {
+                inner.execute_batch("INSERT INTO account (id) VALUES (2)")?;
+                Err::<(), _>(::rusqlite::Error::InvalidQuery)
+            });
+            assert!(nested.is_err(), "the nested block reports its own error");
+            Ok(())
+        })
+        .expect("the enclosing block commits");
+
+        assert_eq!(
+            accounts(&db),
+            1,
+            "only the enclosing insert survived the nested rollback"
+        );
     }
 }
