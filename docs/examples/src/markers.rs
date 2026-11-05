@@ -53,6 +53,16 @@ table!(
 );
 
 table!(
+    /// The `order_items` table.
+    OrderItem => "order_items" {
+        OrderItemId => "id": i64,
+        OrderItemOrderId => "order_id": i64,
+        OrderItemSku => "sku": String,
+        OrderItemQuantity => "quantity": i64,
+    }
+);
+
+table!(
     /// The `products` table.
     Product => "products" {
         ProductId => "id": i64,

@@ -76,6 +76,29 @@ The nested statement is a query of its own, so its scope holds only its own `FRO
 
 Without it the child query would reference `"users"`, a relation it never declares, and the call is rejected at the call site.
 
+## Multi-Level Nesting
+
+A nested statement may itself project a nested collection, so a hierarchy of any depth is written with the same `nest_many` and `nest_one` projections applied one inside the other. Users, their orders, and the items of every order arrive in one statement and decode into `Vec` inside `Vec` inside the user record:
+
+```rust,no_run
+{{#rustdoc_include ../examples/nested.rs:depth2}}
+```
+
+`user.orders` is a `Vec` of records, and each `order.items` is a `Vec` of a record with `sku` and `quantity`. No level is decoded by index, and no additional statement is sent for any level.
+
+- Every nested statement is a query of its own with its own scope: the `orders` statement sees only `orders`, and the `order_items` statement sees only `order_items`.
+- `outer(UserId)` inside the `orders` statement refers to the `users` row of the statement that embeds it, and `outer(OrderId)` inside the `order_items` statement refers to the `orders` row of its enclosing statement. A reference never skips a level.
+- Each statement orders its own collection: `order_by_desc(OrderTotal)` orders the orders of one user, and `order_by_asc(OrderItemSku)` orders the items of one order. The ordering of one level does not affect another.
+- Each level publishes the keys of its own `cols!` list, so every level decodes into the record its projection declares.
+
+## Correlation with `outer(...)`
+
+A correlated reference is written by wrapping a column of the enclosing statement in `outer(...)`:
+
+- `outer(UserId)` is resolved to the explicitly qualified column of its table, such as `"users"."id"`, so the rendered predicate names the relation it reads instead of an ambiguous bare column.
+- Without `outer(...)`, a column of the enclosing statement used in a nested predicate is rejected at the call site, because the nested statement does not introduce its relation.
+- `outer(...)` marks the expression as resolved by the enclosing statement. Whether the referenced relation is actually introduced by that statement is checked by the database engine when the statement runs, so a reference to a relation the enclosing statement does not declare is reported by the engine.
+
 ## JSON Keys and Field Names
 
 The nested `cols!` names the JSON keys of every child row: `cols! { order_id: OrderId, total: OrderTotal }` produces documents of the shape `{"order_id": …, "total": …}`. The declaration and the document cannot drift apart, because both come from the same list.
@@ -149,6 +172,8 @@ A field of a nested row decodes through the same `FromSqlValue` contract a colum
 | `Vec<u8>` | canonical hex text that the byte-column decoding reads back |
 | `Decimal` (feature `decimal`) | number, when every digit is preserved, otherwise text |
 | `Uuid`, `NaiveDateTime`, `DateTime<Utc>`, `NaiveDate` | `Display` text that the decoder parses back |
+| `Vec<T>` | array of elements, each decoded by the element type; an empty array is an empty `Vec` |
+| `Option<Vec<T>>` | `null` is `None`, an array is `Some` of the decoded `Vec` |
 | nested JSON | as is |
 
 ## The `serde_json` feature

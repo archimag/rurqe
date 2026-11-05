@@ -92,6 +92,39 @@ async fn main() -> Result<()> {
     // ANCHOR_END: single
     println!("{}", parents_with_one.len());
 
+    // ANCHOR: depth2
+    // Each nested statement is a query of its own: `outer(...)` binds to the
+    // statement that embeds it, and every level orders its own collection.
+    let users_with_items = select_from(User)
+        .select(cols! {
+            user_name: UserName,
+            orders: nest_many(
+                select_from(Order)
+                    .select(cols! {
+                        order_id: OrderId,
+                        items: nest_many(
+                            select_from(OrderItem)
+                                .select(cols! {
+                                    sku: OrderItemSku,
+                                    quantity: OrderItemQuantity,
+                                })
+                                .where_(OrderItemOrderId.eq(outer(OrderId)))
+                                .order_by_asc(OrderItemSku),
+                        ),
+                    })
+                    .where_(OrderUserId.eq(outer(UserId)))
+                    .order_by_desc(OrderTotal),
+            ),
+        })
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: depth2
+    for user in &users_with_items {
+        for order in &user.orders {
+            println!("{} #{}: {}", user.user_name, order.order_id, order.items.len());
+        }
+    }
+
     // The fragments that need no connection run on every execution, so a
     // statement that stops assembling or a document that stops decoding fails
     // the run instead of compiling unseen.
