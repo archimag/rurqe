@@ -1,4 +1,5 @@
 use super::*;
+use crate::row::{FromSqlValue, RowDecodeError};
 
 #[test]
 fn value_kinds_report_stable_names() {
@@ -170,4 +171,163 @@ fn the_decimal_kind_reports_its_name_and_text() {
 
     assert_eq!(value.variant_name(), "decimal");
     assert_eq!(value.to_string(), "1.500");
+}
+
+macro_rules! four_octets {
+    ($name:ident) => {
+        #[derive(Debug, PartialEq, Eq)]
+        struct $name([u8; 4]);
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        impl TryFrom<&[u8]> for $name {
+            type Error = &'static str;
+
+            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+                bytes
+                    .try_into()
+                    .map($name)
+                    .map_err(|_| "expected four octets")
+            }
+        }
+    };
+}
+
+four_octets!(Span);
+four_octets!(Plain);
+
+#[derive(Debug, PartialEq, Eq)]
+struct Loose(Vec<u8>);
+
+impl AsRef<[u8]> for Loose {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<&[u8]> for Loose {
+    type Error = &'static str;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.is_empty() {
+            Err("expected at least one octet")
+        } else {
+            Ok(Loose(bytes.to_vec()))
+        }
+    }
+}
+
+crate::impl_sql_binary_newtype!(Span, 4, sql_type = "span");
+crate::impl_sql_binary_newtype!(Plain, 4);
+crate::impl_sql_binary_newtype!(Loose, sql_type = "loose");
+
+#[test]
+fn the_typed_wire_kind_reports_its_name_and_octets() {
+    let value = SqlVal::TypedWire {
+        sql_type: "interval".to_owned(),
+        payload: vec![0x0a, 0xff],
+    };
+    let empty = SqlVal::TypedWire {
+        sql_type: "interval".to_owned(),
+        payload: Vec::new(),
+    };
+
+    assert_eq!(value.variant_name(), "typed wire");
+    assert_eq!(value.to_string(), "interval(0x0aff)");
+    assert_eq!(empty.to_string(), "interval(0x)");
+}
+
+#[test]
+fn a_typed_binary_newtype_encodes_as_a_typed_wire_value() {
+    let expected = SqlVal::TypedWire {
+        sql_type: "span".to_owned(),
+        payload: vec![1, 2, 3, 4],
+    };
+    let owned = Span([1, 2, 3, 4]);
+
+    assert_eq!(ToSqlVal::to_sql_val(&owned), expected);
+    assert_eq!(SqlVal::from(owned), expected);
+}
+
+#[test]
+fn a_typed_binary_newtype_decodes_typed_wire_values_and_plain_bytes() {
+    let typed = SqlVal::TypedWire {
+        sql_type: "span".to_owned(),
+        payload: vec![1, 2, 3, 4],
+    };
+
+    assert_eq!(Span::from_sql_value(&typed), Ok(Span([1, 2, 3, 4])));
+    assert_eq!(
+        Span::from_sql_value(&SqlVal::Bytes(vec![1, 2, 3, 4])),
+        Ok(Span([1, 2, 3, 4]))
+    );
+}
+
+#[test]
+fn a_typed_binary_newtype_checks_the_width_on_both_paths() {
+    let narrow = SqlVal::Bytes(vec![1, 2, 3]);
+    let wide = SqlVal::TypedWire {
+        sql_type: "span".to_owned(),
+        payload: vec![1, 2, 3, 4, 5],
+    };
+
+    for value in [narrow, wide] {
+        assert!(matches!(
+            Span::from_sql_value(&value),
+            Err(RowDecodeError::InvalidValue { .. })
+        ));
+    }
+}
+
+#[test]
+fn a_typed_binary_newtype_rejects_other_kinds_of_value() {
+    let result = Span::from_sql_value(&SqlVal::Text("abcd".to_owned()));
+
+    assert!(matches!(
+        result,
+        Err(RowDecodeError::TypeMismatch { found: "text", .. })
+    ));
+}
+
+#[test]
+fn a_typed_binary_newtype_without_a_width_accepts_any_length() {
+    let typed = SqlVal::TypedWire {
+        sql_type: "loose".to_owned(),
+        payload: vec![9; 7],
+    };
+
+    assert_eq!(Loose::from_sql_value(&typed), Ok(Loose(vec![9; 7])));
+    assert_eq!(
+        Loose(vec![9, 9]).to_sql_val(),
+        SqlVal::TypedWire {
+            sql_type: "loose".to_owned(),
+            payload: vec![9, 9],
+        }
+    );
+}
+
+#[test]
+fn an_untyped_binary_newtype_keeps_the_plain_blob_contract() {
+    let plain = Plain([1, 2, 3, 4]);
+    let typed = SqlVal::TypedWire {
+        sql_type: "span".to_owned(),
+        payload: vec![1, 2, 3, 4],
+    };
+
+    assert_eq!(plain.to_sql_val(), SqlVal::Bytes(vec![1, 2, 3, 4]));
+    assert_eq!(
+        Plain::from_sql_value(&SqlVal::Bytes(vec![1, 2, 3, 4])),
+        Ok(Plain([1, 2, 3, 4]))
+    );
+    assert!(matches!(
+        Plain::from_sql_value(&typed),
+        Err(RowDecodeError::TypeMismatch {
+            found: "typed wire",
+            ..
+        })
+    ));
 }

@@ -49,6 +49,8 @@ Two macros declare the binary and the textual mode without the derive:
 |---|---|---|
 | `rurqe::impl_sql_binary_newtype!(Type)` | `AsRef<[u8]>`, `TryFrom<&[u8]>` | any |
 | `rurqe::impl_sql_binary_newtype!(Type, N)` | `AsRef<[u8]>`, `TryFrom<&[u8]>` | exactly `N` bytes |
+| `rurqe::impl_sql_binary_newtype!(Type, sql_type = "name")` | `AsRef<[u8]>`, `TryFrom<&[u8]>` | any, with a declared SQL type |
+| `rurqe::impl_sql_binary_newtype!(Type, N, sql_type = "name")` | `AsRef<[u8]>`, `TryFrom<&[u8]>` | exactly `N` bytes, with a declared SQL type |
 | `rurqe::impl_sql_text_newtype!(Type)` | `Display`, `FromStr` | — |
 
 The macros emit the same contracts the derive does and are re-exported at the crate root and by the prelude, so a type is connected in one line instead of an attribute. A payload the parser of a textual type rejects becomes a decoding failure carrying the message of the parser, which keeps an invalid payload a reported failure rather than a panic.
@@ -83,6 +85,32 @@ A binary type must implement `AsRef<[u8]>` for parameter encoding and `TryFrom<&
 ```
 
 When using `#[derive(SqlType)] #[sql(as = Bytes)]`, specifying `len = N` asserts that the decoded byte slice has an exact expected width; any length mismatch immediately returns `RowDecodeError::InvalidValue`.
+
+### Declaring the SQL Type of a Binary Newtype
+
+A binary newtype normally stands for a `BYTEA` or `BLOB` column. An engine type the library does not model, such as the PostgreSQL `INTERVAL`, has a binary wire form of its own. A newtype over the octets of that form names the type with the optional `sql_type` argument of `impl_sql_binary_newtype!`:
+
+```rust,no_run
+{{#rustdoc_include ../examples/schema.rs:typed_binary_newtype}}
+```
+
+The column the newtype is stored in is declared with that type in the schema:
+
+```sql
+CREATE TABLE schedules (
+    id bigint PRIMARY KEY,
+    every interval NOT NULL
+);
+```
+
+The declaration changes the contract of the type in two ways:
+
+- Encoding produces a typed value that carries the declared name and the octets returned by `AsRef<[u8]>`, instead of a plain blob. The name is the one the engine reports for the type, never an object identifier.
+- Decoding accepts both the typed value and a plain blob, because an engine without column types returns a blob. `TryFrom<&[u8]>` reads the octets of either, and the width given as `N` is checked on both paths. Any other kind of value is reported as `RowDecodeError::TypeMismatch`.
+
+A newtype declared without `sql_type` keeps the plain blob contract and does not accept a typed value: such a value is reported as `RowDecodeError::TypeMismatch` that names the kind `typed wire`.
+
+A driver binds a typed value only to a column whose type has the declared name, and SQLite, which stores no column types, keeps the octets as a blob and reads them back as a plain blob. The declared name therefore does not survive storage in SQLite, and decoding takes the plain blob path.
 
 ## Nullability, arrays, and outer joins
 

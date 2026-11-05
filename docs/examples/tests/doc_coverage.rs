@@ -1212,6 +1212,11 @@ const ILLUSTRATIVE_SQL: &[(&str, &str, &str)] = &[
         "the block is the clause skeleton of the statement, which no builder method renders",
     ),
     (
+        "core/domain_types.md",
+        "### Declaring the SQL Type of a Binary Newtype",
+        "the block is the DDL of a table with a column of an engine type the query builder does not model, which the migration scripts of the project issue",
+    ),
+    (
         "core/delete.md",
         "## Clause anatomy",
         "the block is the clause skeleton of the statement, which no builder method renders",

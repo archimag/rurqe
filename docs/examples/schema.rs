@@ -85,3 +85,28 @@ impl TryFrom<&[u8]> for Txid {
 
 rurqe::impl_sql_binary_newtype!(Txid, 32);
 // ANCHOR_END: binary_newtype
+
+// ANCHOR: typed_binary_newtype
+/// A PostgreSQL `INTERVAL` carried as its 16-byte binary representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interval(pub [u8; 16]);
+
+impl AsRef<[u8]> for Interval {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<&[u8]> for Interval {
+    type Error = &'static str;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        bytes
+            .try_into()
+            .map(Interval)
+            .map_err(|_| "expected exactly 16 bytes")
+    }
+}
+
+rurqe::impl_sql_binary_newtype!(Interval, 16, sql_type = "interval");
+// ANCHOR_END: typed_binary_newtype

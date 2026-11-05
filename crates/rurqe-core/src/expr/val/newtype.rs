@@ -7,33 +7,32 @@
 
 /// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
 /// and expression compatibility for a binary domain newtype.
+///
+/// The wrapped type provides `AsRef<[u8]>` for encoding and `TryFrom<&[u8]>`
+/// for decoding. Four forms are accepted:
+///
+/// - `impl_sql_binary_newtype!(Type)` stores the octets as a plain blob;
+/// - `impl_sql_binary_newtype!(Type, N)` additionally requires exactly `N`
+///   octets when a value is decoded;
+/// - `impl_sql_binary_newtype!(Type, sql_type = "name")` and
+///   `impl_sql_binary_newtype!(Type, N, sql_type = "name")` declare the SQL type
+///   of the column the newtype stands for.
+///
+/// A declared type changes the contract in two ways. Encoding produces a
+/// [`SqlVal::TypedWire`](crate::expr::SqlVal::TypedWire) carrying the declared
+/// name and the octets, and decoding accepts both that typed value and a plain
+/// [`SqlVal::Bytes`](crate::expr::SqlVal::Bytes), because an engine without
+/// column types returns a blob. The width check applies to both paths. A
+/// newtype without `sql_type` keeps the plain blob contract and does not accept
+/// a typed value.
 #[macro_export]
 macro_rules! impl_sql_binary_newtype {
-    ($ty:ty, $expected_len:expr) => {
+    (@build $ty:ty; len = [$($len:expr)?]; sql_type = []) => {
         $crate::impl_sql_newtype! {
-            bytes $ty;
+            @define bytes $ty;
             decode = |value| match value {
                 $crate::expr::SqlVal::Bytes(bytes) => {
-                    let expected: usize = $expected_len;
-                    if bytes.len() != expected {
-                        return ::core::result::Result::Err(
-                            $crate::row::RowDecodeError::InvalidValue {
-                                target: ::std::any::type_name::<$ty>(),
-                                found: "bytes",
-                                detail: ::std::format!(
-                                    "expected {expected} bytes, got {}",
-                                    bytes.len()
-                                ),
-                            },
-                        );
-                    }
-                    ::core::convert::TryFrom::try_from(bytes.as_slice()).map_err(|error| {
-                        $crate::row::RowDecodeError::InvalidValue {
-                            target: ::std::any::type_name::<$ty>(),
-                            found: "bytes",
-                            detail: ::std::format!("{error}"),
-                        }
-                    })
+                    $crate::impl_sql_binary_newtype!(@read $ty; bytes; [$($len)?])
                 }
                 _ => ::core::result::Result::Err($crate::row::RowDecodeError::TypeMismatch {
                     target: ::std::any::type_name::<$ty>(),
@@ -43,18 +42,15 @@ macro_rules! impl_sql_binary_newtype {
             comparisons {}
         }
     };
-    ($ty:ty) => {
+    (@build $ty:ty; len = [$($len:expr)?]; sql_type = [$sql_type:literal]) => {
         $crate::impl_sql_newtype! {
-            bytes $ty;
+            @define (typed $sql_type) $ty;
             decode = |value| match value {
                 $crate::expr::SqlVal::Bytes(bytes) => {
-                    ::core::convert::TryFrom::try_from(bytes.as_slice()).map_err(|error| {
-                        $crate::row::RowDecodeError::InvalidValue {
-                            target: ::std::any::type_name::<$ty>(),
-                            found: "bytes",
-                            detail: ::std::format!("{error}"),
-                        }
-                    })
+                    $crate::impl_sql_binary_newtype!(@read $ty; bytes; [$($len)?])
+                }
+                $crate::expr::SqlVal::TypedWire { payload: bytes, .. } => {
+                    $crate::impl_sql_binary_newtype!(@read $ty; bytes; [$($len)?])
                 }
                 _ => ::core::result::Result::Err($crate::row::RowDecodeError::TypeMismatch {
                     target: ::std::any::type_name::<$ty>(),
@@ -63,6 +59,44 @@ macro_rules! impl_sql_binary_newtype {
             },
             comparisons {}
         }
+    };
+    (@read $ty:ty; $bytes:ident; [$($len:expr)?]) => {{
+        $(
+            let expected: usize = $len;
+            if $bytes.len() != expected {
+                return ::core::result::Result::Err(
+                    $crate::row::RowDecodeError::InvalidValue {
+                        target: ::std::any::type_name::<$ty>(),
+                        found: "bytes",
+                        detail: ::std::format!(
+                            "expected {expected} bytes, got {}",
+                            $bytes.len()
+                        ),
+                    },
+                );
+            }
+        )?
+        ::core::convert::TryFrom::try_from($bytes.as_slice()).map_err(|error| {
+            $crate::row::RowDecodeError::InvalidValue {
+                target: ::std::any::type_name::<$ty>(),
+                found: "bytes",
+                detail: ::std::format!("{error}"),
+            }
+        })
+    }};
+    ($ty:ty, sql_type = $sql_type:literal) => {
+        $crate::impl_sql_binary_newtype!(@build $ty; len = []; sql_type = [$sql_type]);
+    };
+    ($ty:ty, $expected_len:expr, sql_type = $sql_type:literal) => {
+        $crate::impl_sql_binary_newtype!(
+            @build $ty; len = [$expected_len]; sql_type = [$sql_type]
+        );
+    };
+    ($ty:ty, $expected_len:expr) => {
+        $crate::impl_sql_binary_newtype!(@build $ty; len = [$expected_len]; sql_type = []);
+    };
+    ($ty:ty) => {
+        $crate::impl_sql_binary_newtype!(@build $ty; len = []; sql_type = []);
     };
 }
 
@@ -79,7 +113,7 @@ macro_rules! impl_sql_binary_newtype {
 #[macro_export]
 macro_rules! impl_sql_newtype {
     (
-        $storage:ident $ty:ty;
+        @define $storage:tt $ty:ty;
         decode = |$value:ident| $decode:expr,
         comparisons { $($extra:item)* }
     ) => {
@@ -163,6 +197,12 @@ macro_rules! impl_sql_newtype {
     (@encode text $value:expr) => {
         $crate::expr::SqlVal::Text(::std::string::ToString::to_string($value))
     };
+    (@encode (typed $sql_type:literal) $value:expr) => {
+        $crate::expr::SqlVal::TypedWire {
+            sql_type: ::std::string::String::from($sql_type),
+            payload: ::std::convert::AsRef::<[u8]>::as_ref($value).to_vec(),
+        }
+    };
 }
 
 /// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
@@ -229,7 +269,7 @@ macro_rules! impl_sql_newtype {
 macro_rules! impl_sql_text_newtype {
     ($ty:ty) => {
         $crate::impl_sql_newtype! {
-            text $ty;
+            @define text $ty;
             decode = |value| match value {
                 $crate::expr::SqlVal::Text(text) => {
                     <$ty as ::std::str::FromStr>::from_str(text.as_str()).map_err(|error| {

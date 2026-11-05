@@ -40,6 +40,18 @@ pub enum SqlVal {
     Text(String),
     /// A binary blob.
     Bytes(Vec<u8>),
+    /// A value of a SQL type the library does not model, carried as the declared
+    /// name of the type together with the raw wire payload of the value.
+    ///
+    /// The name is never an object identifier, which a cluster assigns and which
+    /// differs between environments: it is the name a driver compares with the
+    /// type of the target column before it writes the payload verbatim.
+    TypedWire {
+        /// The declared name of the SQL type, such as `interval`.
+        sql_type: String,
+        /// The raw wire payload of the value.
+        payload: Vec<u8>,
+    },
     /// A SQL array value, carrying one value per element in declaration order.
     ///
     /// Every element keeps the [`SqlVal`] representation of its scalar type, so
@@ -82,6 +94,7 @@ impl SqlVal {
             SqlVal::Bool(_) => "boolean",
             SqlVal::Text(_) => "text",
             SqlVal::Bytes(_) => "bytes",
+            SqlVal::TypedWire { .. } => "typed wire",
             SqlVal::Array(_) => "array",
             #[cfg(feature = "uuid")]
             SqlVal::Uuid(_) => "uuid",
@@ -110,6 +123,13 @@ impl fmt::Display for SqlVal {
             SqlVal::Bool(value) => write!(f, "{value}"),
             SqlVal::Text(value) => f.write_str(value),
             SqlVal::Bytes(value) => write!(f, "{:?}", value),
+            SqlVal::TypedWire { sql_type, payload } => {
+                write!(f, "{sql_type}(0x")?;
+                for octet in payload {
+                    write!(f, "{octet:02x}")?;
+                }
+                f.write_str(")")
+            }
             SqlVal::Array(values) => {
                 f.write_str("{")?;
                 for (index, value) in values.iter().enumerate() {
