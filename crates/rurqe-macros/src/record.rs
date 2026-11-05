@@ -81,10 +81,16 @@ impl Record {
         let generics = generic_list(params);
         let from_bounds = bounds(params, quote! { ::rurqe::__core::row::FromSqlValue });
         let to_sql_bounds = bounds(params, quote! { ::rurqe::__core::expr::ToSqlVal });
-        let array_bounds = bounds(params, quote! { ::rurqe::__core::expr::SqlArrayElement });
+        // A field only has to bind and decode: `SqlArrayElement` itself is the
+        // pair of those two contracts, so requiring it of a field would reject a
+        // nested collection (`Vec<Record>`) or an optional field inside a record.
+        let array_bounds = bounds(
+            params,
+            quote! { ::rurqe::__core::expr::ToSqlVal + ::rurqe::__core::row::FromSqlValue },
+        );
         let multiset_bounds = bounds(
             params,
-            quote! { ::rurqe::__core::expr::SqlArrayElement + 'static },
+            quote! { ::rurqe::__core::expr::ToSqlVal + ::rurqe::__core::row::FromSqlValue + 'static },
         );
 
         let mut field_defs = TokenStream::new();
