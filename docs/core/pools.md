@@ -69,7 +69,7 @@ Several statements become one atomic block through the closure form, which keeps
 - The outermost block of a pooled transaction runs between `BEGIN` and `COMMIT`, and a block opened while a transaction is already open nests inside a `SAVEPOINT`.
 - A block that returns `Err` has its statements rolled back before that error reaches the caller, and a block that unwinds is rolled back the same way.
 - The checkout returns to the pool however the block ends, whether it committed or was rolled back, so several blocks of a shared pool run concurrently, each on its own connection.
-- A `ROLLBACK` the driver refuses supersedes the error of the block and surfaces as `PgError::ConnectionPoisoned`, because the transaction state is unknown from that point on.
+- A `ROLLBACK` the driver refuses keeps the error of the block: the refused statement is recorded on the connection together with the driver failure behind it, and the call reports the failure the closure returned, exactly as the closure-scoped connection form does. The checkout is destroyed rather than returned to the pool, because the transaction state is unknown from that point on.
 - A block whose connection is poisoned before its commit is not committed: the adapter rolls its statements back and reports `PgError::ConnectionPoisoned`, and the poisoned checkout is destroyed rather than returned to the pool.
 
 A block opened on the scope of an open transaction is a savepoint of that transaction, so a nested block loses its own work and nothing else:

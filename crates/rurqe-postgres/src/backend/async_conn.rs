@@ -12,6 +12,11 @@
 //! and persist with the next `COMMIT`. The state is sticky and is never cleared:
 //! the owner of the handle discards it, and the abandoned transaction closes when
 //! the socket of the discarded connection closes.
+//!
+//! The closure-scoped settlement — the entry refusal, the `BEGIN`, the awaited
+//! ending, and the recording of a refused rollback — lives in [`settle_block`],
+//! so the asynchronous pool runs the same protocol instead of a second copy of
+//! it.
 use std::sync::Arc;
 
 use futures_core::Stream;
@@ -168,6 +173,83 @@ pub(crate) async fn close_block(
     }
 
     Err(poison.refusal())
+}
+
+/// Runs `f` inside the transaction `begin` opens on `client`, settling the
+/// block and the poison record once the closure returns.
+///
+/// The function is the one copy of the closure-scoped protocol both
+/// asynchronous adapters run, so the connection form and the pooled form
+/// cannot disagree about it: the entry refuses a connection the record already
+/// poisons, a `BEGIN` the driver refuses is recorded on that record, the
+/// closure runs against a [`PgAsyncScope`] borrowing it, and the ending —
+/// `COMMIT`, a rollback of a poisoned block, or the rollback of a block that
+/// returned `Err` — is awaited before the result reaches the caller.
+///
+/// The error of the block is the one that reaches the caller. A `ROLLBACK` the
+/// driver refuses is recorded on the record together with the driver failure
+/// behind it, because the block reports its own error instead: a caller
+/// inspects that failure through the refusal a later statement receives, and
+/// the adapter that owns the connection destroys it. A `COMMIT` the driver
+/// refuses returns its own failure, and a block whose record is poisoned is
+/// rolled back and reported as the poisoned connection instead of being
+/// committed.
+///
+/// The adapter on top decides what an unproven ending costs: a connection
+/// refuses its later work, while a pooled checkout is destroyed instead of
+/// being returned to the pool.
+pub(crate) async fn settle_block<T, E, F>(
+    client: &tokio_postgres::Client,
+    poison: &Arc<PoisonCell>,
+    begin: String,
+    f: F,
+) -> Result<T, E>
+where
+    E: From<PgError>,
+    F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
+{
+    if poison.is_poisoned() {
+        return Err(E::from(poison.refusal()));
+    }
+
+    let mut guard = BlockExitGuard::new(Arc::clone(poison));
+    if let Err(failure) = execute_control(client, begin).await {
+        poison.mark(control_failure("BEGIN", &failure));
+        return Err(E::from(failure));
+    }
+
+    match f(PgAsyncScope::new(client, Arc::clone(poison))).await {
+        Ok(value) => {
+            // The block closed its transaction with an awaited statement, or
+            // the poisoned record turned that commit into a rollback, which
+            // `close_block` reports as the refusal of the connection.
+            close_block(client, poison).await?;
+            guard.mark_completed();
+            tracing::info!("committed transaction");
+            Ok(value)
+        }
+        Err(error) => {
+            match execute_control(client, String::from("ROLLBACK")).await {
+                Ok(()) => {
+                    guard.mark_completed();
+                    tracing::warn!("rolled back transaction");
+                }
+                Err(failure) => {
+                    let reason = control_failure("ROLLBACK", &failure);
+                    tracing::error!(
+                        failure = %failure,
+                        "rolling back the transaction failed; the connection is \
+                         poisoned and must be discarded"
+                    );
+                    // The block reports its own error instead of this one, so
+                    // the driver failure is recorded on the cell and handed
+                    // back by the refusal a later statement receives.
+                    poison.mark_with_cause(reason, failure);
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Returns the session of a checked-out asynchronous client to a provably idle
@@ -409,53 +491,9 @@ impl PgAsyncConnection {
         E: From<PgError>,
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
     {
-        self.refuse_if_poisoned().map_err(E::from)?;
-
-        let client = &self.client;
-        let poison = Arc::clone(&self.poison);
-        let mut guard = BlockExitGuard::new(Arc::clone(&poison));
-
         let mut begin = String::from("BEGIN ISOLATION LEVEL ");
         begin.push_str(isolation.as_str());
-        if let Err(failure) = execute_control(client, begin).await {
-            poison.mark(control_failure("BEGIN", &failure));
-            return Err(E::from(failure));
-        }
-
-        match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
-            Ok(value) => {
-                let closed = close_block(client, &poison).await;
-                match closed {
-                    Ok(()) => {
-                        guard.mark_completed();
-                        tracing::info!("committed transaction");
-                        Ok(value)
-                    }
-                    Err(failure) => Err(E::from(failure)),
-                }
-            }
-            Err(error) => {
-                match execute_control(client, String::from("ROLLBACK")).await {
-                    Ok(()) => {
-                        guard.mark_completed();
-                        tracing::warn!("rolled back transaction");
-                    }
-                    Err(failure) => {
-                        let reason = control_failure("ROLLBACK", &failure);
-                        tracing::error!(
-                            failure = %failure,
-                            "rolling back the transaction failed; the connection is \
-                             poisoned and must be discarded"
-                        );
-                        // The block reports its own error instead of this one, so
-                        // the driver failure is recorded on the cell and handed
-                        // back by the refusal a later statement receives.
-                        poison.mark_with_cause(reason, failure);
-                    }
-                }
-                Err(error)
-            }
-        }
+        settle_block(&self.client, &self.poison, begin, f).await
     }
 }
 

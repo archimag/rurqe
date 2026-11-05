@@ -810,8 +810,11 @@ mod async_pool {
         );
     }
 
+    /// A `ROLLBACK` the driver refuses keeps the error of the block and destroys
+    /// the checkout: the pooled settlement classifies the ending exactly as the
+    /// closure-scoped connection form does.
     #[tokio::test]
-    async fn a_refused_pool_rollback_poisons_and_is_reported() {
+    async fn a_refused_pool_rollback_keeps_the_block_error() {
         let Some(url) = support::database_url("PgAsyncPool::transaction refused rollback") else {
             return;
         };
@@ -832,12 +835,16 @@ mod async_pool {
             })
             .await;
 
+        // The refused rollback is recorded on the connection instead of
+        // replacing the failure of the block, so the caller reads what its own
+        // closure returned.
         match &outcome {
-            Err(PgError::ConnectionPoisoned { cause, .. }) => assert!(
-                cause.is_some(),
-                "the refusal carries the failure of the rollback that was refused"
+            Err(PgError::InvalidValue { reason, .. }) => assert_eq!(
+                reason.as_str(),
+                "the block failed before its rollback",
+                "the block reports the failure it returned"
             ),
-            other => panic!("the refused rollback supersedes the block's error: {other:?}"),
+            other => panic!("the block reports the failure it returned: {other:?}"),
         }
 
         // The poisoned checkout was destroyed rather than recycled, so the pool

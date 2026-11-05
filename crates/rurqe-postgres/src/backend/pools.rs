@@ -74,9 +74,9 @@ mod deadpool_impl {
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
     use crate::backend::async_conn::{
-        close_block, execute_raw_async, fetch_raw_async, fetch_raw_limited_async,
+        execute_raw_async, fetch_raw_async, fetch_raw_limited_async, settle_block,
     };
-    use crate::backend::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
+    use crate::backend::async_scope::{PgAsyncScope, ScopeFuture};
     use crate::backend::poison::{control_failure, PoisonCell};
     use crate::backend::types::PgError;
 
@@ -305,11 +305,15 @@ mod deadpool_impl {
     ///   of this method at all, and the guard destroys the connection on the way
     ///   out.
     ///
-    /// A `ROLLBACK` the driver refuses supersedes the error of the block: the
-    /// refused statement is recorded on the connection, and the caller receives
-    /// [`PgError::ConnectionPoisoned`] carrying it through
-    /// [`source`](std::error::Error::source), because the transaction state is
-    /// unknown from that point on.
+    /// The settlement itself is the one copy both asynchronous adapters run, so
+    /// the pooled form classifies an ending exactly as the closure-scoped
+    /// connection form does — and a `ROLLBACK` the driver refuses keeps the
+    /// error of the block, exactly as it does on a connection the adapter owns:
+    /// the refused statement is recorded on the shared record together with the
+    /// driver failure behind it, and the call reports the failure the closure
+    /// returned instead of the refusal. The record still decides the
+    /// disposition, so the checkout is destroyed rather than returned to the
+    /// pool, because the transaction state is unknown from that point on.
     ///
     /// The checkout is proven idle before the block opens. One `ROLLBACK`
     /// through the simple query protocol — the statement PostgreSQL answers in
@@ -335,44 +339,13 @@ mod deadpool_impl {
     {
         let poison = Arc::clone(checkout.poison());
         let client = checkout.session().map_err(E::from)?;
-        if let Err(failure) = execute_control(client, begin).await {
-            poison.mark(control_failure("BEGIN", &failure));
-            return Err(E::from(failure));
-        }
-
-        match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
-            Ok(value) => {
-                let closed = close_block(client, &poison).await;
-                match closed {
-                    Ok(()) => {
-                        tracing::info!("committed transaction");
-                        checkout.recycle();
-                        Ok(value)
-                    }
-                    Err(failure) => Err(E::from(failure)),
-                }
-            }
-            Err(error) => match execute_control(client, String::from("ROLLBACK")).await {
-                Ok(()) => {
-                    tracing::warn!("rolled back transaction");
-                    checkout.recycle();
-                    Err(error)
-                }
-                Err(failure) => {
-                    let reason = control_failure("ROLLBACK", &failure);
-                    tracing::error!(
-                        failure = %failure,
-                        "rolling back the transaction failed; the connection is destroyed \
-                         and the failure of the block is superseded"
-                    );
-                    // The refusal supersedes the error of the block, so the
-                    // driver failure is recorded on the cell and handed back by
-                    // the refusal instead of surviving in the trace alone.
-                    poison.mark_with_cause(reason, failure);
-                    Err(E::from(poison.refusal()))
-                }
-            },
-        }
+        let outcome = settle_block(client, &poison, begin, f).await;
+        // The settlement classified the ending and recorded it on the record
+        // this checkout shares, so the record decides the disposition: a clean
+        // one returns the connection to the pool, while a recorded poison
+        // destroys the checkout instead of recycling it.
+        checkout.recycle();
+        outcome
     }
 
     impl AsyncQueryBackend for PgAsyncPool {
