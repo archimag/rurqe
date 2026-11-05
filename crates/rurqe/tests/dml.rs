@@ -704,3 +704,142 @@ fn a_duplicate_insert_reports_its_sqlstate_and_constraint() {
         "the accessor names the relation the refusal was raised on"
     );
 }
+
+/// Round-trips a nullable column through both execution adapters.
+///
+/// The write path binds an absent value as the SQL `NULL` parameter instead of
+/// dropping the assignment or substituting `DEFAULT`, and the read path decodes
+/// that parameter back into `None`. The identical sequence runs on the
+/// in-memory SQLite adapter during the ordinary test pass and against a live
+/// PostgreSQL server when the environment names one, because binding `NULL` as
+/// a parameter is driver behaviour that only a real driver proves.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod nullable_column {
+    use rurqe::prelude::*;
+
+    table!(
+        /// A note whose body accepts the SQL `NULL` value.
+        NullableNote => "rurqe_nullable_notes" {
+            NullableNoteId => "id": i64,
+            NullableNoteBody => "body": Option<String>,
+        }
+    );
+
+    /// Runs the nullable `INSERT`, `UPDATE`, and `SELECT` round trip against `db`.
+    ///
+    /// Both adapters execute the same statements, so a divergence between the
+    /// engines — a `NULL` one of them accepts on write but reports differently
+    /// on read, for instance — fails the assertion that names it instead of
+    /// surfacing as an adapter-specific outcome.
+    fn round_trip<D, B>(db: &mut B)
+    where
+        D: Dialect + SupportsReturning,
+        B: QueryBackendExt,
+        B::Error: std::fmt::Debug,
+    {
+        // `None` is bound as a parameter carrying the SQL `NULL` value: the
+        // assignment is neither dropped from the statement nor rendered as the
+        // `DEFAULT` keyword, which would let the column fall back to its own
+        // default instead of storing an absent value.
+        let bound_null = insert_into::<D, NullableNote>()
+            .values((
+                NullableNoteId::set(1i64),
+                NullableNoteBody::set(None::<String>),
+            ))
+            .build()
+            .expect("a nullable assignment renders a valid statement");
+        assert_eq!(bound_null.params, vec![SqlVal::I64(1), SqlVal::Null]);
+
+        // An inserted `NULL` reads back as `None`.
+        let insert_null = insert_into::<D, NullableNote>()
+            .values((
+                NullableNoteId::set(1i64),
+                NullableNoteBody::set(None::<String>),
+            ))
+            .returning((NullableNoteId, NullableNoteBody));
+        let inserted = db.fetch_one(&insert_null).expect("insert returns its row");
+        assert_eq!(inserted, (1i64, None));
+
+        // An inserted value reads back as `Some`.
+        let insert_value = insert_into::<D, NullableNote>()
+            .values((
+                NullableNoteId::set(2i64),
+                NullableNoteBody::set(Some("first".to_owned())),
+            ))
+            .returning((NullableNoteId, NullableNoteBody));
+        let inserted = db.fetch_one(&insert_value).expect("insert returns its row");
+        assert_eq!(inserted, (2i64, Some("first".to_owned())));
+
+        // `None` written over a stored value reads back as `None`...
+        let clear = update::<D, NullableNote>()
+            .set(NullableNoteBody::set(None::<String>))
+            .where_(Expr::column::<NullableNoteId>().eq(2i64))
+            .returning((NullableNoteId, NullableNoteBody));
+        let cleared = db.fetch_one(&clear).expect("update returns its row");
+        assert_eq!(cleared, (2i64, None));
+
+        // ...and a value written over a stored `NULL` reads back as `Some`.
+        let fill = update::<D, NullableNote>()
+            .set(NullableNoteBody::set(Some("second".to_owned())))
+            .where_(Expr::column::<NullableNoteId>().eq(1i64))
+            .returning((NullableNoteId, NullableNoteBody));
+        let filled = db.fetch_one(&fill).expect("update returns its row");
+        assert_eq!(filled, (1i64, Some("second".to_owned())));
+
+        // The rows the table holds agree with the statements that wrote them.
+        let stored = select_from::<D, NullableNote>()
+            .select((NullableNoteId, NullableNoteBody))
+            .order_by_asc(NullableNoteId);
+        let rows = db.fetch_all(&stored).expect("the rows decode");
+        assert_eq!(rows, vec![(1i64, Some("second".to_owned())), (2i64, None)]);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_round_trips_a_nullable_column_through_none_and_some() {
+        use rurqe::sqlite::rusqlite::Connection;
+
+        let connection = Connection::open_in_memory().expect("the in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE rurqe_nullable_notes ( \
+                     id INTEGER NOT NULL PRIMARY KEY, \
+                     body TEXT \
+                 );",
+            )
+            .expect("the fixture table is created");
+
+        let mut db = SqliteConnection::new(connection);
+        round_trip::<Sqlite<Sqlite3_35>, _>(&mut db);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn postgres_round_trips_a_nullable_column_through_none_and_some() {
+        let Some(url) = super::live_database_url() else {
+            return;
+        };
+
+        let client = postgres::Client::connect(&url, postgres::NoTls)
+            .expect("the test server accepts the connection");
+        let mut db = PgConnection::new(client);
+
+        // The fixture is created through the raw handle, which is the supported
+        // escape hatch for the DDL the typed builders do not model.
+        db.client_mut()
+            .batch_execute(
+                "DROP TABLE IF EXISTS rurqe_nullable_notes; \
+                 CREATE TABLE rurqe_nullable_notes ( \
+                     id BIGINT NOT NULL PRIMARY KEY, \
+                     body TEXT \
+                 )",
+            )
+            .expect("the fixture is created");
+
+        round_trip::<Postgres, _>(&mut db);
+
+        db.client_mut()
+            .batch_execute("DROP TABLE rurqe_nullable_notes")
+            .expect("the fixture is dropped");
+    }
+}
