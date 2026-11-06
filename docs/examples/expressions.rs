@@ -9,6 +9,7 @@ table!(
         OrderStatus => "status": String,
         OrderTotal => "total": f64,
         OrderTax => "tax": f64,
+        OrderDiscount => "discount": Option<f64>,
         OrderCreatedAt => "created_at": chrono::DateTime<chrono::Utc>,
     }
 );
@@ -72,7 +73,7 @@ async fn main() -> Result<()> {
     // ANCHOR: null_safe
     let reclassified = select_from(Order)
         .select(cols!(order_id: OrderId))
-        .where_(is_not_distinct_from(OrderTax, 0.0))
+        .where_(is_not_distinct_from(OrderDiscount, 0.0))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: null_safe

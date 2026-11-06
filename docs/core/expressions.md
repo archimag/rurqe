@@ -67,7 +67,7 @@ Each operand is a column, an expression, or a literal of the matching type, and 
 {{#rustdoc_include ../examples/expressions.rs:null_safe}}
 ```
 
-The predicate selects the rows whose tax equals zero together with the rows whose tax is absent, which a plain `OrderTax.eq(0.0)` cannot do: that comparison evaluates to unknown as soon as the column is NULL, so neither row is returned.
+The predicate reads `discount`, a nullable column, against a plain `f64` — the operand a nullable column accepts, because it compares against a value of its inner type. It selects the rows whose discount equals zero together with the rows whose discount is absent, which a plain `OrderDiscount.eq(0.0)` cannot do: that comparison evaluates to unknown as soon as the column is NULL, so neither row is returned.
 
 ## Correlated references (`outer`)
 
