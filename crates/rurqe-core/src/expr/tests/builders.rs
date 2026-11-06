@@ -401,7 +401,7 @@ fn string_columns_match_like_patterns() {
 
 #[test]
 fn aggregate_helpers_build_expected_expressions() {
-    assert_eq!(count(), Expr::<i64>::count_all());
+    assert_eq!(count(UserId), Expr::<i64>::count::<UserId>());
     assert_eq!(count_all(), Expr::<i64>::count_all());
     assert_eq!(
         count_distinct(UserId),
@@ -420,6 +420,7 @@ fn column_aggregates_carry_the_table_of_their_column() {
     // An aggregate reading a column references the table of that column, so a
     // statement whose scope lacks the table rejects it instead of projecting a
     // value the database cannot compute.
+    let _: Expr<i64, User, DirectAggregate> = count(UserId);
     let _: Expr<i64, User, DirectAggregate> = count_distinct(UserId);
     let _: Expr<i64, User, DirectAggregate> = sum(UserId);
     let _: Expr<i64, User, DirectAggregate> = sum_distinct(UserId);
@@ -443,7 +444,6 @@ fn column_aggregates_carry_the_table_of_their_column() {
     // `COUNT(*)` reads no column, so it references no table and stays constant
     // within every group.
     let _: Expr<i64, (), DirectAggregate> = count_all();
-    let _: Expr<i64, (), DirectAggregate> = count();
 }
 
 #[test]

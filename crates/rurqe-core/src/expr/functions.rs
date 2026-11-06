@@ -7,13 +7,15 @@ use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use crate::schema::Column;
 
-/// Builds a `COUNT(*)` expression over the rows of the query.
+/// Builds a `COUNT(col)` expression for the column `col`.
 ///
-/// The produced expression carries the [`DirectAggregate`] marker, so it stays
-/// projectable from a grouped query and accepts the `DISTINCT` and
-/// `FILTER (WHERE ...)` clauses of the call.
-pub fn count() -> Expr<i64, (), DirectAggregate> {
-    Expr::<i64>::count_all()
+/// The expression references the table of `col`, so it is accepted only by a
+/// statement selecting from that table, and it carries the [`DirectAggregate`]
+/// marker, so it stays projectable from a grouped query and accepts the
+/// `DISTINCT` and `FILTER (WHERE ...)` clauses of the call as well. Unlike
+/// `count_all`, the call counts only the rows where `col` is present.
+pub fn count<C: Column>(_col: C) -> Expr<i64, C::Table, DirectAggregate> {
+    Expr::<i64>::count::<C>()
 }
 
 /// Builds a `COUNT(*)` expression over the rows of the query.
