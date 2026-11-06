@@ -272,6 +272,13 @@ const FRAGMENTS: &[Fragment] = &[
     },
     Fragment {
         file: "dialects.rs",
+        anchor: "pg_versions",
+        binding: "sixteen",
+        terminal: Terminal::Built,
+        chapters: &["core/dialects/postgres.md"],
+    },
+    Fragment {
+        file: "dialects.rs",
         anchor: "jsonb",
         binding: "documents",
         terminal: Terminal::Built,
