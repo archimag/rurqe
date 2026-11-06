@@ -15,9 +15,9 @@ use crate::expr::builder::Expr;
 /// Comparison operands are checked by [`IntoExpr`](crate::expr::IntoExpr)
 /// instead, so the two contracts stay orthogonal.
 #[diagnostic::on_unimplemented(
-    message = "value of type `{ValType}` cannot be compared with a column of type `{ColType}`",
-    label = "incompatible operand types",
-    note = "convert the value to the column's `Column::RustType` before comparing"
+    message = "value of type `{ValType}` cannot be stored in a column of type `{ColType}`",
+    label = "incompatible value type",
+    note = "convert the value to the column's `Column::RustType` before assigning it"
 )]
 pub trait SqlCompatible<ColType, ValType> {}
 
