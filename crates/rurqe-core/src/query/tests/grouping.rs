@@ -378,3 +378,78 @@ fn group_by_chains_a_column_and_a_computed_expression() {
          GROUP BY \"user_id\", ABS(\"total\")"
     );
 }
+
+#[test]
+fn grouped_column_ordering_renders_every_direction_and_nulls_flavour() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_desc(OrderUserId)
+        .order_by_asc_nulls_first(OrderUserId)
+        .order_by_asc_nulls_last(OrderUserId)
+        .order_by_desc_nulls_first(OrderUserId)
+        .order_by_desc_nulls_last(OrderUserId)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" \
+         ORDER BY \"user_id\" DESC, \"user_id\" ASC NULLS FIRST, \
+         \"user_id\" ASC NULLS LAST, \"user_id\" DESC NULLS FIRST, \
+         \"user_id\" DESC NULLS LAST"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn grouped_expression_ordering_renders_every_direction_and_nulls_flavour() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_expr_asc(Expr::count_all())
+        .order_by_expr_desc(Expr::min::<OrderId>())
+        .order_by_expr_asc_nulls_first(Expr::max::<OrderTotal>())
+        .order_by_expr_asc_nulls_last(Expr::sum::<OrderTotal>())
+        .order_by_expr_desc_nulls_first(Expr::avg::<OrderTotal>())
+        .order_by_expr_desc_nulls_last(Expr::count_all())
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" \
+         ORDER BY COUNT(*) ASC, MIN(\"id\") DESC, MAX(\"total\") ASC NULLS FIRST, \
+         SUM(\"total\") ASC NULLS LAST, AVG(\"total\") DESC NULLS FIRST, \
+         COUNT(*) DESC NULLS LAST"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn grouped_ordering_takes_an_explicit_nulls_placement_and_paginates_the_groups() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by((OrderUserId, OrderId))
+        .select((OrderUserId, OrderId, Expr::count_all()))
+        .order_by_nulls(OrderId, OrderDirection::Desc, NullsOrder::First)
+        .order_by_expr_nulls(
+            Expr::sum::<OrderTotal>(),
+            OrderDirection::Asc,
+            NullsOrder::Last,
+        )
+        .limit(3)
+        .offset(1)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", \"id\", COUNT(*) FROM \"orders\" \
+         GROUP BY \"user_id\", \"id\" ORDER BY \"id\" DESC NULLS FIRST, \
+         SUM(\"total\") ASC NULLS LAST LIMIT 3 OFFSET 1"
+    );
+    assert!(built.params.is_empty());
+}
