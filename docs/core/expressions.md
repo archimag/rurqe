@@ -42,7 +42,9 @@ The branches fold their markers: a `CASE` written over aggregates stays an aggre
 | `nullif(a, b)` | `NULLIF(a, b)` |
 | `greatest(...)` / `least(...)` | `GREATEST(...)` / `LEAST(...)` |
 
-Each operand is a column, an expression, or a literal of the matching type, and the functions fold aggregation markers exactly like `CASE` — `coalesce(sum(OrderTotal), 0.0)` is an aggregate. `GREATEST` / `LEAST` and the null-safe pair below are PostgreSQL-only: no SQLite version accepts them, so the call does not exist on a SQLite target and the compiler refuses it instead of emitting SQL the engine would reject.
+Each operand is a column, an expression, or a literal of the matching type, and the functions fold aggregation markers exactly like `CASE` — `coalesce(sum(OrderTotal), 0.0)` is an aggregate. An argument is passed by value or by reference: a `String` column accepts a `&str`, a byte column a `&[u8]`, and a `Uuid`, a `Decimal`, or a temporal value binds through its borrowed form, so a value the caller keeps using is handed over without a clone.
+
+`GREATEST` / `LEAST` and the null-safe pair below are PostgreSQL-only: no SQLite version accepts them, so the call does not exist on a SQLite target and the compiler refuses it instead of emitting SQL the engine would reject.
 
 ```rust,no_run
 {{#rustdoc_include ../examples/expressions.rs:scalar_functions}}
@@ -137,6 +139,7 @@ Typed builders for `now()` and interval arithmetic are not part of the surface y
 | Mistake | What happens |
 |---|---|
 | Arithmetic mixing operand types (an `i64` column with an `f64` literal) | compile error: both operands must yield one numeric type |
+| Arithmetic over a column that is not numeric (a `String`, a `Uuid`, or an unregistered domain type) | compile error: arithmetic is defined for `i32`, `i64`, `f64`, and `Decimal` only |
 | A `CASE` branch producing a different type | compile error at the `when` call |
 | A `CASE` without a `when` branch | compile error: the builder cannot be closed |
 | An expression naming a table the statement does not introduce | compile error naming the table |

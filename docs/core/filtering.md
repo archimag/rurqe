@@ -44,6 +44,8 @@ An empty membership list is a syntax error in every dialect (`x IN ()`), so the 
 
 A column declared `Option<T>` is compared with a value of `T`. The comparison renders the ordinary operator over a bound parameter, so it selects the rows whose value equals the operand and no row storing `NULL`: SQL compares an absent value as unknown, which is neither true nor false.
 
+The lifting covers every operator that takes an operand, not equality alone: `ne`, `gt`, `lt`, `between`, `in_list`, and `not_in_list` accept the inner value of a nullable column directly, and each one builds the node its non-nullable form builds. A bound value on either side of `between` is encoded exactly as the value of an equality is.
+
 ```rust,no_run
 {{#rustdoc_include ../examples/crud.rs:nullable_equality}}
 ```
