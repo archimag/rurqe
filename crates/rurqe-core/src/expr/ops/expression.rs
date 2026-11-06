@@ -169,6 +169,48 @@ pub trait Expression<T> {
         self.into_expression().lt(value)
     }
 
+    /// Compares the expression with `value` using the SQL `>=` operator.
+    #[allow(clippy::type_complexity)]
+    fn gte<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().gte(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `<=` operator.
+    #[allow(clippy::type_complexity)]
+    fn lte<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().lte(value)
+    }
+
     /// Builds an `IS NULL` predicate over the expression.
     fn is_null(self) -> Expr<bool, Self::Scope, NonAggregate, Self::Dialect>
     where

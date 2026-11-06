@@ -310,6 +310,52 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         self.compare(BinaryOp::Lt, value.into_expr_kind())
     }
 
+    /// Compares the expression with `value` using the SQL `>=` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly as
+    /// [`eq`](Self::eq) does.
+    #[allow(clippy::type_complexity)]
+    pub fn gte<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
+    where
+        Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
+        D: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.compare(BinaryOp::Gte, value.into_expr_kind())
+    }
+
+    /// Compares the expression with `value` using the SQL `<=` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly as
+    /// [`eq`](Self::eq) does.
+    #[allow(clippy::type_complexity)]
+    pub fn lte<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
+    where
+        Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
+        D: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.compare(BinaryOp::Lte, value.into_expr_kind())
+    }
+
     /// Builds a `BETWEEN low AND high` range predicate over this expression.
     ///
     /// Both bounds are inclusive and must be compatible with the expression

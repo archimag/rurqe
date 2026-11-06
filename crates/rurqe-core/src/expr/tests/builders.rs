@@ -374,6 +374,8 @@ fn column_markers_are_expressions() {
     assert_eq!(UserId.ne(7i64), Expr::column::<UserId>().ne(7i64));
     assert_eq!(UserId.gt(7i64), Expr::column::<UserId>().gt(7i64));
     assert_eq!(UserId.lt(7i64), Expr::column::<UserId>().lt(7i64));
+    assert_eq!(UserId.gte(7i64), Expr::column::<UserId>().gte(7i64));
+    assert_eq!(UserId.lte(7i64), Expr::column::<UserId>().lte(7i64));
     assert_eq!(UserName.is_null(), Expr::column::<UserName>().is_null());
     assert_eq!(
         UserName.is_not_null(),
@@ -391,6 +393,19 @@ fn column_markers_are_expressions() {
         UserId.not_in_list(vec![1i64]),
         Expr::column::<UserId>().not_in_list(vec![1i64])
     );
+}
+
+#[test]
+fn inclusive_comparisons_render_the_inclusive_operators() {
+    let lower = Expr::column::<UserId>().gte(10i64);
+    let (sql, params) = render(lower.kind());
+    assert_eq!(sql, "(\"id\" >= ?)");
+    assert_eq!(params, vec![SqlVal::I64(10)]);
+
+    let upper = Expr::column::<UserId>().lte(20i64);
+    let (sql, params) = render(upper.kind());
+    assert_eq!(sql, "(\"id\" <= ?)");
+    assert_eq!(params, vec![SqlVal::I64(20)]);
 }
 
 #[test]
