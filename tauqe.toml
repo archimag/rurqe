@@ -16,7 +16,7 @@ models = [
 # Semantic model roles: specialized domain roles instead of generic difficulty tiers.
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
-primary = [
+repl = [
   { model = "GLM", effort = "max" },
   "Gemini Flash",
 ]
