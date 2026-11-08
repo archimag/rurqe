@@ -9,7 +9,8 @@ models = [
   { model = "~anthropic/claude-haiku-latest", alias = "Claude Haiku" },
   { model = "~deepseek/deepseek-flash-latest", alias = "DeepSeek Flash" },
   { model = "~z-ai/glm-latest", alias = "GLM"  },
-  { model = "~z-ai/glm-flash-latest", alias = "GLM Flash" }
+  { model = "~z-ai/glm-flash-latest", alias = "GLM Flash" },
+  { model = "meta/muse-spark-1.3-contributor", alias = "Muse Spark"}
 ]
 
 [models]
@@ -25,10 +26,11 @@ scribe = "Claude Haiku"    # history compaction, git squash commit messages, dif
 # The coder list is the natural escalation ladder (level up): on verification
 # healing stalls or exhausted retries the turn advances to the next coder entry.
 coder = [
-  { model = "DeepSeek Flash", effort = "max" },
-  { model = "GLM", effort = "max" },
+  { model = "DeepSeek Flash", effort = "max", attempts = 2 },  
+  { model = "GLM", effort = "max", attempts = 2 },
   { model = "Gemini Flash", level_up = false },
-  { model = "Claude Sonnet", level_up = false }
+  { model = "Claude Sonnet", level_up = false },
+  { model = "Muse Spark", level_up = false },
 ]
 
 # Conceptual design, plan refinement, blocked-step replanning.
@@ -54,7 +56,7 @@ runner = "just"
 
 
 [develop]
-max_retries = 5
+max_retries = 8
 # max_replans = 2
 # workflow = "git"   # edit workflow: "git", "naive" (default: "git")
 # protocol = "xml"   # active edit protocol: "xml" (default: "xml")
