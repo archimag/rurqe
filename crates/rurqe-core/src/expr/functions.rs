@@ -1,7 +1,7 @@
 //! Free-function helpers building aggregate, window, and scalar expressions.
 
 use super::ast::{ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest};
-use super::builder::{DirectAggregate, Expr, NonAggregate};
+use super::builder::{DirectAggregate, Expr};
 use super::operand::FunctionOperand;
 use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
@@ -265,75 +265,92 @@ where
     })
 }
 
-/// Builds an `IS DISTINCT FROM` predicate comparing the column `left` with `right`.
+/// Builds an `IS DISTINCT FROM` predicate comparing `left` with `right`.
 ///
 /// The predicate is the null-safe inequality of SQL: two SQL `NULL` values are
 /// equal to each other and distinct from every other value, where the plain `<>`
-/// operator yields `NULL` for such a pair instead of a truth value. The produced
-/// predicate keeps the tables of both operands.
+/// operator yields `NULL` for such a pair instead of a truth value. Both operands
+/// are accepted through the [`IntoExpr`] contract, so a column marker, an
+/// expression built from one, and a bound value of the compared type combine in
+/// either position, and a column declared as `Option<T>` is compared against a
+/// value of `T` exactly as the plain comparison predicates compare it.
+///
+/// The produced predicate keeps the tables of both operands and folds the
+/// aggregation marker they contribute, so a comparison written over an aggregate
+/// still collapses the rows of its group and remains projectable from a grouped
+/// query.
 #[allow(clippy::type_complexity)]
-pub fn is_distinct_from<C, V>(
-    _left: C,
-    right: V,
+pub fn is_distinct_from<A, B, T>(
+    left: A,
+    right: B,
 ) -> Expr<
     bool,
-    Merged<C::Table, V::Scope>,
-    NonAggregate,
-    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+    Merged<A::Scope, B::Scope>,
+    CombinedAggr<A::Aggr, B::Aggr, B::Scope>,
+    MergedDialect<MergedDialect<RequiresDistinctFrom, A::Dialect>, B::Dialect>,
 >
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
-    V: IntoExpr<C::RustType>,
-    RequiresDistinctFrom: MergeDialect<V::Dialect>,
+    A: IntoExpr<T>,
+    B: IntoExpr<T>,
+    A::Scope: MergeScope<B::Scope>,
+    A::Aggr: CombineAggr<B::Aggr, B::Scope>,
+    RequiresDistinctFrom: MergeDialect<A::Dialect>,
+    MergedDialect<RequiresDistinctFrom, A::Dialect>: MergeDialect<B::Dialect>,
 {
-    distinct_from::<C, V>(right, false)
+    distinct_from(left, right, false)
 }
 
-/// Builds an `IS NOT DISTINCT FROM` predicate comparing the column `left` with `right`.
+/// Builds an `IS NOT DISTINCT FROM` predicate comparing `left` with `right`.
 ///
 /// The predicate is the null-safe equality of SQL: it holds when both operands
 /// are equal or both are SQL `NULL`, where the plain `=` operator yields `NULL`
-/// for the absent pair instead. The produced predicate keeps the tables of both
-/// operands.
+/// for the absent pair instead. It accepts the same operand set as
+/// [`is_distinct_from`] and folds the aggregation marker of its operands the same
+/// way, so a comparison written over an aggregate stays projectable from a
+/// grouped query.
 #[allow(clippy::type_complexity)]
-pub fn is_not_distinct_from<C, V>(
-    _left: C,
-    right: V,
+pub fn is_not_distinct_from<A, B, T>(
+    left: A,
+    right: B,
 ) -> Expr<
     bool,
-    Merged<C::Table, V::Scope>,
-    NonAggregate,
-    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+    Merged<A::Scope, B::Scope>,
+    CombinedAggr<A::Aggr, B::Aggr, B::Scope>,
+    MergedDialect<MergedDialect<RequiresDistinctFrom, A::Dialect>, B::Dialect>,
 >
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
-    V: IntoExpr<C::RustType>,
-    RequiresDistinctFrom: MergeDialect<V::Dialect>,
+    A: IntoExpr<T>,
+    B: IntoExpr<T>,
+    A::Scope: MergeScope<B::Scope>,
+    A::Aggr: CombineAggr<B::Aggr, B::Scope>,
+    RequiresDistinctFrom: MergeDialect<A::Dialect>,
+    MergedDialect<RequiresDistinctFrom, A::Dialect>: MergeDialect<B::Dialect>,
 {
-    distinct_from::<C, V>(right, true)
+    distinct_from(left, right, true)
 }
 
-/// Builds the null-safe comparison node of the column `C`.
+/// Builds the null-safe comparison node of its two operands.
 #[allow(clippy::type_complexity)]
-fn distinct_from<C, V>(
-    right: V,
+fn distinct_from<A, B, T>(
+    left: A,
+    right: B,
     negated: bool,
 ) -> Expr<
     bool,
-    Merged<C::Table, V::Scope>,
-    NonAggregate,
-    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+    Merged<A::Scope, B::Scope>,
+    CombinedAggr<A::Aggr, B::Aggr, B::Scope>,
+    MergedDialect<MergedDialect<RequiresDistinctFrom, A::Dialect>, B::Dialect>,
 >
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
-    V: IntoExpr<C::RustType>,
-    RequiresDistinctFrom: MergeDialect<V::Dialect>,
+    A: IntoExpr<T>,
+    B: IntoExpr<T>,
+    A::Scope: MergeScope<B::Scope>,
+    A::Aggr: CombineAggr<B::Aggr, B::Scope>,
+    RequiresDistinctFrom: MergeDialect<A::Dialect>,
+    MergedDialect<RequiresDistinctFrom, A::Dialect>: MergeDialect<B::Dialect>,
 {
     Expr::new(ExprKind::DistinctFrom {
-        lhs: Box::new(C::expr_kind()),
+        lhs: Box::new(left.into_expr_kind()),
         rhs: Box::new(right.into_expr_kind()),
         negated,
     })
@@ -406,7 +423,7 @@ impl_cast_target!(rust_decimal::Decimal => "NUMERIC");
 mod tests {
     use super::*;
     use crate::dialect::Dialect;
-    use crate::expr::{render_expr, SqlVal};
+    use crate::expr::{render_expr, Aggregate, NonAggregate, SqlVal};
     use crate::schema::TableRef;
 
     struct MockDialect;
@@ -445,6 +462,9 @@ mod tests {
             .expect("valid expression");
         (sql, params)
     }
+
+    /// Asserts that `expr` is a per-row expression rather than an aggregate.
+    fn assert_per_row<T, S, D>(_expr: &Expr<T, S, NonAggregate, D>) {}
 
     #[test]
     fn a_cast_names_the_target_sql_type() {
@@ -507,5 +527,41 @@ mod tests {
 
         let _: Expr<bool, (Order, Line), NonAggregate, RequiresDistinctFrom> =
             is_distinct_from(OrderTotal, Expr::column::<LineTotal>());
+    }
+    #[test]
+    fn the_distinct_predicates_fold_the_aggregation_marker_of_their_operands() {
+        // A comparison written over an aggregate collapses the rows of its group,
+        // so the projection of a grouped query accepts it like the aggregate it
+        // reads.
+        let folded: Expr<bool, Order, Aggregate, RequiresDistinctFrom> =
+            is_distinct_from(Expr::<f64>::sum::<OrderTotal>(), 0.0);
+        assert!(matches!(
+            folded.kind(),
+            ExprKind::DistinctFrom { negated: false, .. }
+        ));
+
+        let negated: Expr<bool, Order, Aggregate, RequiresDistinctFrom> =
+            is_not_distinct_from(Expr::<f64>::sum::<OrderTotal>(), 0.0);
+        assert!(matches!(
+            negated.kind(),
+            ExprKind::DistinctFrom { negated: true, .. }
+        ));
+
+        // A bound value is the same in every row of a group, so it leaves the
+        // aggregate standing, while a bare column is read per row and makes the
+        // comparison per-row.
+        let per_row = is_distinct_from(Expr::<f64>::sum::<OrderTotal>(), OrderTotal);
+        assert_per_row(&per_row);
+        assert!(matches!(
+            per_row.kind(),
+            ExprKind::DistinctFrom { negated: false, .. }
+        ));
+
+        let plain: Expr<bool, Order, NonAggregate, RequiresDistinctFrom> =
+            is_distinct_from(OrderTotal, 0.0);
+        assert!(matches!(
+            plain.kind(),
+            ExprKind::DistinctFrom { negated: false, .. }
+        ));
     }
 }

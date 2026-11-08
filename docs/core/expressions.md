@@ -63,6 +63,8 @@ Each operand is a column, an expression, or a literal of the matching type, and 
 
 `is_distinct_from` is true when the two values differ, and also when exactly one of them is absent; two absent values are not distinct from each other. `is_not_distinct_from` is its complement, so it reads two absent values as equal — the pair that behaves as an equality once a NULL takes part.
 
+Both operands are expressions of the compared type, so a column marker, an expression built from one, and a bound value combine in either position. The pair folds the aggregation markers of its operands the way the scalar functions above do, so `is_distinct_from(sum(OrderTotal), 0.0)` projects from a grouped query.
+
 ```rust,no_run
 {{#rustdoc_include ../examples/expressions.rs:null_safe}}
 ```
