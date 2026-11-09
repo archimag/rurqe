@@ -18,6 +18,7 @@ models = [
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
 repl = [
+  { model = "DeepSeek Flash", effort = "max" },
   { model = "GLM", effort = "max" },
   "Gemini Flash",
 ]
