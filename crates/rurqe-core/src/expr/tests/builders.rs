@@ -753,3 +753,89 @@ fn a_nullable_column_tests_absence_with_the_null_predicates() {
     assert_eq!(sql, "(\"body\" IS NOT NULL)");
     assert!(params.is_empty());
 }
+
+#[test]
+fn aggregates_accept_arithmetic_expressions_as_operands() {
+    // The call adds the function name and the parentheses around its operand and
+    // nothing else, so the operand renders byte for byte as it does on its own.
+    let operand = OrderTotal + OrderTax;
+    let (operand_sql, _) = render(operand.kind());
+    assert_eq!(operand_sql, "(\"total\" + \"tax\")");
+    assert_eq!(render(sum(operand).kind()).0, format!("SUM({operand_sql})"));
+
+    assert_eq!(
+        render(sum_distinct(OrderTotal - OrderTax).kind()).0,
+        "SUM(DISTINCT (\"total\" - \"tax\"))"
+    );
+    assert_eq!(render(avg(OrderQty * 2i64).kind()).0, "AVG((\"qty\" * ?))");
+    assert_eq!(
+        render(min(OrderTotal + OrderTax).kind()).0,
+        "MIN((\"total\" + \"tax\"))"
+    );
+    assert_eq!(
+        render(max(OrderTotal + OrderTax).kind()).0,
+        "MAX((\"total\" + \"tax\"))"
+    );
+    assert_eq!(
+        render(count_distinct(OrderQty + 1i64).kind()).0,
+        "COUNT(DISTINCT (\"qty\" + ?))"
+    );
+}
+
+#[test]
+fn aggregates_accept_fragment_and_trusted_text_operands() {
+    fn rounded() -> Expr<f64, Order> {
+        Expr::<f64>::fragments("ROUND(")
+            .operand(OrderTotal)
+            .text(", ")
+            .value(2i64)
+            .text(")")
+            .end()
+    }
+
+    // A per-row expression built from operand slots binds its parameters in the
+    // order the slots appear, and a clause written on the call continues the
+    // numbering after them.
+    let (sql, params) = render(sum(rounded()).kind());
+    assert_eq!(sql, "SUM(ROUND(\"total\", ?))");
+    assert_eq!(params, vec![SqlVal::I64(2)]);
+
+    let filtered = sum(rounded()).filter_where(OrderTax.gt(0.5f64));
+    let (sql, params) = render(filtered.kind());
+    assert_eq!(sql, "SUM(ROUND(\"total\", ?)) FILTER (WHERE (\"tax\" > ?))");
+    assert_eq!(params, vec![SqlVal::I64(2), SqlVal::F64(0.5)]);
+
+    // A trusted text operand — the shape `sql!` expands to — travels through
+    // the call with the parameters it binds instead of degrading into text.
+    let trusted = Expr::<f64>::raw("COALESCE(total, ?)", vec![SqlVal::F64(0.0)])
+        .expect("a template with one placeholder and one parameter");
+    let (sql, params) = render(sum(trusted).kind());
+    assert_eq!(sql, "SUM(COALESCE(total, ?))");
+    assert_eq!(params, vec![SqlVal::F64(0.0)]);
+}
+
+#[test]
+fn an_aggregate_over_an_expression_keeps_the_scope_and_the_clauses_of_the_call() {
+    // The call keeps the tables its operand reads, so a statement has to
+    // introduce them exactly as it does for the bare column, and the call stays
+    // the aggregate call itself.
+    let _: Expr<f64, (Order, Order), DirectAggregate> = sum(OrderTotal + OrderTax);
+    let _: Expr<f64, Order, DirectAggregate> = sum(OrderTotal * 2.0f64);
+    let _: Expr<i64, Order, DirectAggregate> = count_distinct(OrderQty);
+
+    // Both clauses of the call stay reachable on the expression form, and the
+    // modifier and the predicate reach the rendered statement.
+    let distinct = sum(OrderTotal + OrderTax).distinct();
+    assert!(matches!(
+        distinct.kind(),
+        ExprKind::Aggregate { distinct: true, .. }
+    ));
+
+    let filtered = count_distinct(OrderQty * 2i64).filter_where(OrderQty.gt(0i64));
+    let (sql, params) = render(filtered.kind());
+    assert_eq!(
+        sql,
+        "COUNT(DISTINCT (\"qty\" * ?)) FILTER (WHERE (\"qty\" > ?))"
+    );
+    assert_eq!(params, vec![SqlVal::I64(2), SqlVal::I64(0)]);
+}

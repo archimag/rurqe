@@ -64,14 +64,14 @@ The rules of a grouped expression:
 
 ## The aggregate functions
 
-| Call | SQL |
-|---|---|
-| `count_all()` | `COUNT(*)` |
-| `count(col)` | `COUNT(col)` |
-| `count_distinct(operand)` | `COUNT(DISTINCT operand)` |
-| `sum(operand)` / `sum_distinct(operand)` | `SUM(operand)` / `SUM(DISTINCT operand)` |
-| `avg(operand)` / `avg_distinct(operand)` | `AVG(operand)` / `AVG(DISTINCT operand)` |
-| `min(operand)` / `max(operand)` | `MIN(operand)` / `MAX(operand)` |
+| Call | SQL | Operand |
+|---|---|---|
+| `count_all()` | `COUNT(*)` | none |
+| `count(col)` | `COUNT(col)` | a column marker |
+| `count_distinct(operand)` | `COUNT(DISTINCT operand)` | a column or a per-row expression |
+| `sum(operand)` / `sum_distinct(operand)` | `SUM(operand)` / `SUM(DISTINCT operand)` | a column or a per-row expression |
+| `avg(operand)` / `avg_distinct(operand)` | `AVG(operand)` / `AVG(DISTINCT operand)` | a column or a per-row expression |
+| `min(operand)` / `max(operand)` | `MIN(operand)` / `MAX(operand)` | a column or a per-row expression |
 
 `count_all()` counts rows; `count(col)` counts the rows where the column is present — the distinction the two spellings carry.
 
@@ -79,7 +79,7 @@ An aggregate call is an expression like any other: it compares — `.having(coun
 
 ## Aggregates over expressions
 
-Every aggregate except `count_all()` and `count(col)` takes a per-row expression where the table above names an operand: `sum`, `sum_distinct`, `avg`, `avg_distinct`, `min`, `max`, and `count_distinct`. The operand is anything that computes one value per row — a column marker, arithmetic over columns, a scalar function, a `CASE` branch, a call written through operand fragments, or a `sql!` fragment — and the call keeps the tables the operand reads, so an operand referencing a relation the statement does not introduce is rejected at the call site exactly like the bare column.
+Every aggregate except `count_all()` and `count(col)` accepts a per-row expression in place of a column, which is what the `Operand` column of the table above states. The operand is anything that computes one value per row — a column marker, arithmetic over columns, a scalar function, a `CASE` branch, a call written through operand fragments, or a `sql!` fragment — and the call keeps the tables the operand reads, so an operand referencing a relation the statement does not introduce is rejected at the call site exactly like the bare column.
 
 ```rust,no_run
 {{#rustdoc_include ../examples/aggregates.rs:aggregate_expressions}}
