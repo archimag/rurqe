@@ -32,6 +32,8 @@ Both pinned statements render the text of the unversioned query above: the pinne
 
 All three pinned releases — PostgreSQL 14, 15, and 16 — provide every clause this book documents for PostgreSQL, so no capability is version-gated yet. A pinned module therefore narrows the set of reachable clauses only once a release does not provide one; until then, the same chain composes under every pinned module.
 
+The dialect extension builders are the one exception, and the section documenting one of them states it: a `date_trunc` bucket carries the unversioned PostgreSQL marker, so it composes under the unversioned prelude and under `pg16`, while a statement pinned to an older release refuses it.
+
 PostgreSQL 16 is the newest release the dialect pins. A later server release joins the set as another module carrying the same entry points, and the capabilities that release introduces become reachable under that module alone.
 
 ## Text Predicates
@@ -235,6 +237,36 @@ At the wire protocol level, RURQE's PostgreSQL adapter normalises network addres
 - `macaddr` and `macaddr8` decode to colon-separated hexadecimal strings (`08:00:2b:01:02:03`).
 
 Because network addresses travel through the adapter as `SqlVal::Text`, the code generator maps them onto `String` by default. When wrapping network addresses into a custom Rust type (such as `std::net::IpAddr` or a domain wrapper), the type must be declared as a **textual domain newtype** (`Display` + `FromStr`), either via `rurqe::impl_sql_text_newtype!` or `#[derive(SqlType)] #[sql(as = Text)]`, and mapped through `[codegen.type_overrides]`. Defining a binary newtype (`#[sql(as = Bytes)]`) for an `inet` or `cidr` column is an error: row decoding will fail with `RowDecodeError::TypeMismatch` because the adapter supplies textual data.
+
+## Temporal Buckets
+
+`date_trunc` truncates a timestamp column to a calendar unit, which is the shape a grouped report buckets its rows by:
+
+| SQL form | Method | Truncates to |
+|---|---|---|
+| `date_trunc('year', "started_at")` | `date_trunc(PgDateTruncUnit::Year)` | the first instant of the year |
+| `date_trunc('month', "started_at")` | `date_trunc(PgDateTruncUnit::Month)` | the first instant of the month |
+| `date_trunc('week', "started_at")` | `date_trunc(PgDateTruncUnit::Week)` | the first instant of the week |
+| `date_trunc('day', "started_at")` | `date_trunc(PgDateTruncUnit::Day)` | the first instant of the day |
+| `date_trunc('day', "duration")` | not offered | nothing: an `INTERVAL` column has no Rust type, so the call stays in `sql!` |
+
+The builder is offered for a timestamp column — `chrono::NaiveDateTime`, `chrono::DateTime<Utc>`, and their optional forms — and a column of another type has no such method. The produced expression keeps the Rust type and the scope of its column, so it is projected, grouped by, and ordered like any other expression:
+
+```rust,no_run
+{{#rustdoc_include ../../examples/dialects.rs:date_trunc}}
+```
+
+The statement renders:
+
+```sql
+SELECT date_trunc('day', "started_at") AS "day", COUNT(*) AS "visits" FROM "workouts" GROUP BY date_trunc('day', "started_at")
+```
+
+The unit enters the statement as literal text rather than as a bound parameter, so every copy of the bucket renders the same characters. That is what lets a grouped statement project one copy and group by another: the engine matches the two by the text they spell.
+
+The expression is bound to the PostgreSQL dialect, so a statement of another engine refuses it at compile time. It is bound to the release the unversioned dialect resolves to as well, so a statement pinned to an older release refuses it; the pinned releases section above states the rule.
+
+A bucket is a timestamp expression, and an `INTERVAL` column is outside the typed surface: no Rust type names an interval, so a bucket of an interval-derived value stays in the trusted text of `sql!`. The section below states what the typed surface offers for an `INTERVAL` column.
 
 ## Temporal INTERVAL Columns
 

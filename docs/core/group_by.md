@@ -36,13 +36,7 @@ An expression built over a column keeps that column's relation, but the call sit
 
 ## Grouping by a computed expression
 
-`group_by` accepts a per-row expression in the same position as a column. Its tables are checked against the statement like those of any other clause, and an aggregate is refused at compile time because SQL forbids an aggregate in `GROUP BY`. The example computes the day of a timestamp with a PostgreSQL function written once through operand fragments:
-
-```rust,no_run
-{{#rustdoc_include ../examples/aggregates.rs:heat_map_definition}}
-```
-
-The projection, the grouping, and the ordering use the same expression, and the statement counts the rows of each day:
+`group_by` accepts a per-row expression in the same position as a column. Its tables are checked against the statement like those of any other clause, and an aggregate is refused at compile time because SQL forbids an aggregate in `GROUP BY`. The example buckets a timestamp by its calendar day with the PostgreSQL `date_trunc` builder, which keeps the Rust type and the scope of the column it truncates:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/aggregates.rs:heat_map}}
@@ -55,12 +49,14 @@ GROUP BY date_trunc('day', "created_at")
 ORDER BY date_trunc('day', "created_at") ASC
 ```
 
+The projection, the grouping, and the ordering name the same expression three times, and the three copies render the same text: the builder writes the unit into the statement as a literal rather than binding it as a parameter, so no copy is numbered differently from another. A function the typed surface does not model is written through operand fragments, and the rules below apply to it the same way.
+
 The rules of a grouped expression:
 
-- The columns inside a grouped expression do not become grouped columns. A bare `VisitCreatedAt` is not projectable beside `day_of(VisitCreatedAt)`.
-- A projection or a `HAVING` predicate reads the expression only as an expression structurally equal to the grouped one. The comparison runs inside `.build()` (Tier 2), because it compares the assembled expressions. A variation — another unit, another column — is refused as `UngroupedExpression`, and a bare column as `UngroupedColumn`.
-- A single `group_by` call takes a column, a tuple of columns, or one expression. Several groupings chain: `.group_by(UserId).group_by(day_of(VisitCreatedAt))`.
-- Write a constant of the grouped expression as literal text in the fragment. A value bound as a parameter is numbered per occurrence, so the projected copy and the grouped copy are rendered with different placeholders.
+- The columns inside a grouped expression do not become grouped columns. A bare `VisitCreatedAt` is not projectable beside `VisitCreatedAt.date_trunc(PgDateTruncUnit::Day)`.
+- A projection, a `HAVING` predicate, or an ordering criterion reads the expression only as an expression structurally equal to the grouped one. The comparison runs inside `.build()` (Tier 2), because it compares the assembled expressions. A variation — another unit, another column — is refused as `UngroupedExpression`, and a bare column as `UngroupedColumn`.
+- A single `group_by` call takes a column, a tuple of columns, or one expression. Several groupings chain: `.group_by(UserId).group_by(VisitCreatedAt.date_trunc(PgDateTruncUnit::Day))`.
+- Keep every constant of a computed call literal. A value bound as a parameter is numbered per occurrence, so the projected copy and the grouped copy would be rendered with different placeholders; the `date_trunc` builder writes its unit as literal text for exactly that reason, and a call written through operand fragments follows the same rule.
 
 ## The aggregate functions
 

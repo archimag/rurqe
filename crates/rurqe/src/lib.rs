@@ -546,9 +546,10 @@ pub mod prelude {
     ))]
     pub use rurqe_postgres::{
         array_agg, string_agg, JsonKey, Pg14, Pg15, Pg16, PgAggregateExpressions, PgArrayElements,
-        PgArrayExpressions, /* PgConnection is imported below */ PgJson, PgJsonExpressions,
-        PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue, PgRegexExpressions,
-        PgTextSearchExpressions, PgTextSearchValue, PgTextValue, PgVersion, Postgres,
+        PgArrayExpressions, /* PgConnection is imported below */ PgDateTruncUnit, PgJson,
+        PgJsonExpressions, PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue,
+        PgRegexExpressions, PgTemporalExpressions, PgTemporalValue, PgTextSearchExpressions,
+        PgTextSearchValue, PgTextValue, PgVersion, Postgres,
     };
 
     /// The synchronous `postgres` adapter, compiled by the `postgres` feature and

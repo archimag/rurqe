@@ -8,6 +8,12 @@ use rurqe::postgres::prelude::*;
 use rurqe::sqlite::{sqlite3_0, sqlite3_24, sqlite3_35};
 use rurqe_examples::markers::*;
 
+table!(
+    /// The `workouts` table, whose timestamp column the bucket truncates.
+    Workout => "workouts" {
+        WorkoutStartedAt => "started_at": chrono::DateTime<chrono::Utc>,
+    }
+);
 fn main() -> Result<(), BuildError> {
     // ANCHOR: postgres
     let postgres_query = select_from(User)
@@ -99,6 +105,20 @@ fn main() -> Result<(), BuildError> {
         .build()?;
     // ANCHOR_END: array_agg
     println!("{}", summaries.sql);
+
+    // ANCHOR: date_trunc
+    // A timestamp column is bucketed by the first-class builder: the expression
+    // keeps the column's type and scope, so the bucket is projected and grouped
+    // by as one expression.
+    let buckets = select_from(Workout)
+        .group_by(WorkoutStartedAt.date_trunc(PgDateTruncUnit::Day))
+        .select(cols! {
+            day: WorkoutStartedAt.date_trunc(PgDateTruncUnit::Day),
+            visits: count_all(),
+        })
+        .build()?;
+    // ANCHOR_END: date_trunc
+    println!("{}", buckets.sql);
 
     // ANCHOR: for_update
     // A query claims the rows it selects until the transaction ends, and

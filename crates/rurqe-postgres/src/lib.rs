@@ -15,9 +15,10 @@ pub mod migrate;
 pub use dialect::{Pg14, Pg15, Pg16, PgVersion, Postgres};
 pub use expressions::{
     array_agg, plainto_tsquery, string_agg, to_tsquery, to_tsvector, JsonKey,
-    PgAggregateExpressions, PgArrayElements, PgArrayExpressions, PgJson, PgJsonExpressions,
-    PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue, PgRegexExpressions,
-    PgTextSearchExpressions, PgTextSearchValue, PgTextValue,
+    PgAggregateExpressions, PgArrayElements, PgArrayExpressions, PgDateTruncUnit, PgJson,
+    PgJsonExpressions, PgJsonValue, PgJsonb, PgJsonbExpressions, PgJsonbValue, PgRegexExpressions,
+    PgTemporalExpressions, PgTemporalValue, PgTextSearchExpressions, PgTextSearchValue,
+    PgTextValue,
 };
 
 #[cfg(feature = "tokio-postgres")]

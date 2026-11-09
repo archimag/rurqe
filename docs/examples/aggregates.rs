@@ -11,15 +11,6 @@ table!(
     }
 );
 
-// ANCHOR: heat_map_definition
-/// Truncates a timestamp column to the day, as PostgreSQL `date_trunc` does.
-fn day_of(column: VisitCreatedAt) -> Expr<chrono::DateTime<chrono::Utc>, Visit> {
-    Expr::<chrono::DateTime<chrono::Utc>>::fragments("date_trunc('day', ")
-        .operand(column)
-        .text(")")
-        .end()
-}
-// ANCHOR_END: heat_map_definition
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
@@ -83,12 +74,12 @@ async fn main() -> Result<()> {
     println!("{}", adjusted.len());
     // ANCHOR: heat_map
     let heat_map = select_from(Visit)
-        .group_by(day_of(VisitCreatedAt))
+        .group_by(VisitCreatedAt.date_trunc(PgDateTruncUnit::Day))
         .select(cols! {
-            day: day_of(VisitCreatedAt),
+            day: VisitCreatedAt.date_trunc(PgDateTruncUnit::Day),
             visits: count_all(),
         })
-        .order_by_grouped_expr_asc(day_of(VisitCreatedAt))
+        .order_by_grouped_expr_asc(VisitCreatedAt.date_trunc(PgDateTruncUnit::Day))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: heat_map

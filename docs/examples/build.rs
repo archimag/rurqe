@@ -334,6 +334,13 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/dialects/postgres.md"],
     },
     Fragment {
+        file: "dialects.rs",
+        anchor: "date_trunc",
+        binding: "buckets",
+        terminal: Terminal::Built,
+        chapters: &["core/dialects/postgres.md"],
+    },
+    Fragment {
         file: "nested.rs",
         anchor: "collection",
         binding: "parents",
