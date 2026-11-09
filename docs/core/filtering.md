@@ -39,7 +39,17 @@ The predicate is a value before it is a clause: it can be stored in a variable, 
 SQL has no `= NULL`: an equality against an absent value is never true, which is why the null predicates exist and why they bind no parameter.
 
 An empty membership list is a syntax error in every dialect (`x IN ()`), so the builder degenerates it into a constant: `IN []` renders as `1 = 0`, and `NOT IN []` as `1 = 1`. A statement built from a filter list that happens to be empty therefore stays valid.
+## Inclusive bounds
 
+Comparisons with `>=` and `<=` compose with `.where_(...)` the same way as strict inequalities:
+
+```rust,no_run
+{{#rustdoc_include ../examples/filtering.rs:bounds}}
+```
+
+```sql
+SELECT "id", "total" FROM "orders" WHERE (("total" >= $1) AND ("total" <= $2))
+```
 ## Nullable columns
 
 A column declared `Option<T>` is compared with a value of `T`. The comparison renders the ordinary operator over a bound parameter, so it selects the rows whose value equals the operand and no row storing `NULL`: SQL compares an absent value as unknown, which is neither true nor false.

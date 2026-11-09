@@ -565,6 +565,13 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/filtering.md"],
     },
     Fragment {
+        file: "filtering.rs",
+        anchor: "bounds",
+        binding: "bounded",
+        terminal: Terminal::Executed,
+        chapters: &["core/filtering.md"],
+    },
+    Fragment {
         file: "aliasing.rs",
         anchor: "self_join",
         binding: "managed",

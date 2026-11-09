@@ -45,7 +45,15 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: ranges
     println!("{}", ranged.len());
-
+    // ANCHOR: bounds
+    let bounded = select_from(Order)
+        .select((OrderId, OrderTotal))
+        .where_(OrderTotal.gte(10.0f64))
+        .where_(OrderTotal.lte(100.0f64))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: bounds
+    println!("{}", bounded.len());
     // ANCHOR: predicate_reuse
     let is_active = UserActive.eq(true);
 
