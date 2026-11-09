@@ -453,3 +453,86 @@ fn grouped_ordering_takes_an_explicit_nulls_placement_and_paginates_the_groups()
     );
     assert!(built.params.is_empty());
 }
+
+#[test]
+fn order_by_grouped_expr_orders_the_groups_by_the_grouped_expression() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .order_by_grouped_expr_asc(abs_total())
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT ABS(\"total\"), COUNT(*) FROM \"orders\" GROUP BY ABS(\"total\") \
+         ORDER BY ABS(\"total\") ASC"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn order_by_grouped_expr_renders_every_direction_and_nulls_flavour() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .order_by_grouped_expr_desc(abs_total())
+        .order_by_grouped_expr(abs_total(), OrderDirection::Asc)
+        .order_by_grouped_expr_asc_nulls_first(abs_total())
+        .order_by_grouped_expr_asc_nulls_last(abs_total())
+        .order_by_grouped_expr_desc_nulls_first(abs_total())
+        .order_by_grouped_expr_desc_nulls_last(abs_total())
+        .order_by_grouped_expr_nulls(abs_total(), OrderDirection::Desc, NullsOrder::Last)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT ABS(\"total\"), COUNT(*) FROM \"orders\" GROUP BY ABS(\"total\") \
+         ORDER BY ABS(\"total\") DESC, ABS(\"total\") ASC, \
+         ABS(\"total\") ASC NULLS FIRST, ABS(\"total\") ASC NULLS LAST, \
+         ABS(\"total\") DESC NULLS FIRST, ABS(\"total\") DESC NULLS LAST, \
+         ABS(\"total\") DESC NULLS LAST"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn order_by_grouped_expr_refuses_a_variation_of_the_grouped_expression() {
+    // The criterion computes over `user_id`, a column neither grouped nor covered
+    // by the grouped expression over `total`.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .order_by_grouped_expr_asc(
+            Expr::<f64>::fragments("ABS(")
+                .operand(OrderUserId)
+                .text(")")
+                .end(),
+        );
+
+    assert!(matches!(
+        query.build(),
+        Err(BuildError::UngroupedExpression { .. })
+    ));
+}
+
+#[test]
+fn order_by_grouped_expr_refuses_a_bare_column_the_grouping_dropped() {
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(abs_total())
+        .select((abs_total(), Expr::count_all()))
+        .order_by_grouped_expr_asc(Expr::column::<OrderTotal>());
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}

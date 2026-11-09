@@ -42,7 +42,7 @@ An expression built over a column keeps that column's relation, but the call sit
 {{#rustdoc_include ../examples/aggregates.rs:heat_map_definition}}
 ```
 
-The projection and the grouping use the same expression, and the statement counts the rows of each day:
+The projection, the grouping, and the ordering use the same expression, and the statement counts the rows of each day:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/aggregates.rs:heat_map}}
@@ -52,6 +52,7 @@ The projection and the grouping use the same expression, and the statement count
 SELECT date_trunc('day', "created_at") AS "day", COUNT(*) AS "visits"
 FROM "visits"
 GROUP BY date_trunc('day', "created_at")
+ORDER BY date_trunc('day', "created_at") ASC
 ```
 
 The rules of a grouped expression:
@@ -136,12 +137,15 @@ The rows an aggregate call evaluates can be restricted without a `CASE WHEN` det
 |---|---|
 | `order_by` / `order_by_asc` / `order_by_desc` / `order_by_nulls` | a grouped column |
 | `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | an aggregate expression |
+| `order_by_grouped_expr` / `order_by_grouped_expr_asc` / `order_by_grouped_expr_desc` / `order_by_grouped_expr_*_nulls_*` | the grouped computed expression itself |
 | `limit` / `offset` | the number of groups |
 
 ```rust,no_run
 {{#rustdoc_include ../examples/aggregates.rs:group_ordering}}
 ```
+A statement grouped by a computed expression orders its groups by the same expression it grouped by: `order_by_grouped_expr*` takes the per-row expression, and the criterion has to be structurally equal to a grouped one. The comparison runs while the statement is built, exactly like the one the projection follows — a variation is refused as `UngroupedExpression`, and a bare column the grouping dropped as `UngroupedColumn`.
 
+The `*_nulls_*` variants of the two expression families, and `order_by_nulls` for a grouped column, place absent values explicitly and are available on a dialect that supports the placement.
 ## Finishing a grouped query
 
 - `.build()` — only after `.select(...)`;

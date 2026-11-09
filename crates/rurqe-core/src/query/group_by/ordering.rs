@@ -7,7 +7,7 @@
 
 use crate::dialect::{Dialect, SupportsNullsOrdering};
 use crate::expr::{
-    AggregateMarker, DialectInScope, Expr, NullsOrder, OrderCriterion, OrderDirection,
+    AggregateMarker, DialectInScope, Expr, NonAggregate, NullsOrder, OrderCriterion, OrderDirection,
 };
 use crate::schema::{Column, ExprInScope, TableInScope};
 
@@ -274,7 +274,136 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     {
         self.order_by_expr_nulls(expression, OrderDirection::Desc, NullsOrder::Last)
     }
+    /// Appends an ordering criterion for the grouped expression `expression` with `direction`.
+    ///
+    /// A statement grouped by a computed expression produces one value of that
+    /// expression per group, so it orders the groups by the same expression the
+    /// `GROUP BY` clause names: the criterion has to be structurally equal to a
+    /// grouped expression, exactly as a projection has to be. The comparison runs
+    /// while the statement is built, because it compares the assembled expressions —
+    /// a variation is refused as
+    /// [`UngroupedExpression`](crate::query::BuildError::UngroupedExpression), and a
+    /// column the grouping dropped as
+    /// [`UngroupedColumn`](crate::query::BuildError::UngroupedColumn).
+    pub fn order_by_grouped_expr<T, Scope, ExprD, P>(
+        mut self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+        direction: OrderDirection,
+    ) -> Self
+    where
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        let criterion = OrderCriterion::new(expression.into_kind(), direction);
+        self.query.push_ordering(criterion);
+        self
+    }
 
+    /// Appends an ordering criterion for the grouped expression `expression` fixing
+    /// where NULL values sort.
+    pub fn order_by_grouped_expr_nulls<T, Scope, ExprD, P>(
+        mut self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        let criterion = OrderCriterion::new(expression.into_kind(), direction).nulls(nulls);
+        self.query.push_ordering(criterion);
+        self
+    }
+
+    /// Appends an ascending ordering criterion for the grouped expression `expression`.
+    pub fn order_by_grouped_expr_asc<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr(expression, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for the grouped expression `expression`.
+    pub fn order_by_grouped_expr_desc<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr(expression, OrderDirection::Desc)
+    }
+
+    /// Appends an ascending ordering criterion for the grouped expression `expression`
+    /// putting NULL values first.
+    pub fn order_by_grouped_expr_asc_nulls_first<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr_nulls(expression, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion for the grouped expression `expression`
+    /// putting NULL values last.
+    pub fn order_by_grouped_expr_asc_nulls_last<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr_nulls(expression, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion for the grouped expression `expression`
+    /// putting NULL values first.
+    pub fn order_by_grouped_expr_desc_nulls_first<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr_nulls(expression, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion for the grouped expression `expression`
+    /// putting NULL values last.
+    pub fn order_by_grouped_expr_desc_nulls_last<T, Scope, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, NonAggregate, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        T: 'static + Send + Sync,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P> + 'static + Send + Sync,
+        ExprD: DialectInScope<D>,
+    {
+        self.order_by_grouped_expr_nulls(expression, OrderDirection::Desc, NullsOrder::Last)
+    }
     /// Limits the number of returned groups to `limit`.
     pub fn limit(mut self, limit: u32) -> Self {
         self.query = self.query.limit(limit);

@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
             day: day_of(VisitCreatedAt),
             visits: count_all(),
         })
+        .order_by_grouped_expr_asc(day_of(VisitCreatedAt))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: heat_map
