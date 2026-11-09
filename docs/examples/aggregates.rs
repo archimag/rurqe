@@ -66,7 +66,21 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: group_ordering
     println!("{}", top.len());
-
+    // ANCHOR: aggregate_expressions
+    let adjusted = select_from(Order)
+        .group_by(OrderUserId)
+        .select((
+            OrderUserId,
+            sum(Expr::<f64>::fragments("ROUND(")
+                .operand(OrderTotal)
+                .text(", 2)")
+                .end()),
+            sum(sql!(<f64> "COALESCE(total, 0)")),
+        ))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: aggregate_expressions
+    println!("{}", adjusted.len());
     // ANCHOR: heat_map
     let heat_map = select_from(Visit)
         .group_by(day_of(VisitCreatedAt))

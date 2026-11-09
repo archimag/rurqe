@@ -390,6 +390,13 @@ const FRAGMENTS: &[Fragment] = &[
         chapters: &["core/group_by.md"],
     },
     Fragment {
+        file: "aggregates.rs",
+        anchor: "aggregate_expressions",
+        binding: "adjusted",
+        terminal: Terminal::Executed,
+        chapters: &["core/group_by.md"],
+    },
+    Fragment {
         file: "ordering.rs",
         anchor: "order_by",
         binding: "page",

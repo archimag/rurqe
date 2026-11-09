@@ -67,14 +67,34 @@ The rules of a grouped expression:
 |---|---|
 | `count_all()` | `COUNT(*)` |
 | `count(col)` | `COUNT(col)` |
-| `count_distinct(col)` | `COUNT(DISTINCT col)` |
-| `sum(col)` / `sum_distinct(col)` | `SUM(col)` / `SUM(DISTINCT col)` |
-| `avg(col)` / `avg_distinct(col)` | `AVG(col)` / `AVG(DISTINCT col)` |
-| `min(col)` / `max(col)` | `MIN(col)` / `MAX(col)` |
+| `count_distinct(operand)` | `COUNT(DISTINCT operand)` |
+| `sum(operand)` / `sum_distinct(operand)` | `SUM(operand)` / `SUM(DISTINCT operand)` |
+| `avg(operand)` / `avg_distinct(operand)` | `AVG(operand)` / `AVG(DISTINCT operand)` |
+| `min(operand)` / `max(operand)` | `MIN(operand)` / `MAX(operand)` |
 
 `count_all()` counts rows; `count(col)` counts the rows where the column is present — the distinction the two spellings carry.
 
 An aggregate call is an expression like any other: it compares — `.having(count_all().gt(0i64))` above — and it travels through the arithmetic and the scalar functions. The call-attached `DISTINCT` modifier and `FILTER (WHERE ...)` exist on the call alone; an expression built from the call, such as `sum(OrderTotal) + 1.0`, accepts neither.
+
+## Aggregates over expressions
+
+Every aggregate except `count_all()` and `count(col)` takes a per-row expression where the table above names an operand: `sum`, `sum_distinct`, `avg`, `avg_distinct`, `min`, `max`, and `count_distinct`. The operand is anything that computes one value per row — a column marker, arithmetic over columns, a scalar function, a `CASE` branch, a call written through operand fragments, or a `sql!` fragment — and the call keeps the tables the operand reads, so an operand referencing a relation the statement does not introduce is rejected at the call site exactly like the bare column.
+
+```rust,no_run
+{{#rustdoc_include ../examples/aggregates.rs:aggregate_expressions}}
+```
+
+```sql
+SELECT "user_id", SUM(ROUND("total", 2)), SUM(COALESCE(total, 0)) FROM "orders" GROUP BY "user_id"
+```
+
+The call renders its operand exactly as the operand renders on its own: `SUM(ROUND("total", 2))` adds the function name and the parentheses around it and nothing else, and the parameters the operand binds are numbered before the ones of a `FILTER (WHERE ...)` clause written on the same call.
+
+An operand reads the rows of a group, so a call is not an operand of another call: `sum(sum(OrderTotal))` does not compile. That is the type-level counterpart of the refusal every engine states for a nested aggregate, because the inner call leaves no row for the outer one to read. One row per group aggregated again is the window form — `SUM(SUM("total")) OVER (...)` — which the window builder composes.
+
+> **Compiler Guard in Action.** `sum(sum(OrderTotal))` does not compile, with a message saying the inner call is "not an operand of an aggregate function".
+
+A value whose Rust type the typed surface does not name stays in trusted text. PostgreSQL `INTERVAL` is the case that matters for analytics: no Rust type maps onto an interval column, so a cell computed over one is spelled `sum(sql!(<f64> "..."))` — the second projection above spells a value the builder does not model that way — and the trusted text is where the interval arithmetic itself lives.
 
 ## Aggregate folding in scalar functions
 

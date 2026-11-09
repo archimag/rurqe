@@ -3,8 +3,9 @@
 use super::ast::{ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest};
 use super::builder::{DirectAggregate, Expr};
 use super::operand::FunctionOperand;
-use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
+use super::ops::{AggregateOperand, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
+use super::val::AggregateFunc;
 use crate::schema::Column;
 
 /// Builds a `COUNT(col)` expression for the column `col`.
@@ -27,75 +28,116 @@ pub fn count_all() -> Expr<i64, (), DirectAggregate> {
     Expr::<i64>::count_all()
 }
 
-/// Builds a `COUNT(DISTINCT col)` expression for the column `col`.
+/// Builds a `COUNT(DISTINCT operand)` expression over `operand`.
 ///
-/// The expression references the table of `col`, so it is accepted only by a
-/// statement selecting from that table, and it carries the [`DirectAggregate`]
-/// marker, so it accepts the `FILTER (WHERE ...)` clause of the call as well.
-pub fn count_distinct<C: Column>(_col: C) -> Expr<i64, C::Table, DirectAggregate> {
-    Expr::<i64>::count_distinct::<C>()
+/// The operand is accepted through the [`AggregateOperand`] contract, so the
+/// call counts the distinct values a column holds or the distinct results a
+/// per-row expression produces. The expression references the tables the
+/// operand reads and keeps the dialect requirement it carries, and it carries
+/// the [`DirectAggregate`] marker, so it accepts the `FILTER (WHERE ...)` clause
+/// of the call and stays projectable from a grouped query.
+pub fn count_distinct<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<i64, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Count, true, operand.into_aggregate_operand())
 }
 
-/// Builds a `SUM(col)` expression for the column `col`.
+/// Builds a `SUM(operand)` expression over `operand`.
 ///
-/// The produced expression carries the [`DirectAggregate`] marker, so it stays
-/// projectable from a grouped query even when `col` is not grouped, and it
-/// accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call. It also
-/// references the table of `col`, so a statement whose scope lacks that table
-/// rejects it like any other column reference.
-pub fn sum<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
-    Expr::<C::RustType>::sum::<C>()
+/// The operand is accepted through the [`AggregateOperand`] contract: a column
+/// marker, or a per-row expression of the same Rust type built from columns and
+/// values. The produced expression carries the [`DirectAggregate`] marker, so it
+/// stays projectable from a grouped query even when the operand reads a column
+/// the query does not group by, and it accepts the `DISTINCT` and
+/// `FILTER (WHERE ...)` clauses of the call. It also references the tables the
+/// operand reads, so a statement whose scope lacks one of them rejects it like
+/// any other column reference.
+pub fn sum<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<T, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Sum, false, operand.into_aggregate_operand())
 }
 
-/// Builds a `SUM(DISTINCT col)` expression for the column `col`.
+/// Builds a `SUM(DISTINCT operand)` expression over `operand`.
 ///
-/// The scope is the table of `col` in both the distinct and the plain form, and
-/// the marker states that the expression still is the aggregate call itself, so
-/// the `FILTER (WHERE ...)` clause applies to it.
-pub fn sum_distinct<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
-    Expr::<C::RustType>::sum_distinct::<C>()
+/// The scope and the dialect requirement are those of the operand in both the
+/// distinct and the plain form, and the marker states that the expression still
+/// is the aggregate call itself, so the `FILTER (WHERE ...)` clause applies to
+/// it.
+pub fn sum_distinct<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<T, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Sum, true, operand.into_aggregate_operand())
 }
 
-/// Builds an `AVG(col)` expression for the column `col`.
+/// Builds an `AVG(operand)` expression over `operand`.
 ///
-/// The produced expression carries the [`DirectAggregate`] marker, so it stays
-/// projectable from a grouped query even when `col` is not grouped, and it
-/// accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call. It also
-/// references the table of `col`, so a statement whose scope lacks that table
-/// rejects it like any other column reference.
-pub fn avg<C: Column>(_col: C) -> Expr<f64, C::Table, DirectAggregate> {
-    Expr::<f64>::avg::<C>()
+/// The operand is accepted through the [`AggregateOperand`] contract, and the
+/// average is typed `f64` whatever Rust type the operand carries. The expression
+/// references the tables the operand reads, keeps the dialect requirement it
+/// carries, and carries the [`DirectAggregate`] marker, so it stays projectable
+/// from a grouped query and accepts the `DISTINCT` and `FILTER (WHERE ...)`
+/// clauses of the call.
+pub fn avg<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<f64, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Avg, false, operand.into_aggregate_operand())
 }
 
-/// Builds an `AVG(DISTINCT col)` expression for the column `col`.
+/// Builds an `AVG(DISTINCT operand)` expression over `operand`.
 ///
-/// The scope is the table of `col` in both the distinct and the plain form, and
-/// the marker states that the expression still is the aggregate call itself, so
-/// the `FILTER (WHERE ...)` clause applies to it.
-pub fn avg_distinct<C: Column>(_col: C) -> Expr<f64, C::Table, DirectAggregate> {
-    Expr::<f64>::avg_distinct::<C>()
+/// The average is typed `f64`, the scope and the dialect requirement are those
+/// of the operand, and the marker states that the expression still is the
+/// aggregate call itself, so the `FILTER (WHERE ...)` clause applies to it.
+pub fn avg_distinct<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<f64, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Avg, true, operand.into_aggregate_operand())
 }
 
-/// Builds a `MIN(col)` expression for the column `col`.
+/// Builds a `MIN(operand)` expression over `operand`.
 ///
-/// The produced expression carries the [`DirectAggregate`] marker, so it stays
-/// projectable from a grouped query even when `col` is not grouped, and it
-/// accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call. It also
-/// references the table of `col`, so a statement whose scope lacks that table
-/// rejects it like any other column reference.
-pub fn min<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
-    Expr::<C::RustType>::min::<C>()
+/// The operand is accepted through the [`AggregateOperand`] contract. The
+/// produced expression carries the [`DirectAggregate`] marker, so it stays
+/// projectable from a grouped query even when the operand reads a column the
+/// query does not group by, and it accepts the `DISTINCT` and
+/// `FILTER (WHERE ...)` clauses of the call.
+pub fn min<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<T, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Min, false, operand.into_aggregate_operand())
 }
 
-/// Builds a `MAX(col)` expression for the column `col`.
+/// Builds a `MAX(operand)` expression over `operand`.
 ///
-/// The produced expression carries the [`DirectAggregate`] marker, so it stays
-/// projectable from a grouped query even when `col` is not grouped, and it
-/// accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call. It also
-/// references the table of `col`, so a statement whose scope lacks that table
-/// rejects it like any other column reference.
-pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
-    Expr::<C::RustType>::max::<C>()
+/// The operand is accepted through the [`AggregateOperand`] contract. The
+/// produced expression carries the [`DirectAggregate`] marker, so it stays
+/// projectable from a grouped query even when the operand reads a column the
+/// query does not group by, and it accepts the `DISTINCT` and
+/// `FILTER (WHERE ...)` clauses of the call.
+pub fn max<T, V: AggregateOperand<T>>(
+    operand: V,
+) -> Expr<T, V::Scope, DirectAggregate, V::Dialect> {
+    aggregate_call(AggregateFunc::Max, false, operand.into_aggregate_operand())
+}
+
+/// Builds the aggregate call node of `func` over `argument`.
+///
+/// The node is the one the column constructors of [`Expr`] build, so an
+/// aggregate reached through a free function and the one reached through a
+/// constructor render identically.
+fn aggregate_call<T, Scope, D>(
+    func: AggregateFunc,
+    distinct: bool,
+    argument: ExprKind,
+) -> Expr<T, Scope, DirectAggregate, D> {
+    Expr::new(ExprKind::Aggregate {
+        func,
+        distinct,
+        arg: Some(Box::new(argument)),
+        filter: None,
+        order_by: Vec::new(),
+    })
 }
 
 /// Builds a `COALESCE(first, fallback)` expression over its operands.
@@ -423,6 +465,7 @@ impl_cast_target!(rust_decimal::Decimal => "NUMERIC");
 mod tests {
     use super::*;
     use crate::dialect::Dialect;
+    use crate::expr::ops::Expression;
     use crate::expr::{render_expr, Aggregate, NonAggregate, SqlVal};
     use crate::schema::TableRef;
 
@@ -563,5 +606,47 @@ mod tests {
             plain.kind(),
             ExprKind::DistinctFrom { negated: false, .. }
         ));
+    }
+
+    fn rounded() -> Expr<f64, Order> {
+        Expr::<f64>::fragments("ROUND(")
+            .operand(OrderTotal)
+            .text(", 2)")
+            .end()
+    }
+
+    #[test]
+    fn aggregates_accept_expressions_as_operands() {
+        assert_eq!(render(sum(rounded()).kind()).0, "SUM(ROUND(\"total\", 2))");
+        assert_eq!(
+            render(sum_distinct(rounded()).kind()).0,
+            "SUM(DISTINCT ROUND(\"total\", 2))"
+        );
+        assert_eq!(render(avg(rounded()).kind()).0, "AVG(ROUND(\"total\", 2))");
+        assert_eq!(
+            render(avg_distinct(rounded()).kind()).0,
+            "AVG(DISTINCT ROUND(\"total\", 2))"
+        );
+        assert_eq!(render(min(rounded()).kind()).0, "MIN(ROUND(\"total\", 2))");
+        assert_eq!(render(max(rounded()).kind()).0, "MAX(ROUND(\"total\", 2))");
+        assert_eq!(
+            render(count_distinct(rounded()).kind()).0,
+            "COUNT(DISTINCT ROUND(\"total\", 2))"
+        );
+    }
+
+    #[test]
+    fn an_aggregate_over_an_expression_supports_distinct_and_filter() {
+        let filtered = sum(rounded()).filter_where(OrderTotal.gt(10.0));
+        assert_eq!(
+            render(filtered.kind()).0,
+            "SUM(ROUND(\"total\", 2)) FILTER (WHERE (\"total\" > $1))"
+        );
+
+        let distinct = sum(rounded()).distinct();
+        assert_eq!(
+            render(distinct.kind()).0,
+            "SUM(DISTINCT ROUND(\"total\", 2))"
+        );
     }
 }
