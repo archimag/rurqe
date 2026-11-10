@@ -37,6 +37,7 @@ The document is read strictly, because a misspelled key would resolve an artifac
 | `codegen.output` | string | `src/schema.rs` | The module code generation writes and verification reads. |
 | `codegen.domain_types` | boolean | `false` | Whether the generator emits the application's domain types. |
 | `codegen.type_overrides` | table | empty table | The Rust type generated for a named column. |
+| `codegen.enum_derives` | array of strings | `[]` | The extra traits every generated enum derives. |
 
 Nothing else is accepted, at the root and inside the sections alike, and the refusal lands on the declaration:
 
@@ -73,6 +74,7 @@ checkpoint = "rurqe/migrations/checkpoint.toml"
 [codegen]
 output = "src/db/schema.rs"
 domain_types = true
+enum_derives = ["serde::Serialize", "serde::Deserialize"]
 
 [codegen.type_overrides]
 "users.id" = "uuid::Uuid"
@@ -239,7 +241,7 @@ The resolved selection is what every catalog statement binds, so the snapshot th
 
 ## Code generation settings
 
-The `[codegen]` table holds the three settings the generator reads.
+The `[codegen]` table holds the four settings the generator reads.
 
 ### `domain_types`
 
@@ -341,6 +343,23 @@ invalid configuration at line 2, column 1: `codegen.type_overrides.users` declar
 ```
 
 An override survives every later regeneration, because the generator reads the file and never edits it: the type is declared once and applied each time the module is written.
+
+### `enum_derives`
+
+```toml
+[codegen]
+enum_derives = ["serde::Serialize", "serde::Deserialize"]
+```
+
+Names the traits every generated enum derives beside the set the generator always writes: `SqlType`, `Clone`, `Copy`, `PartialEq`, `Eq`, and `Debug`. The key is an array of Rust trait paths, and each path is emitted verbatim into the `#[derive(...)]` attribute of the enum, so the generated module names those crates and the application enables them. An entry the generator already writes is not declared a second time, because a repeated trait would not compile.
+
+The array holds strings and every entry is trimmed; a blank entry, an entry that is not a string, and a trait declared twice are each refused, and the diagnostic names the entry by its index (`codegen.enum_derives[<index>]`), because TOML records no position for an element of an array. Omitting the key leaves the array empty, so such a project generates the default trait set and its module is unchanged.
+
+#### Serialized variants
+
+An entry naming a serialization derive — `serde::Serialize` or `serde::Deserialize`, spelled with or without the `serde::` prefix — makes every variant of every generated enum carry `#[serde(rename = "<label>")]` with the label the catalog stores, verbatim. The attribute is what keeps a serialized enum equal to the stored value set: a derive that reads the Rust identifier alone spells the variant as `MinimalPairs`, while the database stores `minimal-pairs`, and a type generator honouring the attribute describes the stored labels instead of the identifiers.
+
+The rename is per variant rather than a container-level convention, because one enum routinely mixes spellings — `minimal-pairs`, `regular_verb`, and `A1` are labels of one catalog — and a blanket rule cannot reproduce them. A variant whose Rust identifier cannot spell its label keeps `#[sql(rename = "...")]` beside the serialization attribute, so the engine spelling and the wire spelling stay one value.
 
 ### `output`
 
