@@ -47,6 +47,8 @@ pub struct CodegenOptions {
     /// generated module require the `uuid`, `chrono`, and `serde_json` features
     /// of the `rurqe` facade.
     pub domain_types: bool,
+    /// Additional traits to derive on generated enum types.
+    pub enum_derives: Vec<String>,
 }
 
 impl Default for CodegenOptions {
@@ -60,6 +62,7 @@ impl Default for CodegenOptions {
             generate_records: true,
             type_overrides: BTreeMap::new(),
             domain_types: false,
+            enum_derives: Vec::new(),
         }
     }
 }

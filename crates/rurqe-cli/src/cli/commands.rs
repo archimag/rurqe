@@ -225,6 +225,7 @@ impl Project {
         CodegenOptions {
             type_overrides: self.config.type_overrides(),
             domain_types: self.config.domain_types(),
+            enum_derives: self.config.enum_derives().to_vec(),
             ..CodegenOptions::default()
         }
     }

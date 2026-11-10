@@ -61,6 +61,7 @@ pub(super) struct EnumPlan<'a> {
 pub(super) struct EnumVariantPlan {
     pub(super) ident: String,
     pub(super) rename: Option<String>,
+    pub(super) raw_label: String,
 }
 
 /// A table rendered into its Rust identifiers.
@@ -200,6 +201,7 @@ fn build_section<'a>(
             variant_plans.push(EnumVariantPlan {
                 ident: variant_ident,
                 rename,
+                raw_label: variant.clone(),
             });
         }
 

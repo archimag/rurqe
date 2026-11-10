@@ -50,7 +50,7 @@ pub fn generate_schema_rs(
     out.push_str("\n\n");
 
     for enum_plan in &plan.primary.enums {
-        out.push_str(&render_enum(enum_plan));
+        out.push_str(&render_enum(enum_plan, options));
     }
 
     for table in &plan.primary.tables {
@@ -114,7 +114,7 @@ fn render_items(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> S
     let mut body = String::new();
 
     for enum_plan in &schema.section.enums {
-        body.push_str(&render_enum(enum_plan));
+        body.push_str(&render_enum(enum_plan, options));
     }
 
     for table in &schema.section.tables {
@@ -139,18 +139,47 @@ fn render_items(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> S
 }
 
 /// Renders one `#[derive(SqlType)]` enum definition.
-fn render_enum(enum_plan: &EnumPlan<'_>) -> String {
+fn render_enum(enum_plan: &EnumPlan<'_>, options: &CodegenOptions) -> String {
     let mut out = String::new();
 
     out.push_str("/// The `");
     out.push_str(&doc_text(enum_plan.name));
     out.push_str("` enum.\n");
-    out.push_str("#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]\n");
+
+    let mut derives = vec![
+        "SqlType".to_string(),
+        "Clone".to_string(),
+        "Copy".to_string(),
+        "PartialEq".to_string(),
+        "Eq".to_string(),
+        "Debug".to_string(),
+    ];
+    for extra in &options.enum_derives {
+        if !derives.contains(extra) {
+            derives.push(extra.clone());
+        }
+    }
+
+    out.push_str("#[derive(");
+    out.push_str(&derives.join(", "));
+    out.push_str(")]\n");
     out.push_str("pub enum ");
     out.push_str(&enum_plan.ident);
     out.push_str(" {\n");
 
+    let serde_enabled = options.enum_derives.iter().any(|d| {
+        d == "serde::Serialize"
+            || d == "serde::Deserialize"
+            || d == "Serialize"
+            || d == "Deserialize"
+    });
+
     for variant in &enum_plan.variants {
+        if serde_enabled {
+            out.push_str("    #[serde(rename = \"");
+            out.push_str(&escape_literal(&variant.raw_label));
+            out.push_str("\")]\n");
+        }
         if let Some(ref rename) = variant.rename {
             out.push_str("    #[sql(rename = \"");
             out.push_str(&escape_literal(rename));
@@ -537,5 +566,45 @@ mod tests {
             "the flat primary section changed:\n{mixed_body}"
         );
         assert!(mixed_body[flat_body.len()..].starts_with("schema!(\n"));
+        assert!(mixed_body[flat_body.len()..].starts_with("schema!(\n"));
+    }
+
+    #[test]
+    fn enum_custom_derives_and_exact_serde_rename() {
+        let catalog = SchemaCatalog::new(Vec::new()).with_enums(vec![EnumDef::new(
+            "exercise_type",
+            vec![
+                "minimal-pairs".to_owned(),
+                "fluency".to_owned(),
+                "word-pronunciation-list".to_owned(),
+            ],
+        )]);
+
+        let options = CodegenOptions {
+            enum_derives: vec![
+                "serde::Serialize".to_owned(),
+                "serde::Deserialize".to_owned(),
+                "specta::Type".to_owned(),
+                // duplicate of base derive should be ignored
+                "Debug".to_owned(),
+            ],
+            ..CodegenOptions::default()
+        };
+
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        assert!(code.contains(
+            "#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, specta::Type)]"
+        ));
+        assert!(code.contains("pub enum ExerciseType {"));
+        assert!(code.contains(
+            "    #[serde(rename = \"minimal-pairs\")]\n    #[sql(rename = \"minimal-pairs\")]\n    MinimalPairs,"
+        ));
+        assert!(code.contains(
+            "    #[serde(rename = \"fluency\")]\n    #[sql(rename = \"fluency\")]\n    Fluency,"
+        ));
+        assert!(code.contains(
+            "    #[serde(rename = \"word-pronunciation-list\")]\n    #[sql(rename = \"word-pronunciation-list\")]\n    WordPronunciationList,"
+        ));
     }
 }
