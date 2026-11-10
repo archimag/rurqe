@@ -124,6 +124,9 @@ pub struct ProjectConfig {
     type_overrides: OverrideIndex,
     /// Whether domain types (`Uuid`, `Json`, `Timestamp`, `Date`) are enabled.
     domain_types: bool,
+    /// The extra derives emitted on the generated enums, declared through
+    /// `[codegen].enum_derives`.
+    enum_derives: Vec<String>,
     /// The artifact directory declared through the root-level `root` key.
     root: Option<String>,
     /// The migration directory declared through the `[migrations].dir` key.
@@ -273,6 +276,15 @@ impl ProjectConfig {
         self.domain_types
     }
 
+    /// Returns the extra derives the generated enums carry.
+    ///
+    /// The list comes from `[codegen].enum_derives` and holds exactly the trait paths
+    /// the document declares, in document order, with every entry trimmed. An empty
+    /// list is the default and means the generator keeps its own baseline set, so a
+    /// project that declares no extra derive observes no change in the emitted module.
+    pub fn enum_derives(&self) -> &[String] {
+        &self.enum_derives
+    }
     /// Returns the primary schema the project's catalogs describe, if named.
     ///
     /// The name comes from the `primary_schema` key or from its legacy `schema`

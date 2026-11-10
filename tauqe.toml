@@ -18,8 +18,8 @@ models = [
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
 repl = [
-  { model = "DeepSeek Flash", effort = "max" },
-  { model = "GLM", effort = "max" },
+  { model = "DeepSeek Flash" },
+  { model = "GLM" },
   "Gemini Flash",
 ]
 scribe = "Claude Haiku"    # history compaction, git squash commit messages, diff summarization
@@ -49,19 +49,14 @@ reviewer = [
   "Claude Opus"
 ]
 
-# Automatically escalate the Coder along its ladder when verification healing stalls.
 auto_level_up = true
 
 [project]
 runner = "just"
 
-
-[develop]
-max_retries = 8
-# max_replans = 2
-# workflow = "git"   # edit workflow: "git", "naive" (default: "git")
-# protocol = "xml"   # active edit protocol: "xml" (default: "xml")
-patch_strategy = "line_anchor"
+[repl]
+max_retries = 16
+use_control_loops = true
 
 [git]
 # upstream = "origin/master"  # base upstream branch for calculating diffs (auto-detected by default)

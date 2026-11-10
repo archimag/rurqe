@@ -22,6 +22,7 @@ use toml_edit::{ImDocument, Item, TableLike};
 use self::paths::read_required_path;
 use super::{ConfigError, OverridePath, ProjectConfig, DEFAULT_SCHEMA};
 
+mod derives;
 mod paths;
 /// The document-root key naming the database schema every catalog digest describes.
 const SCHEMA_KEY: &str = "schema";
@@ -52,6 +53,9 @@ const CHECKPOINT_KEY: &str = "checkpoint";
 
 /// The key enabling domain types in the generated schema.
 const DOMAIN_TYPES_KEY: &str = "domain_types";
+
+/// The key declaring the extra derives emitted on the generated enums.
+const ENUM_DERIVES_KEY: &str = "enum_derives";
 
 /// The key declaring the per-column Rust type overrides.
 const TYPE_OVERRIDES_KEY: &str = "type_overrides";
@@ -199,6 +203,14 @@ impl ProjectConfig {
                             format!("`{CODEGEN_SECTION}.{DOMAIN_TYPES_KEY}` must be a boolean"),
                         )
                     })?;
+                }
+                ENUM_DERIVES_KEY => {
+                    self.enum_derives = derives::read_enum_derives(
+                        contents,
+                        span,
+                        item,
+                        &format!("{CODEGEN_SECTION}.{ENUM_DERIVES_KEY}"),
+                    )?;
                 }
                 TYPE_OVERRIDES_KEY => {
                     let overrides = item.as_table_like().ok_or_else(|| {

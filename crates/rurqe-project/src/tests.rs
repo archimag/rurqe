@@ -822,6 +822,63 @@ fn invalid_domain_types_is_rejected() {
 }
 
 #[test]
+fn enum_derives_are_read_and_trimmed() {
+    let config = ProjectConfig::parse(
+        "[codegen]\n\
+         enum_derives = [\"  serde::Serialize \", \" specta::Type\"]\n",
+    )
+    .expect("the derive list parses");
+
+    assert_eq!(
+        config.enum_derives().to_vec(),
+        vec!["serde::Serialize", "specta::Type"]
+    );
+}
+
+#[test]
+fn enum_derives_are_empty_by_default() {
+    let absent = ProjectConfig::parse("").expect("an empty file is valid");
+    assert!(absent.enum_derives().is_empty());
+
+    let declared = ProjectConfig::parse("[codegen]\nenum_derives = []\n")
+        .expect("an empty list declares no extra derive");
+    assert!(declared.enum_derives().is_empty());
+
+    let section = ProjectConfig::parse("[codegen]\ndomain_types = true\n")
+        .expect("the codegen section parses");
+    assert!(section.enum_derives().is_empty());
+}
+
+#[test]
+fn a_malformed_enum_derives_list_is_rejected() {
+    for (contents, expected) in [
+        (
+            "[codegen]\nenum_derives = \"serde::Serialize\"\n",
+            "`codegen.enum_derives` must be an array",
+        ),
+        (
+            "[codegen]\nenum_derives = [\"serde::Serialize\", 42]\n",
+            "`codegen.enum_derives[1]` must be a Rust trait path string",
+        ),
+        (
+            "[codegen]\nenum_derives = [\"serde::Serialize\", \"  \"]\n",
+            "`codegen.enum_derives[1]` requires a Rust trait path",
+        ),
+        (
+            "[codegen]\nenum_derives = [\"serde::Serialize\", \" serde::Serialize \"]\n",
+            "duplicate derive `serde::Serialize` in `codegen.enum_derives`",
+        ),
+    ] {
+        let err = ProjectConfig::parse(contents).expect_err("the derive list is malformed");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 2, .. }),
+            "the declaration is reported where it is written: {err}"
+        );
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+#[test]
 fn malformed_entries_are_reported_with_their_line() {
     let missing_separator =
         ProjectConfig::parse("[codegen.type_overrides]\n\"users.id\" \"uuid::Uuid\"\n")
