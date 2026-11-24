@@ -413,7 +413,7 @@ fn the_final_catalog_digest_is_read_under_the_run_lock() {
 /// and — the cold start commits before the tail runs — keep rejecting it on every
 /// later run, leaving the target unusable for the binary that created it.
 #[test]
-fn a_baked_checkpoint_anchors_the_cold_start_marker() {
+fn a_baked_checkpoint_does_not_reinterpret_the_stage_checksum() {
     let boundary = Checksum::of(b"the catalog of the boundary stage");
     let marker = format!(
         "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
@@ -453,8 +453,14 @@ fn a_baked_checkpoint_anchors_the_cold_start_marker() {
     );
     assert_eq!(
         recorded.checksum,
-        Some(boundary),
-        "the marker anchors the boundary catalog digest, not the stage text digest"
+        Some(
+            DeclarativeStage::new(vec![StageScript::new(
+                "users.sql",
+                "CREATE TABLE users (id INTEGER);"
+            )])
+            .checksum()
+        ),
+        "the marker holds the stage artifact digest, not the boundary catalog digest"
     );
 
     let rerun = embedded
@@ -469,7 +475,7 @@ fn a_baked_checkpoint_anchors_the_cold_start_marker() {
 /// catalog the final check measures the run against, so it stays the digest
 /// whenever the collection bakes one.
 #[test]
-fn a_baked_snapshot_outranks_the_checkpoint_boundary_hash() {
+fn a_baked_snapshot_does_not_replace_the_stage_checksum() {
     let catalog = SchemaCatalog::default();
     let snapshot = catalog.to_lock();
     let boundary = Checksum::of(b"an earlier boundary stage");
@@ -499,8 +505,14 @@ fn a_baked_snapshot_outranks_the_checkpoint_boundary_hash() {
         .expect("the cold start records its marker");
     assert_eq!(
         recorded.checksum,
-        Some(catalog.checksum()),
-        "the snapshot digest anchors the marker, not the boundary hash"
+        Some(
+            DeclarativeStage::new(vec![StageScript::new(
+                "users.sql",
+                "CREATE TABLE users (id INTEGER);"
+            )])
+            .checksum()
+        ),
+        "the snapshot digest does not determine the stage marker"
     );
     assert_eq!(
         recorded.version.as_ref().map(ToString::to_string),
@@ -661,7 +673,16 @@ fn an_agreeing_snapshot_initialises_the_boundary_target() {
     assert_eq!(backend.history.len(), 1);
     let recorded = backend.history.first().expect("the marker is recorded");
     assert!(recorded.success);
-    assert_eq!(recorded.checksum, Some(catalog.checksum()));
+    assert_eq!(
+        recorded.checksum,
+        Some(
+            DeclarativeStage::new(vec![StageScript::new(
+                "users.sql",
+                "CREATE TABLE users (id INTEGER);"
+            )])
+            .checksum()
+        )
+    );
     assert_eq!(
         recorded.version.as_ref().map(ToString::to_string),
         Some("2".to_owned())

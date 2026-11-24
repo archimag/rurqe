@@ -5,8 +5,6 @@ use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::{Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT};
 
 use crate::driver::SqliteMigrationBackend;
-use crate::introspect::DEFAULT_SCHEMA;
-use crate::stage::materialise_stage;
 
 use super::super::{commit_stage, initialise_stage, verify_stage};
 use super::fixtures::{apply_live_ddl, directory_names, selection, version, workspace};
@@ -32,7 +30,7 @@ fn the_stage_is_applied_from_the_declarative_directory() {
 }
 
 #[test]
-fn the_stage_marker_carries_the_canonical_catalog_hash() {
+fn the_stage_marker_carries_the_stage_artifact_hash() {
     let dir = workspace("stage-hash");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
@@ -42,8 +40,8 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     )
     .expect("write the stage script");
 
-    // The marker is written by the backend that really applies the stage, so its
-    // digest is read from the catalog that backend introspects.
+    // The marker identifies the stage SQL artifacts, independently of the
+    // backend's catalog introspection.
     let connection = rusqlite::Connection::open_in_memory().expect("open the in-memory database");
     let mut backend = SqliteMigrationBackend::new(connection);
     initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage")
@@ -52,15 +50,11 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     let stage = DeclarativeStage::load(&stage_dir)
         .expect("the stage is readable")
         .expect("the stage directory exists");
-    let catalog =
-        materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA).expect("the stage materialises");
 
-    // The marker anchors the canonical catalog digest the checkpoint compares
-    // against, not the raw DDL digest of the stage directory.
-    assert_ne!(catalog.checksum(), stage.checksum());
     let history = backend.read_history().expect("the history is readable");
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].checksum, Some(catalog.checksum()));
+    assert_eq!(history[0].checksum, Some(stage.checksum()));
+    assert_eq!(history[0].description, "stage-artifact:v1: stage");
 }
 
 #[test]

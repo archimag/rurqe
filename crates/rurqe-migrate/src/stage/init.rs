@@ -25,21 +25,19 @@ pub struct ColdStartReport {
 ///
 /// The transactional DDL scripts of `stage` share one transaction with the
 /// synthetic [`StageMarker`] row that anchors them — a failure among the
-/// scripts, a failing catalog read, or an unwritable marker discards the whole
+/// scripts or an unwritable marker discards the whole
 /// attempt — while a script marked non-transactional runs on its own, outside
 /// any transaction. Because the marker
 /// is recorded as a baseline, every versioned migration at or below
 /// [`StageMarker::version`] is reported as applied while the active tail above
 /// it still runs.
 ///
-/// The digest the marker anchors is the one its own transaction derives from the
-/// catalog the stage produced — see [`MigrationTransaction::catalog_checksum`] —
-/// so the row and the schema it describes become visible together, and the digest
-/// matches the checkpoint `stage commit` writes whatever engine executed the DDL.
-/// A backend that cannot introspect itself keeps the digest of the marker.
+/// New markers record the stage-artifact checksum without introspecting the
+/// database. A checkpoint's catalog digest is checked separately in scratch.
 ///
 /// A database carrying nothing but a stage marker for the same version and the
-/// same catalog digest is left untouched and reported as a no-op; any other
+/// same stage-artifact digest is left untouched and reported as a no-op. Legacy
+/// untagged markers at the same version retain their original checksum; any other
 /// history is rejected, because a cold start never overwrites an initialised
 /// database. A marker the migration tail advanced past is one such history: the
 /// database it describes is initialised, whatever the live catalog reports. A
@@ -142,19 +140,11 @@ pub(crate) fn cold_start_guarded<B: MigrationBackend>(
             return Err(already_initialised(later));
         }
 
-        // Nothing but the marker is recorded, so the database still describes
-        // the stage it was initialised from. The backend reports the digest of
-        // the catalog really present, so a database whose schema drifted from
-        // the recorded marker is rejected instead of being reported as
-        // initialised. A backend that cannot introspect itself keeps the digest
-        // the caller supplied.
-        let current = match guard.catalog_checksum() {
-            Ok(Some(checksum)) => checksum,
-            Ok(None) => marker.checksum(),
-            Err(error) => return Err(error),
-        };
-
-        if existing.checksum == Some(current) && existing.version.as_ref() == Some(marker.version())
+        // Untagged markers may hold either a catalog digest or the stage-text
+        // fallback. Neither is interpreted as the new artifact identity.
+        if existing.version.as_ref() == Some(marker.version())
+            && (!existing.description.starts_with(StageMarker::ARTIFACT_DESCRIPTION)
+                || existing.checksum == Some(marker.checksum()))
         {
             tracing::debug!(version = %marker.version(), "stage is already recorded");
             return Ok(ColdStartReport::default());
@@ -209,12 +199,7 @@ pub(crate) fn cold_start_guarded<B: MigrationBackend>(
         None
     };
 
-    // The marker anchors the digest of the catalog the stage produced, so the
-    // checkpoint written by `stage commit` recognises the initialised database
-    // whatever engine executed the DDL. The digest is read inside the very
-    // transaction that records the marker, so the row and the schema it
-    // describes become visible together; a backend that cannot introspect itself
-    // keeps the digest the caller supplied.
+    // The marker records the stage-artifact digest, not a live catalog digest.
     let entry = match in_progress_rank {
         Some(installed_rank) => {
             apply_stage(guard, stage, installed_rank)?;
@@ -287,13 +272,7 @@ fn record_marker<B: MigrationBackend>(
     with_transaction(guard, |tx| tx.record_entry(entry))
 }
 
-/// Records the applied stage marker, anchoring the digest its transaction observes.
-///
-/// The catalog digest is read through
-/// [`MigrationTransaction::catalog_checksum`] inside the very transaction that
-/// writes the row, so the marker and the schema it describes become visible
-/// together. A backend that cannot introspect itself reports nothing, which
-/// keeps the digest of the marker.
+/// Records the applied stage marker with the caller's stage-artifact digest.
 ///
 /// `replaces` names the rank of the in-progress marker the write supersedes: both
 /// rows describe the same initialisation, so the superseded one is dropped inside
@@ -304,12 +283,7 @@ fn record_applied_marker<B: MigrationBackend>(
     replaces: i64,
 ) -> Result<SchemaHistoryEntry, Error> {
     with_transaction(guard, |tx| {
-        let checksum = match tx.catalog_checksum()? {
-            Some(checksum) => checksum,
-            None => marker.checksum(),
-        };
-
-        let entry = marker.entry(1, current_timestamp(), checksum, true);
+        let entry = marker.entry(1, current_timestamp(), marker.checksum(), true);
 
         tx.delete_entry(replaces)?;
         tx.record_entry(&entry)?;
@@ -321,16 +295,12 @@ fn record_applied_marker<B: MigrationBackend>(
 /// Applies a fully transactional stage and records its marker in one transaction.
 ///
 /// None of the scripts of such a stage has to run outside a transaction, so the
-/// DDL and the row that records it share one: a failing script, a failing catalog
-/// read, an unwritable marker, or a failing commit discards the whole attempt, and
+/// DDL and the row that records it share one: a failing script,
+/// an unwritable marker, or a failing commit discards the whole attempt, and
 /// the database stays as cold as it was instead of holding a schema the history
 /// knows nothing about.
 ///
-/// The digest is read through [`MigrationTransaction::catalog_checksum`] once
-/// every script has been applied and inside the very transaction that records the
-/// marker, so the row anchors the catalog the stage produced under the engine that
-/// produced it and becomes visible together with it; a backend that cannot
-/// introspect itself keeps the digest of the marker.
+/// No catalog read is needed to record the stage-artifact checksum.
 fn apply_stage_atomically<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     stage: &DeclarativeStage,
@@ -343,12 +313,7 @@ fn apply_stage_atomically<B: MigrationBackend>(
             }
         }
 
-        let checksum = match tx.catalog_checksum()? {
-            Some(checksum) => checksum,
-            None => marker.checksum(),
-        };
-
-        let entry = marker.entry(1, current_timestamp(), checksum, true);
+        let entry = marker.entry(1, current_timestamp(), marker.checksum(), true);
 
         tx.record_entry(&entry)?;
 

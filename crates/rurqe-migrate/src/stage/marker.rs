@@ -19,6 +19,8 @@ pub struct StageMarker {
 impl StageMarker {
     /// The description recorded when the caller names no other one.
     pub const DESCRIPTION: &str = "stage";
+    /// Prefix identifying checksums of ordered stage SQL artifacts.
+    pub const ARTIFACT_DESCRIPTION: &str = "stage-artifact:v1";
 
     /// Creates a marker from the stage version, its description, and the
     /// digest of the stage it was cut at.
@@ -29,7 +31,7 @@ impl StageMarker {
     ) -> Self {
         Self {
             version,
-            description: description.into(),
+            description: format!("{}: {}", Self::ARTIFACT_DESCRIPTION, description.into()),
             checksum,
         }
     }
@@ -40,7 +42,11 @@ impl StageMarker {
     /// catalog, so two cold starts of the same schema always record the same
     /// checksum, independently of how the `schema.lock` snapshot is laid out.
     pub fn from_catalog(version: MigrationVersion, catalog: &SchemaCatalog) -> Self {
-        Self::new(version, Self::DESCRIPTION, catalog.checksum())
+        Self {
+            version,
+            description: Self::DESCRIPTION.to_owned(),
+            checksum: catalog.checksum(),
+        }
     }
 
     /// The version every migration at or below is treated as passed.

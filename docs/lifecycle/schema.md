@@ -79,7 +79,7 @@ The same comparison orders every directory the lifecycle reads — the declarati
 
 The stage carries a digest of its own: SHA-256 over every script name and body in application order. Reordering the directory does not change the digest, while editing any script does.
 
-The digest anchors a cold start. On a backend that cannot introspect itself it is the digest the recorded stage marker carries; on a backend that can, the marker anchors the digest of the catalog the stage produced instead, so the row and the schema it describes become visible together and the digest matches the one the boundary marker records. A database initialised from a diverged stage is rejected instead of being silently overwritten.
+The digest identifies a newly recorded cold start through a versioned stage-artifact description. It is not the catalog digest in `checkpoint.toml`. Existing untagged stage markers may contain a catalog digest or a stage-text fallback; their checksum is not reinterpreted as the new digest. A repeated cold start at the recorded version leaves such legacy history unchanged. An altered stage-artifact digest on a newly tagged marker is refused, but neither path checks the full live catalog.
 
 ## The feature cycle
 
@@ -128,9 +128,9 @@ cargo rurqe stage init --version 5.0
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 The run applies the scripts in file-name order. Every transactional script shares one transaction, so a failure among them leaves the database exactly as it was, while a script declaring itself non-transactional runs outside that transaction, statement by statement, because the engine would refuse it inside a block.
 
-The run ends by recording one baseline entry in `__rurqe_schema_history`. The entry carries the stage version, the description, and the digest of the catalog the stage produced — the digest `schema.lock` records, because it is derived from the catalog through the engine that really executed the DDL. A backend that cannot introspect itself anchors the digest of the stage directory instead.
+The run ends by recording one baseline entry in `__rurqe_schema_history`. The entry carries the stage version, a versioned stage-artifact description, and the digest of the ordered stage SQL files. It does not read the full catalog to record that row. A missing history table alone does not prove the database is physically empty: stage initialization still attempts its DDL and can fail on existing objects.
 
-The digest describes the whole selection the command resolved — the primary schema plus every secondary schema the project declares — so the marker anchors the summed catalog the project manages rather than the relations of one schema.
+The stage marker records the files applied, not the catalog selected for an explicit structural comparison. `stage verify` still checks the committed boundary catalog in scratch over the configured schema selection.
 
 Because the entry is a baseline, every versioned migration at or below the version counts as applied, and the tail above it runs on the next `migrate up`. Repeatable scripts are unaffected and run whenever their contents change.
 

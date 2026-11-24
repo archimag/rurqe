@@ -719,7 +719,7 @@ fn the_base_stage_anchors_an_incremental_tail() {
 }
 
 #[test]
-fn cold_start_records_catalog_checksum_matching_stage_commit() {
+fn cold_start_records_stage_checksum_separately_from_stage_commit() {
     let workspace = temp_workspace("catalog-checksum");
     let db = workspace.join("app.db");
     let stage_dir = workspace.join("schema");
@@ -744,6 +744,10 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
     .expect("the cold start applies the declarative stage");
 
     let recorded = stage_marker_checksum(&db);
+    let stage_files = DeclarativeStage::load(&stage_dir)
+        .expect("read the stage")
+        .expect("the stage exists");
+    assert_eq!(recorded, stage_files.checksum().to_hex());
 
     let lock = workspace.join("schema.lock");
     let checkpoint_path = workspace.join("checkpoint.toml");
@@ -770,9 +774,10 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
         .expect("the checkpoint is readable")
         .expect("the checkpoint exists");
 
-    // The cold start anchored the canonical catalog digest, so sealing the very
-    // same database records the identical hash instead of a raw DDL digest.
-    assert_eq!(marker.schema_hash().to_hex(), recorded);
+    // The checkpoint anchors a catalog snapshot; the history marker identifies
+    // the stage files. Neither digest is substituted for the other.
+    assert_eq!(marker.schema_hash(), catalog_checksum(&db));
+    assert_ne!(marker.schema_hash().to_hex(), recorded);
 
     run_cli(argv(&[
         "migrate",
@@ -795,7 +800,7 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
 }
 
 #[test]
-fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_hash() {
+fn migrate_up_does_not_compare_cold_start_to_checkpoint_catalog_hash() {
     let workspace = temp_workspace("checkpoint-hash-mismatch");
     let db = workspace.join("app.db");
     let stage_dir = workspace.join("schema");
@@ -837,14 +842,15 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
     ]))
     .expect("the live database is sealed as the new stage");
 
-    // Tamper with the recorded stage hash without touching the database.
+    // The checkpoint still supplies the version floor; its catalog digest is
+    // reserved for explicit scratch verification.
     write_checkpoint(&checkpoint_path, "3.2");
 
     let migrations = workspace.join("migrations");
     write_scripts(&migrations, &[("V4__orders.sql", ORDERS)]);
     let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
 
-    let error = run_cli(argv(&[
+    run_cli(argv(&[
         "migrate",
         "up",
         "--config",
@@ -852,15 +858,8 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
         "--database-url",
         &database,
     ]))
-    .expect_err("the diverged stage hash blocks the tail");
-
-    assert!(
-        error
-            .to_string()
-            .contains("has diverged from the checkpoint"),
-        "got {error}"
-    );
-    assert_eq!(tables(&db), vec!["users".to_owned()]);
+    .expect("the checkpoint digest does not block the tail");
+    assert_eq!(tables(&db), vec!["orders".to_owned(), "users".to_owned()]);
 }
 
 #[test]
@@ -1135,7 +1134,7 @@ fn a_sequential_database_matching_the_checkpoint_is_advanced_by_the_tail() {
 }
 
 #[test]
-fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
+fn a_foreign_table_does_not_block_a_sequential_migration_at_the_checkpoint() {
     let workspace = temp_workspace("sequential-drift");
     let db = workspace.join("app.db");
     let migrations = workspace.join("migrations");
@@ -1157,17 +1156,16 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
     let checkpoint_path = workspace.join("checkpoint.toml");
     write_checkpoint_with_hash(&checkpoint_path, "1", catalog_checksum(&db));
 
-    // Drift the live schema without touching the recorded history, so only the
-    // catalog digest catches the divergence.
+    // A foreign table changes the full catalog without changing recorded history.
     {
         let connection = rusqlite::Connection::open(&db).expect("open the sqlite database");
         connection
-            .execute_batch("ALTER TABLE users ADD COLUMN drifted TEXT;")
-            .expect("the live schema drifts from the checkpoint");
+            .execute_batch("CREATE TABLE foreign_table (id INTEGER);")
+            .expect("create the foreign table");
     }
 
     write_scripts(&migrations, &[("V2__orders.sql", ORDERS)]);
-    let error = run_cli(argv(&[
+    run_cli(argv(&[
         "migrate",
         "up",
         "--config",
@@ -1175,13 +1173,14 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
         "--database-url",
         &database,
     ]))
-    .expect_err("the drifted catalog diverges from the checkpoint hash");
-
-    assert!(
-        error
-            .to_string()
-            .contains("has diverged from the checkpoint"),
-        "got {error}"
+    .expect("the foreign table does not cause a hash-based refusal");
+    assert_eq!(
+        tables(&db),
+        vec![
+            "foreign_table".to_owned(),
+            "orders".to_owned(),
+            "users".to_owned()
+        ]
     );
-    assert_eq!(tables(&db), vec!["users".to_owned()]);
+    assert_eq!(history(&db).len(), 2);
 }

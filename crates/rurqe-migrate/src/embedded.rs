@@ -435,34 +435,13 @@ impl EmbeddedMigrations {
     /// scripts carry no version, so the marker never covers them: they run on top
     /// of the stage like any other pending repeatable migration.
     ///
-    /// The digest names the catalog the collection bakes, in this order:
-    ///
-    /// 1. the digest of the baked `schema.lock` snapshot, which is exactly the
-    ///    digest the counterpart tail replay has to produce;
-    /// 2. the boundary hash of a baked `checkpoint.toml`, which names the catalog of
-    ///    the stage the history was pruned at — the digest a cold start of that
-    ///    stage produces;
-    /// 3. the digest of the stage text, only when the collection bakes neither.
-    ///
-    /// The first two are catalog digests, and the marker is read as one:
-    /// [`Checkpoint::validate_history`] measures a marker recorded at the pruned
-    /// boundary against the boundary hash, and the final catalog check measures the
-    /// run against the snapshot. A digest over the stage text names file bodies
-    /// instead, so anchoring it at the boundary would reject the target the stage
-    /// had just initialised and — the cold start commits before the tail runs —
-    /// keep rejecting it on every later run. Nothing compares that digest with a
-    /// catalog, so it stays the honest anchor of a collection baking no catalog
-    /// artifact at all.
+    /// The marker records the ordered stage SQL digest, not the catalog digest
+    /// of a checkpoint boundary.
     fn stage_marker(&self, stage: &DeclarativeStage) -> Result<StageMarker, Error> {
-        let checksum = match (self.schema_hash, &self.checkpoint) {
-            (Some(snapshot), _) => snapshot,
-            (None, Some(checkpoint)) => checkpoint.schema_hash(),
-            (None, None) => stage.checksum(),
-        };
         Ok(StageMarker::new(
             self.marker_version()?,
             StageMarker::DESCRIPTION,
-            checksum,
+            stage.checksum(),
         ))
     }
 

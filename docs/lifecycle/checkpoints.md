@@ -68,7 +68,7 @@ schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 | Key | Content |
 |---|---|
 | `pruned_up_to_version` | The version below which the history has been folded into the boundary snapshot and may be pruned. |
-| `schema_hash` | The SHA-256 digest of the catalog the boundary was cut at. A database initialised from that stage recorded the same digest as its own baseline, and the guard compares the two. |
+| `schema_hash` | The SHA-256 digest of the catalog the boundary was cut at. Scratch stage verification checks the boundary snapshot against it; migration execution does not compare it with a live catalog or a history-row checksum. |
 
 The version uses the grammar of a migration script: unsigned numeric parts
 separated by `.` or `_`, compared part by part as numbers. `5.0` and `5_0`
@@ -155,10 +155,9 @@ stylistic.
   state. A verification replays the boundary snapshot and continues with the tail
   on the same scratch state, so the equation stays checkable after the files are
   gone.
-- The digest ties the two halves together. A database whose baseline recorded a
-  different digest was initialised from a stage this marker does not describe, and
-  the guard refuses it instead of advancing it over a schema the boundary never
-  saw.
+- The digest ties the marker to its boundary snapshot. Explicit stage verification
+  checks the snapshot in scratch; migration execution checks the recorded version
+  against the pruning floor, not the full live catalog.
 - A prune removes files and nothing else. It does not touch the marker, does not
   recompute a baseline, and does not alter a single row of
   `__rurqe_schema_history` in any database.
@@ -263,7 +262,7 @@ marker `[stage].checkpoint` of `rurqe.toml` names, and consults nothing else:
 cargo rurqe migrate up
 ```
 
-A marker that is present arms two checks, both of them before a single script
+A marker that is present arms the version check before a single script
 executes; an absent one leaves the tail unaffected.
 
 - **The boundary check.** The newest version recorded in `__rurqe_schema_history`
@@ -274,14 +273,11 @@ executes; an absent one leaves the tail unaffected.
 target database is at version `3.1` but the checkpoint pruned history up to `3.2` (stage hash <digest>): advance it to the boundary or rebuild it from `schema/` before applying the migration tail
 ```
 
-- **The digest check.** The compared digest is either the one the database's own
-  stage baseline recorded or the digest of the catalog the database really holds —
-  both name the same schema — and a value other than `schema_hash` refuses the run
-  the same way:
-
-```text
-schema at version `3.2` has hash `<recorded>`, but checkpoint expects `<expected>`: the recorded stage marker or the live catalog has diverged from the checkpoint
-```
+The checkpoint digest is checked against the replayed boundary snapshot by
+`stage verify`, not against the working database during `migrate up`. A foreign
+table therefore cannot cause a hash-based refusal; SQL scripts can still fail
+when they interact with it. Legacy stage-marker checksums retain their recorded
+meaning and are not compared with the checkpoint catalog digest.
 
 A history that never recorded a version at all — one holding only repeatable
 scripts — sits below every boundary by definition and is refused by the first

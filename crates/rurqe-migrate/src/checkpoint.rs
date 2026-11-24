@@ -35,7 +35,6 @@ use toml::Spanned;
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
-use crate::stage::STAGE_SCRIPT;
 use crate::version::MigrationVersion;
 
 /// File name of the checkpoint marker, conventionally inside the migration directory.
@@ -134,17 +133,14 @@ impl Checkpoint {
         self.schema_hash
     }
 
-    /// Rejects a recorded history that stopped at or diverged from this boundary.
+    /// Rejects a recorded history that stopped below this boundary.
     ///
     /// Only successful entries participate: a failed attempt records no applied
     /// state, so it never lowers the version a target has reached. A history
     /// that recorded no version at all — one holding only repeatable scripts —
-    /// sits below every boundary and is refused with no recorded version. A
-    /// target sitting exactly at the boundary is measured against
-    /// [`Checkpoint::schema_hash`] through the stage marker recorded at that same
-    /// version, while
-    /// a target above it has already been advanced past the boundary by the
-    /// tail.
+    /// sits below every boundary and is refused with no recorded version.
+    /// The catalog digest belongs to the boundary snapshot verified in scratch,
+    /// not to a history marker or the live database.
     pub fn validate_history(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
         let newest = history
             .iter()
@@ -160,45 +156,7 @@ impl Checkpoint {
             return Err(self.outdated(Some(newest)));
         }
 
-        if newest == self.pruned_up_to_version {
-            return self.validate_stage_marker(history);
-        }
-
         Ok(())
-    }
-
-    /// Measures the stage marker recorded at the boundary against the anchored digest.
-    ///
-    /// Only a marker recorded at [`Checkpoint::pruned_up_to_version`] describes the
-    /// boundary schema. A target initialised from an earlier stage keeps that stage's
-    /// marker after the tail advanced it to the boundary, and the digest such a marker
-    /// carries names the schema the target was initialised from rather than the
-    /// boundary, so measuring it would refuse a database the outdated-target remedy had
-    /// just brought to the boundary. A history holding no marker at the boundary
-    /// therefore leaves this measurement to the live catalog the backend reports.
-    fn validate_stage_marker(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
-        let recorded = history
-            .iter()
-            .filter(|entry| entry.success && entry.script == STAGE_SCRIPT)
-            .filter(|entry| entry.version.as_ref() == Some(&self.pruned_up_to_version))
-            .max_by_key(|entry| entry.installed_rank);
-
-        let Some(recorded) = recorded else {
-            return Ok(());
-        };
-        let Some(recorded_hash) = recorded.checksum else {
-            return Ok(());
-        };
-
-        if recorded_hash == self.schema_hash {
-            return Ok(());
-        }
-
-        Err(Error::CheckpointHashMismatch {
-            pruned_up_to_version: self.pruned_up_to_version.to_string(),
-            recorded_hash: recorded_hash.to_hex(),
-            expected_hash: self.schema_hash.to_hex(),
-        })
     }
 
     /// Builds the refusal of a target that stopped below the boundary.
@@ -279,6 +237,7 @@ mod tests {
 
     use super::*;
     use crate::migration::MigrationKind;
+    use crate::stage::STAGE_SCRIPT;
 
     /// The digest of the empty catalog, used as the hash of every fixture marker.
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -682,21 +641,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stage_marker_at_the_boundary_must_anchor_the_boundary_digest() {
+    fn a_legacy_stage_marker_at_the_boundary_is_not_reinterpreted() {
         let history = vec![entry(1, "2", STAGE_SCRIPT, &other_digest(), true)];
-
-        let error = boundary("2")
-            .validate_history(&history)
-            .expect_err("the stage marker diverged from the boundary");
-
-        assert_eq!(
-            error,
-            Error::CheckpointHashMismatch {
-                pruned_up_to_version: "2".to_owned(),
-                recorded_hash: other_digest(),
-                expected_hash: stage_digest(),
-            }
-        );
+        assert_eq!(boundary("2").validate_history(&history), Ok(()));
     }
 
     #[test]

@@ -82,7 +82,7 @@ fn checkpoint_allows_targets_at_the_pruned_boundary() {
 }
 
 #[test]
-fn checkpoint_rejects_diverged_stage_marker_hash() {
+fn checkpoint_accepts_legacy_stage_marker_hash() {
     let mut backend = InMemoryBackend::new();
     let stage_entry = SchemaHistoryEntry {
         installed_rank: 1,
@@ -99,12 +99,12 @@ fn checkpoint_rejects_diverged_stage_marker_hash() {
 
     let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
         .expect("a valid script name");
-    let error = Migrator::with_checkpoint(boundary("3"))
+    let report = Migrator::with_checkpoint(boundary("3"))
         .migrate(&mut backend, &[tail])
-        .expect_err("the diverged stage marker hash must be rejected");
+        .expect("legacy marker checksums are not boundary catalog digests");
 
-    assert!(matches!(error, Error::CheckpointHashMismatch { .. }));
-    assert_eq!(backend.history.len(), 1);
+    assert_eq!(report.applied_count, 1);
+    assert_eq!(backend.history.len(), 2);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn checkpoint_accepts_a_catalog_matching_its_hash() {
 }
 
 #[test]
-fn checkpoint_rejects_a_catalog_that_diverged_from_its_hash() {
+fn checkpoint_does_not_reject_foreign_catalog_objects() {
     let mut backend = InMemoryBackend::new();
     let stage = Migration::parse("V3__stage.sql", "CREATE TABLE users (id INTEGER);")
         .expect("a valid script name");
@@ -195,23 +195,11 @@ fn checkpoint_rejects_a_catalog_that_diverged_from_its_hash() {
 
     let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
         .expect("a valid script name");
-    let error = Migrator::with_checkpoint(boundary("3"))
+    let report = Migrator::with_checkpoint(boundary("3"))
         .migrate(&mut backend, &[tail])
-        .expect_err("the diverged catalog stops the run");
-
-    match &error {
-        Error::CheckpointHashMismatch {
-            pruned_up_to_version,
-            recorded_hash,
-            expected_hash,
-        } => {
-            assert_eq!(pruned_up_to_version, "3");
-            assert_eq!(recorded_hash, &Checksum::of(b"drifted").to_hex());
-            assert_eq!(expected_hash, &Checksum::of(b"stage").to_hex());
-        }
-        other => panic!("expected CheckpointHashMismatch, got {other:?}"),
-    }
-    assert_eq!(backend.history.len(), 1, "the tail never ran");
+        .expect("a foreign catalog object is not a migration-history failure");
+    assert_eq!(report.applied_count, 1);
+    assert_eq!(backend.history.len(), 2);
 }
 
 #[test]

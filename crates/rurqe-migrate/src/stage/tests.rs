@@ -27,7 +27,7 @@ fn stage() -> DeclarativeStage {
 }
 
 fn marker() -> StageMarker {
-    StageMarker::from_catalog(version("3.2"), &SchemaCatalog::default())
+    StageMarker::new(version("3.2"), StageMarker::DESCRIPTION, stage().checksum())
 }
 
 fn stage_directory(name: &str) -> PathBuf {
@@ -92,7 +92,6 @@ fn the_stage_digest_follows_names_and_bodies() {
 #[test]
 fn cold_start_applies_the_stage_in_a_single_transaction() {
     let mut backend = InMemoryBackend::new();
-    let catalog = SchemaCatalog::default();
 
     let report = cold_start(&mut backend, &stage(), &marker()).expect("the database is cold");
 
@@ -111,10 +110,10 @@ fn cold_start_applies_the_stage_in_a_single_transaction() {
         entry.version.as_ref().map(ToString::to_string).as_deref(),
         Some("3.2")
     );
-    assert_eq!(entry.description, StageMarker::DESCRIPTION);
+    assert_eq!(entry.description, marker().description());
     assert_eq!(entry.kind, MigrationKind::Baseline);
     assert_eq!(entry.script, STAGE_SCRIPT);
-    assert_eq!(entry.checksum, Some(catalog.checksum()));
+    assert_eq!(entry.checksum, Some(stage().checksum()));
     assert!(entry.success);
 }
 
@@ -134,6 +133,20 @@ fn repeating_the_same_stage_is_a_no_op() {
         .filter(|sql| sql.as_str() == USERS || sql.as_str() == ORDERS)
         .count();
     assert_eq!(ddl_runs, 2);
+}
+
+#[test]
+fn repeating_a_legacy_stage_preserves_its_recorded_checksum() {
+    let mut backend = InMemoryBackend::new();
+    let legacy = StageMarker::from_catalog(version("3.2"), &SchemaCatalog::default());
+    cold_start(&mut backend, &stage(), &legacy).expect("the legacy stage is recorded");
+    let original = backend.history.clone();
+
+    let report = cold_start(&mut backend, &stage(), &marker())
+        .expect("the legacy checksum is not a stage-artifact checksum");
+
+    assert_eq!(report, ColdStartReport::default());
+    assert_eq!(backend.history, original);
 }
 
 #[test]
@@ -361,7 +374,7 @@ impl MigrationTransaction for TransactionDigestTransaction<'_> {
 }
 
 #[test]
-fn the_stage_marker_anchors_the_digest_its_transaction_observes() {
+fn the_stage_marker_keeps_its_digest_without_reading_the_catalog() {
     let observed = Checksum::of(b"catalog inside the marker transaction");
     let mut backend = TransactionDigestBackend {
         inner: InMemoryBackend::new(),
@@ -376,38 +389,29 @@ fn the_stage_marker_anchors_the_digest_its_transaction_observes() {
     let entry = &backend.inner.history[0];
     assert_eq!(
         entry.checksum,
-        Some(observed),
-        "the marker anchors the digest its own transaction observes"
+        Some(marker().checksum()),
+        "the marker records the caller's digest"
     );
     assert_ne!(
         entry.checksum,
-        Some(marker().checksum()),
-        "the marker row never inherits the digest of the stage marker"
+        Some(observed),
+        "the marker does not read the transaction catalog"
     );
     assert!(entry.success);
 }
 
 #[test]
-fn a_failing_catalog_read_rolls_the_stage_back() {
+fn a_failing_catalog_read_does_not_block_the_stage() {
     let mut backend = TransactionDigestBackend {
         inner: InMemoryBackend::new(),
         observed: Checksum::of(b"a digest the run never reads"),
         refuse_catalog: true,
     };
 
-    let error = cold_start(&mut backend, &stage(), &marker())
-        .expect_err("the marker cannot anchor a catalog the transaction never read");
-
-    assert!(matches!(error, Error::Backend(_)), "got {error:?}");
-    assert!(
-        backend.inner.history.is_empty(),
-        "the marker is rolled back with the failed read"
-    );
-    assert_eq!(
-        backend.inner.executed_sql,
-        vec![create_schema_history_table_sql().to_owned()],
-        "the DDL of the stage never commits without the marker that records it"
-    );
+    let report = cold_start(&mut backend, &stage(), &marker())
+        .expect("the stage does not need a catalog read");
+    assert_eq!(report.installed_rank, Some(1));
+    assert_eq!(backend.inner.history[0].checksum, Some(marker().checksum()));
 }
 
 #[test]

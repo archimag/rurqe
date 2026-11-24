@@ -44,9 +44,7 @@ impl Migrator {
     /// Every migration run then verifies that the target database already sits at
     /// or above [`Checkpoint::pruned_up_to_version`]; a target below it can no
     /// longer be advanced, because the scripts that would bring it forward have
-    /// been pruned. A target sitting exactly at the boundary is additionally
-    /// measured against [`Checkpoint::schema_hash`], so a schema that drifted from
-    /// the anchored stage is caught before the tail rewrites it.
+    /// been pruned. The live catalog is not checked by the migration runner.
     ///
     /// The `version` and the `description` are recorded in the metadata columns of
     /// the history table, so a value wider than the column is rejected with
@@ -128,8 +126,8 @@ impl Migrator {
 
     /// Applies the pending tail under a run lock the caller already holds.
     ///
-    /// `history` is the snapshot `guard` read, so the history validation, the
-    /// catalog-hash check, and the apply loop all observe one history under one
+    /// `history` is the snapshot `guard` read, so history validation and the
+    /// apply loop observe one history under one
     /// lock: a concurrent lifecycle operation can neither advance the schema
     /// between the classification and the commit of the tail nor rewrite the
     /// rows the classification read. `migrations` has already passed
@@ -142,7 +140,6 @@ impl Migrator {
         history: &[SchemaHistoryEntry],
     ) -> Result<MigrationReport, Error> {
         self.validate_history(history, migrations)?;
-        self.validate_catalog_hash(guard, history)?;
         tracing::debug!(history_entries = history.len(), "validated schema history");
 
         let sorted = Self::ordered_migrations(migrations);
@@ -598,51 +595,6 @@ impl Migrator {
         }
 
         Ok(())
-    }
-
-    /// Compares the live catalog of the target against the checkpoint hash.
-    ///
-    /// The stage marker check reads the digest recorded in the history table,
-    /// which describes the schema as it was initialised. A database that drifted
-    /// from that snapshot keeps the recorded digest while its real catalog moved
-    /// on, so the boundary is verified against the catalog the backend reports.
-    /// Only a target sitting exactly at the pruned boundary is measured: below it
-    /// the run is rejected as outdated, above it the stage has already been
-    /// superseded by the tail and the checkpoint no longer describes the schema.
-    fn validate_catalog_hash<B: MigrationBackend>(
-        &self,
-        guard: &mut LockGuard<'_, B>,
-        history: &[SchemaHistoryEntry],
-    ) -> Result<(), Error> {
-        let Some(checkpoint) = &self.checkpoint else {
-            return Ok(());
-        };
-
-        let recorded_version = history
-            .iter()
-            .filter(|entry| entry.success)
-            .filter_map(|entry| entry.version.clone())
-            .max();
-
-        if recorded_version.as_ref() != Some(checkpoint.pruned_up_to_version()) {
-            return Ok(());
-        }
-
-        // A backend that cannot introspect itself reports nothing, which leaves
-        // the digest recorded in the stage marker authoritative.
-        let Some(actual) = guard.catalog_checksum()? else {
-            return Ok(());
-        };
-
-        if actual == checkpoint.schema_hash() {
-            return Ok(());
-        }
-
-        Err(Error::CheckpointHashMismatch {
-            pruned_up_to_version: checkpoint.pruned_up_to_version().to_string(),
-            recorded_hash: actual.to_hex(),
-            expected_hash: checkpoint.schema_hash().to_hex(),
-        })
     }
 }
 
