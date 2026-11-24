@@ -13,6 +13,8 @@
 #![allow(clippy::print_stdout)]
 #![cfg(feature = "migrate")]
 
+mod clean;
+
 use std::sync::Mutex;
 use std::time::Duration;
 
