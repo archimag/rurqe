@@ -32,6 +32,9 @@ it neither reads `schema.lock` nor compares the live catalog with the checkpoint
 digest. An extra object may still cause a migration's SQL to fail. `stage commit`
 is a separate sealing operation: it checks full stage/live catalog parity over
 the selected schemas before publishing a boundary, not on each migration run.
+Regenerating the snapshot with `codegen` does not change application startup;
+deploy a rebuilt binary when its embedded SQL artifacts change. Existing
+snapshots and history rows remain readable without rewriting them.
 
 ## What a verification compares
 

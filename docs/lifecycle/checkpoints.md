@@ -277,7 +277,9 @@ The checkpoint digest is checked against the replayed boundary snapshot by
 `stage verify`, not against the working database during `migrate up`. A foreign
 table therefore cannot cause a hash-based refusal; SQL scripts can still fail
 when they interact with it. Legacy stage-marker checksums retain their recorded
-meaning and are not compared with the checkpoint catalog digest.
+meaning and are not compared with the checkpoint catalog digest. New markers
+identify the ordered stage-SQL checksum by the `stage-artifact:v1` description;
+neither form requires a history rewrite when the runner is upgraded.
 
 A history that never recorded a version at all — one holding only repeatable
 scripts — sits below every boundary by definition and is refused by the first

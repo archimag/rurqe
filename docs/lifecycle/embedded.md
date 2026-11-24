@@ -46,6 +46,16 @@ removing a script also requires a rebuild so that the embedded collection
 reflects the directory's new contents. Changing files on a deployed machine
 does not change an already built binary.
 
+Existing `rurqe.toml` files, checkpoint documents, snapshots, generated
+`SCHEMA_HASH` constants, and history rows need no rewrite for this separation.
+Rebuild binaries that used the earlier embedding contract: `EmbeddedArtifacts`
+no longer has `schema_lock`, `EmbeddedMigrations` no longer has `schema_hash`,
+and migration backends no longer expose `catalog_checksum`. Use explicit
+`cargo rurqe verify` for structural comparison. An untagged legacy stage
+marker retains its recorded checksum meaning; new stage-artifact markers carry
+the `stage-artifact:v1` description and an ordered stage-SQL checksum, not the
+checkpoint's catalog digest.
+
 ## Include migrations in the application
 
 Create a PostgreSQL pool for the database the application uses, and embed the

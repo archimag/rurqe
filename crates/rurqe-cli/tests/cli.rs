@@ -14,6 +14,8 @@ use rurqe_cli::run_cli;
 use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::migration::Migration;
+use rurqe_migrate::EmbeddedMigrations;
+use rurqe_sqlite::migrate::SqliteMigrationBackend;
 /// The argv a `cargo rurqe ...` invocation reaches the toolchain with.
 ///
 /// Cargo dispatches the subcommand as `cargo-rurqe rurqe <command>`, so every
@@ -784,6 +786,70 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
         message.contains("cargo rurqe codegen"),
         "unexpected error: {message}"
     );
+}
+
+#[test]
+fn embedded_sqlite_migration_does_not_consult_a_stale_codegen_snapshot() {
+    let workspace = temp_workspace("embedded-stale-snapshot");
+    let db = workspace.join("app.db");
+    let schema = workspace.join("schema.rs");
+    let lock = workspace.join("schema.lock");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open SQLite database");
+        conn.execute_batch("CREATE TABLE foreign_object (id INTEGER PRIMARY KEY);")
+            .expect("create unrelated table");
+    }
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect("snapshot initial catalog");
+    let snapshot = fs::read_to_string(&lock).expect("read old snapshot");
+
+    let embedded = EmbeddedMigrations::new(&[(
+        "V1__users.sql",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+    )])
+    .expect("valid scripts");
+    let mut backend = SqliteMigrationBackend::new(
+        rusqlite::Connection::open(&db).expect("open migration target"),
+    );
+    assert_eq!(
+        embedded
+            .migrate(&mut backend)
+            .expect("apply script")
+            .applied_count,
+        1
+    );
+    assert_eq!(
+        embedded
+            .migrate(&mut backend)
+            .expect("repeat run")
+            .applied_count,
+        0
+    );
+    assert_eq!(
+        fs::read_to_string(&lock).expect("snapshot remains"),
+        snapshot
+    );
+
+    let drift = run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--lock-path",
+        &path_string(&lock),
+        "--schema-path",
+        &path_string(&schema),
+    ]))
+    .expect_err("explicit verification detects the stale snapshot");
+    assert!(matches!(drift.cause(), Some(CliCause::Drift(_))));
+    assert!(drift.to_string().contains("users"), "{drift}");
 }
 
 #[test]

@@ -10,6 +10,7 @@
 - **Automatic Sound Nullability:** Columns participating in outer joins automatically lift to `Option<T>` at compile time.
 - **Database-First Single Source of Truth:** Schema metadata is introspected directly from live database catalogs (`PostgreSQL`, `SQLite`), generating typed schema markers and canonical `schema.lock` snapshots.
 - **Stage-Based Evolution:** Declarative target DDL (`schema/`) paired with sequential migration delta tails (`migrations/`), verified mathematically via the Golden Equation in CI.
+- **Independent Migration and Drift Checks:** Migration runs validate SQL and recorded history, including checkpoint version floors. Run `cargo rurqe verify` explicitly to compare the selected live catalog with `schema.lock` and generated `SCHEMA_HASH`; codegen does not change startup behavior.
 - **Runtime Orthogonality:** Queries are constructed identically for asynchronous (`tokio-postgres`) and synchronous (`postgres`, `rusqlite`) drivers, choosing runtime only at the terminal call.
 
 ## Quick Example

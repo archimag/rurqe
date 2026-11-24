@@ -944,9 +944,9 @@ let combined = select_from(users)
 
 ---
 
-## Migration and snapshot separation: transition contract [Planned]
+## Migration and snapshot separation: transition contract [Completed]
 
-This section specifies the target behavior for the migration/snapshot decoupling work. Existing completed phase descriptions remain historical; the current implementation still embeds `schema.lock` and uses catalog digests in migration paths. Do not treat the target below as already shipped.
+This section records the shipped migration/snapshot separation. Earlier phase descriptions remain historical; explicit structural checks now run independently of migration execution.
 
 1. **Preserve execution and history checks.** Both CLI and embedded migration runs still execute SQL under their existing history and lock protocol, reject failed history entries and modified applied versioned scripts, and refuse targets whose recorded version is below a pruned checkpoint boundary. A missing history table alone does not prove that the physical database is empty. Foreign objects are not an automatic hash-based refusal, but may cause a script's SQL to fail. Do not change destructive `clean` or introduce object filtering, ownership tracking, or application compatibility checks.
 2. **Remove automatic catalog comparisons from migration.** Stop embedding `schema.lock` and checking the resulting catalog in `EmbeddedMigrations`; stop comparing a live database catalog to the checkpoint hash at the pruning boundary in `Migrator`. `schema.lock` continues to be written by codegen and reviewed in Git. Its creation must not alter application startup. Keep `SCHEMA_HASH` in generated code for explicit drift verification, not as a runtime migration dependency.

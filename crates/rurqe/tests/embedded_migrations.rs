@@ -13,7 +13,7 @@
 
 #![cfg(all(feature = "sqlite", feature = "migrate"))]
 
-use rurqe::migrate::{EmbeddedArtifacts, EmbeddedMigrations, MigrationBackend};
+use rurqe::migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations, Error, MigrationBackend};
 use rurqe::sqlite::migrate::SqliteConnectionMigrationBackend;
 use rurqe::sqlite::rusqlite::Connection;
 use rurqe::sqlite::SqliteConnection;
@@ -110,6 +110,69 @@ fn a_baked_stage_cold_starts_an_empty_database_through_the_facade_connection() {
     assert!(
         marker.checksum.is_some(),
         "the marker anchors a stage artifact digest"
+    );
+}
+
+#[test]
+fn embedded_migrations_ignore_foreign_objects_but_keep_history_guards() {
+    let mut connection = database();
+    connection
+        .execute_batch("CREATE TABLE foreign_object (id INTEGER);")
+        .expect("create an unrelated object");
+    let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+    let embedded =
+        EmbeddedMigrations::new(&[("V1__users.sql", CREATE_USERS)]).expect("valid embedded script");
+
+    assert_eq!(
+        embedded
+            .migrate(&mut backend)
+            .expect("apply V1")
+            .applied_count,
+        1
+    );
+    assert_eq!(
+        embedded
+            .migrate(&mut backend)
+            .expect("idempotent")
+            .applied_count,
+        0
+    );
+
+    let edited = EmbeddedMigrations::new(&[(
+        "V1__users.sql",
+        "CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY);",
+    )])
+    .expect("valid edited script");
+    assert!(matches!(
+        edited.migrate(&mut backend),
+        Err(Error::ChecksumMismatch { .. })
+    ));
+
+    let checkpoint = rurqe::migrate::Checkpoint::new(
+        "2".parse().expect("valid boundary"),
+        Checksum::of(b"boundary catalog"),
+    );
+    let marker = checkpoint.render();
+    let guarded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V3__orders.sql", CREATE_ORDERS)],
+        checkpoint: Some(&marker),
+        stage: &[],
+    })
+    .expect("valid checkpoint artifacts");
+    assert!(matches!(
+        guarded.migrate(&mut backend),
+        Err(Error::OutdatedCheckpoint {
+            database_version: Some(version),
+            pruned_up_to_version,
+            ..
+        }) if version == "1" && pruned_up_to_version == "2"
+    ));
+    assert_eq!(
+        backend
+            .read_history()
+            .expect("history remains intact")
+            .len(),
+        1
     );
 }
 
