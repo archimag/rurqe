@@ -44,6 +44,13 @@ use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 use crate::introspect::{introspect_database_selection_notice, report_vacuous_postgres_selection};
 
+/// How the clean manifest should be presented to the operator.
+#[derive(Clone, Copy)]
+pub(crate) enum CleanPresentation {
+    Objects,
+    Schemas,
+}
+
 /// Opens the migration backend for `database_url` and evaluates `$run` against it.
 ///
 /// SQLite and PostgreSQL backends are distinct static types, so the backend is
@@ -77,7 +84,7 @@ macro_rules! with_migration_backend {
             }
         }
     }};
-    ($database_url:expr, $selection:expr, |$backend:ident| $run:expr) => {{
+    ($database_url:expr, $selection:expr $(, $presentation:ident)?, |$backend:ident| $run:expr) => {{
         let url = resolve_database_url($database_url)?;
 
         // The selection is resolved before the engine is known, so the project
@@ -90,10 +97,12 @@ macro_rules! with_migration_backend {
 
         match connect(&url)? {
             Connection::Sqlite(conn) => {
+                $(let $presentation = CleanPresentation::Objects;)?
                 let mut $backend = SqliteMigrationBackend::new(conn);
                 $run
             }
             Connection::Postgres(client) => {
+                $(let $presentation = CleanPresentation::Schemas;)?
                 let mut client = *client;
                 let notice = report_vacuous_postgres_selection(&mut client, &selection)?;
                 let mut $backend = PostgresMigrationBackend::new(client).with_schemas(selection);
@@ -236,8 +245,8 @@ pub(crate) fn run_cli_with_config(
             // The refusal and the report name the target, so the URL is resolved
             // and redacted once here instead of being echoed from the invocation.
             let target = redact_database_url(&resolve_database_url(database_url.clone())?);
-            with_migration_backend!(database_url, selection, |backend| {
-                clean_database(&mut backend, &target, force)
+            with_migration_backend!(database_url, selection, presentation, |backend| {
+                clean_database(&mut backend, &target, force, presentation)
             })
         }
         CliCommand::Baseline {

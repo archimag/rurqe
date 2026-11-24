@@ -9,9 +9,53 @@ use std::path::Path;
 
 use crate::driver::SqliteMigrationBackend;
 
+use super::super::migrate::{clean_refusal, clean_report};
 use super::super::stage::lock::{simulate_section_holder, CheckpointLock};
 use super::super::{apply_migrations, repair_history, report_status};
 use super::fixtures::{checkpoint_file, scripts, workspace};
+use crate::cli::CleanPresentation;
+
+#[test]
+fn postgres_clean_preview_and_report_name_targets_without_promising_cascade_inventory() {
+    let targets = vec![
+        "app".to_owned(),
+        "billing".to_owned(),
+        "\"other\".\"__rurqe_schema_history\"".to_owned(),
+    ];
+    let url = "postgres://***@localhost/test";
+    let preview = clean_refusal(url, &targets, CleanPresentation::Schemas);
+    for expected in [
+        "--yes",
+        "-y",
+        "--force",
+        "app",
+        "billing",
+        "\"other\".\"__rurqe_schema_history\"",
+        "CASCADE",
+        "outside",
+        "No changes were made",
+    ] {
+        assert!(preview.contains(expected), "missing {expected}: {preview}");
+    }
+    assert!(!preview.contains("object(s)"), "{preview}");
+
+    let report = clean_report(url, &targets, CleanPresentation::Schemas);
+    assert!(report.lines()[0].contains("Reset PostgreSQL schemas and migration history"));
+    assert!(!report.lines()[0].contains("object(s)"));
+    for target in &targets {
+        assert!(report.lines().iter().any(|line| line.contains(target)));
+    }
+}
+
+#[test]
+fn sqlite_clean_presentation_keeps_the_object_inventory() {
+    let targets = vec!["users".to_owned(), "orders".to_owned()];
+    let preview = clean_refusal("sqlite:test.db", &targets, CleanPresentation::Objects);
+    assert!(preview.contains("found 2 object(s):"));
+    assert!(!preview.contains("CASCADE"));
+    let report = clean_report("sqlite:test.db", &targets, CleanPresentation::Objects);
+    assert!(report.lines()[0].contains("Dropped 2 object(s)"));
+}
 
 /// The process id the planted section holder records.
 const HOLDER_PID: u32 = 4242;

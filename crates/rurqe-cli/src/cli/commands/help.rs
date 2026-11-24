@@ -29,7 +29,7 @@ COMMANDS:
     migrate up       Apply all pending migrations, guarded by the checkpoint marker
     migrate status   Inspect status of migrations against history table
     migrate repair   Fix checksums and purge failed migration attempts
-    migrate clean    Drop every object of the target database, recorded history included
+    migrate clean    Reset selected schemas and migration history (destructive; --yes required)
     baseline         Mark current schema as baseline without running past migrations
     codegen          Generate Rust schema and a reviewable snapshot of the selected catalog
     verify           Explicitly compare the selected live catalog with the snapshot and code hash
@@ -98,13 +98,15 @@ NOTES:
     guard that refuses a database older than the pruned boundary cannot be armed
     with a file another command never reads. A path option of the family is
     reported as an unknown option instead of being accepted and then ignored.
-    `migrate clean` is the destructive reset of a database the project owns: it
-    drops every object of the target, the `__rurqe_schema_history` table among
-    them, and applies nothing afterwards, so `migrate up` replays the whole tail
-    from an empty history. The catalogue is read once per invocation, so the
-    manifest the confirmation names is the list `--yes` drops; without `--yes`
-    (or `-y` / `--force`) the command fails with that manifest instead of
-    dropping anything, which is also its dry run. A project with a pruned
+    `migrate clean` is for disposable test databases. On PostgreSQL it drops the
+    selected schemas with CASCADE and recreates them; this deletes their data
+    and may delete dependent objects outside the selection. It also removes
+    migration history resolved through search_path, even when stored outside
+    the selected schemas. Its preview lists schemas and any separately dropped
+    history table, not every object CASCADE removes. On SQLite it lists and
+    drops the individual objects. Without `--yes` (or `-y` / `--force`) nothing
+    is dropped. With confirmation the reset holds the migration run lock and
+    applies no scripts; `migrate up` replays a complete tail. A project with a pruned
     checkpoint runs `stage init` after the clean rather than `migrate up`, whose
     fail-safe boundary guard refuses a database whose recorded history is empty.
     The command neither reads nor validates the checkpoint marker: it erases the

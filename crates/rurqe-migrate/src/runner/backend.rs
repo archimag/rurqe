@@ -56,14 +56,13 @@ pub trait MigrationBackend {
         Err(Error::NonTransactionalUnsupported { script: None })
     }
 
-    /// Lists the objects a [`clean`](Self::clean) call drops.
+    /// Lists the targets a [`clean`](Self::clean) call resets.
     ///
-    /// The list covers every user object of the target the migration lifecycle
-    /// owns: the relations of the schemas in scope, the `__rurqe_schema_history`
-    /// table among them. Nothing is dropped here and no metadata table is created,
-    /// so a caller can show the list to its operator before the destructive call is
-    /// confirmed; [`clean`](Self::clean) then drops exactly these objects and
-    /// reports the same names back.
+    /// PostgreSQL reports selected schemas and any history table outside them;
+    /// `DROP SCHEMA CASCADE` can also remove dependent objects outside the
+    /// selection, so this is not an exhaustive list of dropped objects. SQLite
+    /// reports individual objects. Nothing is dropped here and no metadata table
+    /// is created, so a caller can show the targets before confirmation.
     ///
     /// The default refuses the call with [`Error::CleanUnsupported`]: a backend
     /// that cannot drop its objects supports the self-managing lifecycle only. The
@@ -73,7 +72,7 @@ pub trait MigrationBackend {
         Err(Error::CleanUnsupported)
     }
 
-    /// Drops every object of the target database, reporting the names dropped.
+    /// Resets the target database, reporting the targets reset.
     ///
     /// This is the destructive reset of a target the project owns — a dedicated
     /// test database, typically — after which the whole migration tail applies
@@ -82,10 +81,11 @@ pub trait MigrationBackend {
     /// was edited after being applied is applied again under its new checksum
     /// instead of being reported as modified.
     ///
-    /// The call only drops: it applies no migration, rewrites no script body, and
-    /// re-creates no checkpoint marker. The objects it drops are exactly the
-    /// objects [`clean_manifest`](Self::clean_manifest) reports, and the names are
-    /// returned so the caller can report them to its operator.
+    /// The call applies no migration, rewrites no script body, and re-creates no
+    /// checkpoint marker. The returned names identify the targets reported by
+    /// [`clean_manifest`](Self::clean_manifest). On PostgreSQL these are schema
+    /// names and any separately dropped history table, not every object CASCADE
+    /// removes; on SQLite they are individual objects.
     ///
     /// The default refuses the call with [`Error::CleanUnsupported`] before
     /// anything reaches the database.

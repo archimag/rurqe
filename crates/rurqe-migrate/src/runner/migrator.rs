@@ -443,8 +443,9 @@ impl Migrator {
     /// [`with_checkpoint`](Self::with_checkpoint) is neither read nor validated
     /// here: the call erases the history the boundary check reads.
     ///
-    /// The objects dropped are the objects
-    /// [`clean_manifest`](Self::clean_manifest) reports. The call runs under the
+    /// The reported targets are the targets
+    /// [`clean_manifest`](Self::clean_manifest) describes; PostgreSQL CASCADE can
+    /// also remove dependent objects outside the selected schemas. The call runs under the
     /// exclusive migration lock the other lifecycle operations take, so it cannot
     /// interleave with a concurrent [`migrate`](Self::migrate), and it blocks the
     /// calling thread, which Conventions.md §3 forbids on an async worker thread.
@@ -458,13 +459,13 @@ impl Migrator {
         Ok(dropped)
     }
 
-    /// Lists the objects [`clean`](Self::clean) drops, without dropping any.
+    /// Lists the targets [`clean`](Self::clean) resets, without dropping any.
     ///
     /// The call reads the catalog alone and creates no metadata table, so unlike
     /// [`status`](Self::status) it takes no run lock: a caller can show the
     /// manifest to its operator and wait for a confirmation while a concurrent run
-    /// proceeds. The names reported are exactly the names
-    /// [`clean`](Self::clean) drops.
+    /// proceeds. PostgreSQL lists schemas and separately dropped history, not
+    /// every object CASCADE may remove; SQLite lists individual objects.
     ///
     /// The call blocks the calling thread like every other lifecycle operation.
     pub fn clean_manifest<B: MigrationBackend>(

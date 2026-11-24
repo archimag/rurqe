@@ -523,7 +523,9 @@ this command does not check who owns them. Previous schema grants are not
 restored. Reserved system schemas cannot be selected. The history table is
 resolved through the connection's `search_path`; if it resides outside the
 selection, the reset drops it separately. Without confirmation, the command
-lists the target schemas and any external history table without changing them.
+lists the target schemas and any external history table without changing them;
+this is not a list of all objects CASCADE may remove. The preview warns that
+all data in those schemas and dependent objects outside them may be lost.
 The confirmed reset holds the existing migration lock. A complete script set
 can then run again with `migrate up`. With a pruned checkpoint, an empty history
 still fails the boundary check: restore the database with `stage init` instead.
@@ -550,7 +552,9 @@ runs from scratch under the digest of its new contents.
 
 A run without the confirmation drops nothing: it reads the catalog and fails
 with the objects a confirmed call would drop, which makes the refusal the dry
-run. The list the operator sees is the list `--yes` drops.
+run. For SQLite the list names the individual objects dropped by `--yes`.
+For PostgreSQL it names reset schemas and any separately dropped history table,
+not every dependent object removed by CASCADE.
 
 ```bash
 cargo rurqe migrate clean

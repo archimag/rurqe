@@ -6,7 +6,7 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::runner::{MigrationBackend, MigrationStatusKind, Migrator};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::cli::{CliError, CommandOutput};
+use crate::cli::{CleanPresentation, CliError, CommandOutput};
 use crate::loader::load_migrations_from_dir;
 
 use super::cli_error;
@@ -198,15 +198,15 @@ pub(crate) fn repair_history<B: MigrationBackend>(
 }
 /// Drops every object of the target database, gated by the `--yes` confirmation.
 ///
-/// The catalogue is read exactly once per invocation, and that one reading is
-/// what the gate is for: without the confirmation the command fails with the
-/// manifest the call would drop, so the list the operator sees is the list a
-/// confirmed call erases, and the refusal doubles as the dry run. The URL is
-/// supplied already redacted, so no message of this command echoes a credential.
+/// Without confirmation the manifest lists the targets without changing them.
+/// For PostgreSQL those are schemas (and possibly a history table outside the
+/// selection), not an enumeration of objects removed by CASCADE. The URL is
+/// supplied already redacted, so no message echoes a credential.
 pub(crate) fn clean_database<B: MigrationBackend>(
     backend: &mut B,
     database_url: &str,
     force: bool,
+    presentation: CleanPresentation,
 ) -> Result<CommandOutput, CliError> {
     let migrator = Migrator::new();
 
@@ -217,15 +217,11 @@ pub(crate) fn clean_database<B: MigrationBackend>(
             return Ok(CommandOutput::single(nothing_to_clean(database_url)));
         }
 
-        let mut message = format!(
-            "`migrate clean` requires `--yes` (or `--force`) to confirm dropping every object of \
-             `{database_url}`; found {} object(s):",
-            manifest.len()
-        );
-        for name in &manifest {
-            message.push_str(&format!("\n  - {name}"));
-        }
-        return Err(CliError::message(message));
+        return Err(CliError::message(clean_refusal(
+            database_url,
+            &manifest,
+            presentation,
+        )));
     }
 
     let dropped = migrator.clean(backend).map_err(cli_error)?;
@@ -234,15 +230,59 @@ pub(crate) fn clean_database<B: MigrationBackend>(
         return Ok(CommandOutput::single(nothing_to_clean(database_url)));
     }
 
+    Ok(clean_report(database_url, &dropped, presentation))
+}
+
+/// Renders the confirmation gate without implying that CASCADE is enumerable.
+pub(super) fn clean_refusal(
+    database_url: &str,
+    manifest: &[String],
+    presentation: CleanPresentation,
+) -> String {
+    let mut message = match presentation {
+        CleanPresentation::Objects => format!(
+            "`migrate clean` requires `--yes` (or `--force`) to confirm dropping every object of \
+             `{database_url}`; found {} object(s):",
+            manifest.len()
+        ),
+        CleanPresentation::Schemas => format!(
+            "`migrate clean` requires `--yes` (or `-y` / `--force`) to reset PostgreSQL \
+             schemas and migration history of `{database_url}`; targets:"
+        ),
+    };
+    for name in manifest {
+        message.push_str(&format!("\n  - {name}"));
+    }
+    if matches!(presentation, CleanPresentation::Schemas) {
+        message.push_str(
+            "\nWARNING: DROP SCHEMA CASCADE deletes all data in these schemas \
+            and may delete dependent objects outside them. This is not a complete list of \
+            objects that CASCADE will remove. No changes were made.",
+        );
+    }
+    message
+}
+
+/// Reports the targets the adapter reset, not an inventory of cascade effects.
+pub(super) fn clean_report(
+    database_url: &str,
+    dropped: &[String],
+    presentation: CleanPresentation,
+) -> CommandOutput {
     let mut output = CommandOutput::new();
-    output.line(format!(
-        "Dropped {} object(s) of `{database_url}`:",
-        dropped.len()
-    ));
-    for name in &dropped {
+    match presentation {
+        CleanPresentation::Objects => output.line(format!(
+            "Dropped {} object(s) of `{database_url}`:",
+            dropped.len()
+        )),
+        CleanPresentation::Schemas => output.line(format!(
+            "Reset PostgreSQL schemas and migration history of `{database_url}`; targets:"
+        )),
+    }
+    for name in dropped {
         output.line(format!("  - {name}"));
     }
-    Ok(output)
+    output
 }
 
 /// The report of a target that holds nothing the migration lifecycle owns.
