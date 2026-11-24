@@ -45,16 +45,11 @@ reviewer = [
 
 auto_level_up = true
 
+[develop]
+max_turn_rounds = 30
+
 [project]
 runner = "just"
-
-[repl]
-max_retries = 16
-use_control_loops = true
-
-[git]
-# upstream = "origin/master"  # base upstream branch for calculating diffs (auto-detected by default)
-# bypass_hooks = true         # pass --no-verify so Tauqe commits skip project pre-commit/commit-msg hooks (default: true)
 
 [history]
 budget_tokens = 20000  # session history token budget before compaction is triggered (default: 20000)
