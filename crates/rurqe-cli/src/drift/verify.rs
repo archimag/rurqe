@@ -6,7 +6,11 @@ use super::diff::compute_catalog_diff;
 use super::hash::extract_schema_hash;
 use super::report::{DriftError, DriftReport};
 
-/// Verifies that `live_catalog` bit-for-bit matches `expected_lock` and optional `schema_rs`.
+/// Compares the already-selected live catalog with the snapshot and optional code hash.
+///
+/// Equality describes only the catalog supplied by the caller. It does not prove
+/// that the database is correct or compatible with an application, and migration
+/// execution does not call this diagnostic gate.
 pub fn verify_drift(
     live_catalog: &SchemaCatalog,
     expected_lock: &str,

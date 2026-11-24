@@ -9,8 +9,10 @@ database actually has rather than a schema somebody remembered to update.
 A normalised snapshot of the same catalog is written into the artifact directory
 as `rurqe/schema.lock`, and the generated module embeds the digest of that catalog
 as `SCHEMA_HASH`. The two artifacts are therefore two views of one catalog, and a
-module that no longer matches its snapshot is detectable without opening a
-database.
+module that no longer matches its snapshot is detectable through explicit
+verification. The snapshot records the selected catalog as it was read, not
+whether that catalog is correct or compatible with the application. Generating
+it does not change migration execution or application startup.
 
 This chapter covers what the catalog provides, how the generated module is
 shaped, how the project configuration maps a database type onto a domain type of
@@ -107,8 +109,9 @@ Each artifact is written through a hidden sibling and renamed into place, and th
 directory holding it is flushed before the run reports success, so a run that
 fails while writing never truncates the file it was replacing.
 
-The snapshot is written by the same run as the module, so the two artifacts
-never describe different catalogs.
+Both artifacts are derived from the same catalog read. If publishing one fails,
+the other may have been updated; rerun codegen and use `cargo rurqe verify` to
+check the selected live catalog explicitly.
 
 ### Connection target
 
@@ -275,7 +278,6 @@ digest is a value the catalog computes, so the text carries a placeholder where
 the generator writes the digest, and the book substitutes the value the catalog
 reports when it regenerates the sample.
 
-The generated module and the snapshot close the loop the rest of the lifecycle
-depends on. The catalog a database holds is described once, and every later
-comparison — the digest embedded in the code, the snapshot committed with the
-project, the catalog a database reports — is made against these two artifacts.
+The generated module and snapshot are reviewable descriptions of the catalog
+codegen read. `cargo rurqe verify` compares them with the selected live catalog
+when explicitly run; neither artifact gates `migrate up`.

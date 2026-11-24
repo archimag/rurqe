@@ -1,6 +1,6 @@
 # Project configuration
 
-`rurqe.toml` is the optional file that states what the toolchain has to know about a project before it opens a database: the directory its lifecycle artifacts live under, the schemas its catalog digests describe, and the Rust type the generator emits for a column whose engine type maps onto a domain type of the application.
+`rurqe.toml` is the optional file that states what the toolchain has to know about a project before it opens a database: the directory its lifecycle artifacts live under, the schemas its explicit catalog diagnostics describe, and the Rust type the generator emits for a column whose engine type maps onto a domain type of the application.
 
 ## Choosing the file
 
@@ -237,7 +237,13 @@ A flag naming a declared secondary schema is a collision the file itself cannot 
 the secondary schema `app` of the project configuration repeats the primary schema `app` selected for this command; a schema is declared either as the primary one or as a secondary one, never both
 ```
 
-The resolved selection is what every catalog statement binds, so the snapshot the generator writes, the digest the drift gate compares, the marker a cold start records, and the hash a checkpoint anchors all describe the same schemas. Naming a schema does not prove it holds anything: a selection whose schemas hold no table or view while the database keeps relations in other schemas is reported as a warning by the command that reads the catalog, and the command continues.
+The resolved selection scopes codegen and explicit catalog diagnostics, including
+`verify`, `stage commit`, and scratch-based `stage verify`. Migration execution
+uses history and the checkpoint version floor, not a live-catalog comparison;
+no configuration switch is needed to disable a snapshot gate. Naming a schema
+does not prove it holds anything: a selection whose schemas hold no table or
+view while the database keeps relations in other schemas is reported as a
+warning by a command that reads that catalog, and the command continues.
 
 ## Code generation settings
 

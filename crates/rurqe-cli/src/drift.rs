@@ -1,8 +1,10 @@
-//! Deterministic schema drift detection against `schema.lock` snapshots.
+//! Explicit, diagnostic schema drift detection against `schema.lock` snapshots.
 //!
 //! Compares a live introspected database catalog against the canonical `schema.lock`
 //! file and `pub const SCHEMA_HASH` embedded in generated Rust code. Emits
-//! actionable, fail-fast diagnostic error reports when code and database diverge.
+//! actionable diagnostic error reports when the selected catalogs diverge.
+//! This comparison is not invoked by migration execution and does not establish
+//! application compatibility or ownership of the objects it inspects.
 //!
 //! The implementation is split by responsibility: `diff` owns the structural
 //! comparison of two catalogs and the wording its findings are rendered with,

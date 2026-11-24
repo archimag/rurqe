@@ -7,7 +7,9 @@ the same identity in code, the live database holds the schema that actually
 exists, and a project on the stage lifecycle adds the declarative stage together
 with the checkpoint plus migration tail. Drift is any disagreement among them,
 and the point of checking it in a pipeline is to catch that disagreement before
-a merge instead of at runtime.
+a merge instead of at runtime. The snapshot records what codegen read, not what
+the database ought to contain; structural equality does not establish application
+compatibility or ownership of objects in the selected schemas.
 
 Two questions are answered by two gates:
 
@@ -24,6 +26,13 @@ compares against whatever database it is pointed at, and a pipeline points it at
 a throwaway database it has just built from the repository; the golden gate
 builds both of its sides from nothing.
 
+These are explicit diagnostics, not migration prerequisites. `migrate up` checks
+SQL execution, history and script checksums, and the checkpoint version floor;
+it neither reads `schema.lock` nor compares the live catalog with the checkpoint
+digest. An extra object may still cause a migration's SQL to fail. `stage commit`
+is a separate sealing operation: it checks full stage/live catalog parity over
+the selected schemas before publishing a boundary, not on each migration run.
+
 ## What a verification compares
 
 `schema.lock` is the canonical rendering of the catalogs the project declares:
@@ -38,8 +47,10 @@ The identity of the schema is the digest of the catalog itself, not of the text
 that carries it: the catalog is encoded into a canonical byte stream and the
 SHA-256 of that stream is the digest. The generator embeds it as
 `pub const SCHEMA_HASH: &str = "...";`, so the snapshot and the generated module
-state the same identity, and both gates compare digests before they compare
-anything else.
+state the same identity. The snapshot gate compares the generated digest with
+the live catalog and reports structural differences; the golden gate checks the
+checkpoint boundary digest against its scratch replay and compares the two
+scratch-built states, not the working database against `schema.lock`.
 
 Formatting is not part of the identity. The digest is taken over the encoded
 catalog rather than over the snapshot text, and every structural comparison

@@ -57,13 +57,12 @@ use crate::introspect::{introspect_database_selection_notice, report_vacuous_pos
 /// Only that selection is engine-conditional — a SQLite database holds one
 /// unnamed catalog the selection would never describe, so the SQLite arm drops
 /// it — while the PostgreSQL arm hands it to
-/// `PostgresMigrationBackend::with_schemas`, so the recorded catalog digest — and
-/// the checkpoint guard comparing it — describes the same schemas the codegen
-/// snapshot and the drift gate read.
+/// `PostgresMigrationBackend::with_schemas` for commands that inspect catalogs.
+/// Migration execution checks history and the checkpoint version, not catalog
+/// equality with the codegen snapshot or the checkpoint digest.
 ///
-/// The two-argument form serves the one command that records no catalog digest:
-/// `baseline` only writes a history marker, so it carries no schema selection and
-/// keeps the backend on the default schema.
+/// The two-argument form serves `baseline`, which only writes a history marker,
+/// so it carries no schema selection and keeps the backend on the default schema.
 macro_rules! with_migration_backend {
     ($database_url:expr, |$backend:ident| $run:expr) => {{
         let url = resolve_database_url($database_url)?;
@@ -83,8 +82,8 @@ macro_rules! with_migration_backend {
 
         // The selection is resolved before the engine is known, so the project
         // configuration behind it is validated for a SQLite target as well: a file
-        // skipped on that engine would let a typo pass on the very commands that
-        // record a catalog digest. Only the resolved selection is
+        // skipped on that engine would let a typo pass on migration commands.
+        // Only the resolved selection is
         // engine-conditional, because a SQLite database holds one unnamed catalog
         // the selection would never describe.
         let selection = $selection?;
@@ -326,6 +325,8 @@ pub(crate) fn run_cli_with_config(
             })?;
             let schema_code = project.resolve_schema_code(schema_path)?;
             let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
+            // Explicit structural comparison over the selected schemas, not a
+            // migration prerequisite or an application compatibility check.
             verify_drift(&catalog, &expected_lock, schema_code.as_deref()).map_err(|err| {
                 // The drift gate is the only failure that can follow the notice, and
                 // a wrong selection is exactly what manufactures its misleading

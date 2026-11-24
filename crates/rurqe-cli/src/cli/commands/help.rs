@@ -31,8 +31,8 @@ COMMANDS:
     migrate repair   Fix checksums and purge failed migration attempts
     migrate clean    Drop every object of the target database, recorded history included
     baseline         Mark current schema as baseline without running past migrations
-    codegen          Introspect database, generate Rust schema, and write the catalog snapshot
-    verify           Verify bit-for-bit parity between live database and the catalog snapshot
+    codegen          Generate Rust schema and a reviewable snapshot of the selected catalog
+    verify           Explicitly compare the selected live catalog with the snapshot and code hash
     stage init       Cold start the database from the declarative stage
     stage verify     Verify the golden equation State(schema/) == State(Checkpoint + tail)
     stage commit     Seal the live database as the catalog snapshot, snapshot the boundary stage,
@@ -88,6 +88,12 @@ ARTIFACTS:
     `codegen` cascade ahead of the built-in `src/schema.rs`.
 
 NOTES:
+    The snapshot records what codegen read, not whether the database is correct
+    or compatible with the application. `migrate up` does not read schema.lock or
+    compare the live catalog with the checkpoint digest; it checks script history
+    and the pruned version boundary. Run `verify` explicitly for structural drift.
+    `stage commit` separately checks stage/live catalog parity before sealing a
+    controlled boundary; `stage verify` compares scratch-replayed states.
     `migrate up` reads the boundary marker from the project configuration, so the
     guard that refuses a database older than the pruned boundary cannot be armed
     with a file another command never reads. A path option of the family is
@@ -131,10 +137,10 @@ NOTES:
     genuinely abandoned is removed manually with `DROP DATABASE`.
 
 SCHEMA SELECTION:
-    --schema <name>  PostgreSQL schema every catalog digest describes. A command line
+    --schema <name>  PostgreSQL primary schema selected for catalog diagnostics. A command line
                      selection wins over the `primary_schema` key of `rurqe.toml`,
                      which wins over `public`. A selected schema that holds no table
                      while the database keeps user relations elsewhere is reported
-                     instead of anchoring an empty catalog hash.
+                     when a command inspects that catalog.
 "#
 }

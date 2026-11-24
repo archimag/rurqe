@@ -1601,6 +1601,76 @@ fn codegen_and_verify_address_the_module_the_configuration_declares() {
 }
 
 #[test]
+fn migration_ignores_snapshot_changes_and_foreign_objects_but_verify_reports_them() {
+    let dir = scratch("migration-snapshot-independence");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    let migrations = dir.join("rurqe").join("migrations");
+    std::fs::create_dir_all(&migrations).expect("create migration directory");
+    std::fs::write(
+        migrations.join("V1__users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+    )
+    .expect("write first migration");
+    let db = dir.join("app.db");
+    let argv = |action: &[&str]| {
+        let mut args = vec!["rurqe".to_owned()];
+        args.extend(action.iter().map(|item| (*item).to_owned()));
+        args.extend(["--database-url".to_owned(), db.display().to_string()]);
+        args
+    };
+
+    run_cli_with_config(argv(&["migrate", "up"]), &configuration).expect("apply first migration");
+    run_cli_with_config(argv(&["codegen"]), &configuration)
+        .expect("generate a snapshot of the initial catalog");
+    let lock = dir.join("rurqe").join("schema.lock");
+    assert!(lock.is_file(), "codegen published the snapshot");
+
+    let conn = rusqlite::Connection::open(&db).expect("open migrated database");
+    conn.execute_batch("CREATE TABLE external_table (id INTEGER PRIMARY KEY);")
+        .expect("add an object outside the migration history");
+    drop(conn);
+    let drift = run_cli_with_config(argv(&["verify"]), &configuration)
+        .expect_err("explicit verify reports the added object");
+    assert!(drift.to_string().contains("external_table"), "got {drift}");
+
+    std::fs::write(&lock, "invalid snapshot").expect("corrupt the diagnostic snapshot");
+    std::fs::write(
+        migrations.join("V2__orders.sql"),
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+    )
+    .expect("write second migration");
+
+    let applied = run_cli_with_config(argv(&["migrate", "up"]), &configuration)
+        .expect("migration does not read the snapshot or reject foreign objects");
+    assert!(applied
+        .lines()
+        .iter()
+        .any(|line| line.contains("V2__orders.sql")));
+    let conn = rusqlite::Connection::open(&db).expect("open migrated database");
+    let orders: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'orders'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read migrated catalog");
+    assert_eq!(orders, 1);
+    drop(conn);
+
+    let invalid = run_cli_with_config(argv(&["verify"]), &configuration)
+        .expect_err("explicit verify must reject an invalid snapshot");
+    assert!(
+        invalid.to_string().contains("invalid schema lock snapshot"),
+        "got {invalid}"
+    );
+
+    run_cli_with_config(argv(&["codegen"]), &configuration)
+        .expect("regenerate the diagnostic artifacts from the live catalog");
+    run_cli_with_config(argv(&["verify"]), &configuration)
+        .expect("explicit verification sees the regenerated catalog");
+}
+
+#[test]
 fn a_project_without_declarations_keeps_the_conventional_layout() {
     let dir = scratch("project-layout");
     let absent = dir.join(crate::config::DEFAULT_CONFIG_PATH);

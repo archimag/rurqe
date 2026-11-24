@@ -82,6 +82,27 @@ fn identical_catalogs_produce_no_drift() {
 }
 
 #[test]
+fn explicit_snapshot_comparison_reports_extra_objects() {
+    let snapshot = SchemaCatalog::new(vec![users_table(Vec::new())]);
+    let live = SchemaCatalog::new(vec![
+        users_table(Vec::new()),
+        TableDef::new(
+            "external_table",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        ),
+    ]);
+
+    match verify_drift(&live, &snapshot.to_lock(), None).unwrap_err() {
+        DriftError::Drift(report) => {
+            assert_eq!(report.diff.extra_tables, vec!["external_table"]);
+            assert!(report.to_string().contains("external_table"));
+        }
+        other => panic!("expected structural drift, got {other:?}"),
+    }
+}
+
+#[test]
 fn schema_code_without_a_hash_constant_is_rejected() {
     let catalog = SchemaCatalog::new(vec![TableDef::new(
         "users",
