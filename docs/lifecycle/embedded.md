@@ -1,7 +1,5 @@
 # Embedded migrations in an application
 
-# Embedded migrations in an application
-
 `embed_migrations!` bundles reviewed SQL scripts into the application binary
 at build time. The application needs database access at runtime, but not the
 SQL files on disk. Check the migration state and apply pending changes before
@@ -17,6 +15,23 @@ repeatable scripts:
 [migrations]
 dir = "migrations"
 ```
+
+When replacing another migration system, keep its old SQL scripts in this
+directory alongside new ones. Give the old versioned scripts RURQE names in
+their original execution order, for example `V1__...sql` through `V7__...sql`,
+and name the first new change `V8__...sql`. A new test database runs the whole
+sequence from `V1`; the existing database already has the changes from `V1`
+through `V7`, so record a baseline at version `7` **once on that database**.
+Then both databases can apply `V8` and later scripts with the same binary.
+The baseline number is the version in the last old `V...` file, not the number
+of files in the directory. Do not run old scripts again on the existing database.
+
+The compiled example uses a smaller version of this situation: its old script
+is `V1__create_users.sql`, so the existing database is baselined at `1`;
+a fresh test database runs `V1` instead. Its `R__active_users.sql` is repeatable
+and has no version: baseline does not skip it. When carrying over a repeatable
+script, make sure it can run against the existing objects, or convert the old
+definition into a versioned script before adopting this workflow.
 
 Enable the `macros`, `migrate`, `deadpool-postgres`, and `tokio` features of
 `rurqe`; the application also needs Tokio and its PostgreSQL pool. The
@@ -73,10 +88,12 @@ apply the scripts or validate the final catalog snapshot.
 ## Set a baseline for an existing database
 
 Baseline is a **separate, one-time operation**, not part of normal startup.
-Use it only when the database already has the schema represented by the
-selected version. Verify that schema and choose the corresponding version
-before recording it; a baseline records history but does not create or inspect
-the application tables. Do not baseline an empty database to skip its scripts.
+After the old system has applied its scripts to the existing database, assign
+those scripts RURQE versions and pass the version of the last old `V...` script
+to `baseline_async`. For the example's `V1__create_users.sql`, that version
+is `1`. For seven old scripts named `V1` through `V7`, pass `7`. The operation
+records a history boundary; it does not run scripts or create application
+tables. Run this only on the existing database, not on a new test database.
 
 ```rust,no_run
 {{#rustdoc_include ../examples/migrations.rs:baseline}}
@@ -87,6 +104,7 @@ version and installation rank. Keep that entry as the audit record of what was
 marked as already present. A second baseline is refused if history already
 contains an entry. After this one-time operation, inspect status again: scripts
 at or below the baseline are ignored, and later scripts remain pending.
+Repeatable scripts remain pending regardless of the baseline version.
 
 ## Apply pending migrations
 

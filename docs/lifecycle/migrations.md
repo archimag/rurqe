@@ -626,12 +626,21 @@ the migration backend cannot clean the target database: run the clean on a backe
 ## Baselining an existing database
 
 ```bash
-cargo rurqe baseline --version 1.0.0
+cargo rurqe baseline --version 7
 ```
 
-A database that already carries the schema, and a project that squashed a long
-history into one foundation, need a starting point instead of a replay. The
-command records a single entry of type `BASELINE` at the next rank, with the
+When moving from another migration system, retain the old scripts in the RURQE
+migrations directory so a fresh test database can run them from the beginning.
+For example, name seven old versioned scripts `V1` through `V7` in their
+execution order and name the first new change `V8`. On an existing database
+where the old system already ran those seven scripts, run the command above
+**once**. It records `7` as the boundary without rerunning `V1` through `V7`.
+On a new test database do not baseline: run `migrate up` to apply all scripts
+from `V1` onward. Both databases can then apply `V8` and subsequent changes.
+The version is the last old versioned script's version, not the number of
+scripts (repeatable scripts have no version).
+
+The command records a single entry of type `BASELINE` at the next rank, with the
 script name `<< Baseline >>`, no digest, and the description taken from
 `--description` (default `baseline`):
 

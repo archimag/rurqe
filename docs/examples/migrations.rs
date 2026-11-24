@@ -52,17 +52,18 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-// Invoke this separately, only after confirming that an existing database
-// already contains the schema represented by the chosen version.
+// Run separately for an existing database whose old migration system already
+// applied V1__create_users.sql. A fresh database runs V1 through migrate_async.
 #[allow(dead_code)]
 async fn baseline_existing_database(
     embedded: &EmbeddedMigrations,
     backend: PgAsyncMigrationBackend,
 ) -> Result<(), Error> {
     // ANCHOR: baseline
-    let version = "1".parse()?;
+    // V1 is the last old versioned script in this example's embedded set.
+    let last_old_version = "1".parse()?;
     let (result, backend) = embedded
-        .baseline_async(backend, version, "existing production schema")
+        .baseline_async(backend, last_old_version, "schema from previous migrator")
         .await;
     let entry = result?;
     drop(backend);
