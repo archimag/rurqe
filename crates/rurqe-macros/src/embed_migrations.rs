@@ -2,8 +2,8 @@
 //!
 //! The macro bakes the lifecycle artifacts of one project configuration into the
 //! calling binary. Only the raw text of an artifact is baked: the migration tail,
-//! the checkpoint marker, the declarative stage, and the catalog snapshot reach
-//! the binary through `include_str!` and are handed to
+//! the checkpoint marker and the declarative stage reach the binary through
+//! `include_str!` and are handed to
 //! `::rurqe::migrate::EmbeddedMigrations::from_artifacts`, which parses them at
 //! startup with the parsers of the migration crate. The expansion itself parses
 //! nothing, so the macro crate depends on the configuration model alone and never
@@ -19,9 +19,9 @@
 //! `<manifest>/rurqe` artifact layout when no ancestor declares one.
 //!
 //! Every artifact path is resolved through `ProjectConfig` against the directory
-//! holding the configuration: `migrations_dir`, `stage_dir`, `checkpoint_path`,
-//! and `schema_lock_path` answer the four locations, and the filesystem decides
-//! which of them exist.
+//! holding the configuration: `migrations_dir`, `stage_dir`, and
+//! `checkpoint_path` answer the three locations, and the filesystem decides
+//! which of them exist. `schema.lock` is not inspected or included.
 //!
 //! # What is baked
 //!
@@ -29,7 +29,6 @@
 //!   migration directory.
 //! * The text of the `checkpoint.toml` marker guarding that tail.
 //! * The pairs `(file name, DDL text)` of the stage scripts.
-//! * The text of the `schema.lock` snapshot.
 //!
 //! Each artifact is optional on its own, and optional means one thing: the path
 //! names nothing. A missing file or directory leaves the corresponding lifecycle
@@ -51,7 +50,7 @@
 //! # Compile inputs
 //!
 //! An inclusion the expansion emits names the text of a file that existed when the
-//! macro ran: the four artifact classes above, and the `rurqe.toml` the call named
+//! macro ran: the three artifact classes above, and the `rurqe.toml` the call named
 //! or the discovery walk selected. A path quoted by the expansion is therefore an
 //! input of the build, and editing it recompiles the calling binary.
 //!
@@ -146,8 +145,6 @@ struct Artifacts {
     /// Ordered by file name, which is the bake order alone: the declarative stage
     /// compares numeric runs of a name by their value at startup.
     stage: Vec<Script>,
-    /// The `schema.lock` snapshot, when it exists.
-    schema_lock: Option<PathBuf>,
     /// The configuration file the artifact layout was resolved through.
     ///
     /// The expansion includes its text, so the file is an input of the compilation:
@@ -326,7 +323,6 @@ fn plan(
         tail: scan(&tail_directory)?,
         checkpoint: optional_file(&configuration.checkpoint_path(directory))?,
         stage: scan(&stage_directory)?,
-        schema_lock: optional_file(&configuration.schema_lock_path(directory))?,
         configuration: file,
     };
 
@@ -476,7 +472,6 @@ fn render(artifacts: &Artifacts) -> TokenStream {
     let tail = pairs(&artifacts.tail);
     let stage = pairs(&artifacts.stage);
     let checkpoint = optional_text(artifacts.checkpoint.as_deref());
-    let schema_lock = optional_text(artifacts.schema_lock.as_deref());
     let configuration = configuration_input(artifacts.configuration.as_deref());
 
     quote! {
@@ -486,7 +481,6 @@ fn render(artifacts: &Artifacts) -> TokenStream {
                 tail: &[#tail],
                 checkpoint: #checkpoint,
                 stage: &[#stage],
-                schema_lock: #schema_lock,
             })
         })
     }

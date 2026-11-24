@@ -1,6 +1,7 @@
 //! Unit tests of the embedded lifecycle protocol.
 
 use super::*;
+use crate::checksum::Checksum;
 // Only the asynchronous baseline tests name `MigrationKind`, so the import
 // carries the same feature gate as the tests that read it.
 #[cfg(feature = "tokio")]
@@ -90,9 +91,6 @@ fn a_cloned_collection_keeps_the_canonical_order() {
 /// created the very objects they build.
 #[test]
 fn a_cold_start_closes_only_the_versioned_tail() {
-    let catalog = SchemaCatalog::default();
-    let snapshot = catalog.to_lock();
-
     let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
         tail: &[
             ("V1__users.sql", "CREATE TABLE users (id INTEGER);"),
@@ -103,12 +101,10 @@ fn a_cold_start_closes_only_the_versioned_tail() {
         ],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
-        schema_lock: Some(&snapshot),
     })
     .expect("valid artifacts");
 
     let mut backend = InMemoryBackend::new();
-    backend.catalog_checksum = Some(catalog.checksum());
 
     let report = embedded
         .migrate(&mut backend)
@@ -323,86 +319,6 @@ fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
     assert!(backend.history[0].success);
 }
 
-/// An [`InMemoryBackend`] that records whether the exclusive run lock was held
-/// while the final catalog digest was read.
-///
-/// The lifecycle contract is delegated to the wrapped backend, so the inner
-/// `locked` flag mirrors the outer run, and the overridden
-/// [`catalog_checksum`](MigrationBackend::catalog_checksum) records that flag at
-/// each call.
-#[derive(Debug, Default)]
-struct LockObservingBackend {
-    inner: InMemoryBackend,
-    lock_states_at_checksum: Vec<bool>,
-}
-
-impl MigrationBackend for LockObservingBackend {
-    type Transaction<'a>
-        = InMemoryTransaction<'a>
-    where
-        Self: 'a;
-
-    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
-        self.inner.ensure_schema_history_table()
-    }
-
-    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
-        self.inner.read_history()
-    }
-
-    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
-        self.inner.begin()
-    }
-
-    fn acquire_lock(&mut self) -> Result<(), Error> {
-        self.inner.acquire_lock()
-    }
-
-    fn release_lock(&mut self) -> Result<(), Error> {
-        self.inner.release_lock()
-    }
-
-    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
-        self.lock_states_at_checksum.push(self.inner.locked);
-        self.inner.catalog_checksum()
-    }
-}
-
-/// The final comparison is a backend interaction like every other step of the
-/// lifecycle, so it reads the catalog under the same exclusive run lock: a
-/// concurrent `clean` or `migrate` can then neither drop nor advance the schema
-/// between the commit of the tail and the comparison.
-#[test]
-fn the_final_catalog_digest_is_read_under_the_run_lock() {
-    let catalog = SchemaCatalog::default();
-    let snapshot = catalog.to_lock();
-
-    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
-        checkpoint: None,
-        stage: &[],
-        schema_lock: Some(&snapshot),
-    })
-    .expect("valid artifacts");
-
-    let mut backend = LockObservingBackend::default();
-    backend.inner.catalog_checksum = Some(catalog.checksum());
-
-    embedded
-        .migrate(&mut backend)
-        .expect("the produced catalog matches the baked digest");
-
-    assert_eq!(
-        backend.lock_states_at_checksum,
-        vec![true],
-        "the final catalog read runs under the same run lock as the other steps"
-    );
-    assert!(
-        !backend.inner.locked,
-        "the run lock is released once the run returns"
-    );
-}
-
 /// A collection baking a checkpoint and a stage but no snapshot anchors its cold
 /// start marker with the boundary hash the checkpoint carries, never with the
 /// digest of the stage text.
@@ -424,7 +340,6 @@ fn a_baked_checkpoint_does_not_reinterpret_the_stage_checksum() {
         tail: &[],
         checkpoint: Some(marker.as_str()),
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -471,56 +386,6 @@ fn a_baked_checkpoint_does_not_reinterpret_the_stage_checksum() {
     assert_eq!(backend.history.len(), 1);
 }
 
-/// The baked `schema.lock` digest outranks the boundary hash: it anchors the
-/// catalog the final check measures the run against, so it stays the digest
-/// whenever the collection bakes one.
-#[test]
-fn a_baked_snapshot_does_not_replace_the_stage_checksum() {
-    let catalog = SchemaCatalog::default();
-    let snapshot = catalog.to_lock();
-    let boundary = Checksum::of(b"an earlier boundary stage");
-    let marker = format!(
-        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
-        boundary.to_hex()
-    );
-
-    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[("V3__orders.sql", "CREATE TABLE orders (id INTEGER);")],
-        checkpoint: Some(marker.as_str()),
-        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: Some(&snapshot),
-    })
-    .expect("valid artifacts");
-
-    let mut backend = InMemoryBackend::new();
-    backend.catalog_checksum = Some(catalog.checksum());
-
-    embedded
-        .migrate(&mut backend)
-        .expect("the catalog matches the baked snapshot");
-
-    let recorded = backend
-        .history
-        .first()
-        .expect("the cold start records its marker");
-    assert_eq!(
-        recorded.checksum,
-        Some(
-            DeclarativeStage::new(vec![StageScript::new(
-                "users.sql",
-                "CREATE TABLE users (id INTEGER);"
-            )])
-            .checksum()
-        ),
-        "the snapshot digest does not determine the stage marker"
-    );
-    assert_eq!(
-        recorded.version.as_ref().map(ToString::to_string),
-        Some("3".to_owned()),
-        "the marker covers the newest tail version above the boundary"
-    );
-}
-
 /// A collection baking no catalog artifact keeps the digest of its own stage: no
 /// checkpoint and no snapshot measures it against a catalog, so it stays the
 /// change detector of the stage text the database was initialised from.
@@ -530,7 +395,6 @@ fn a_stage_without_a_catalog_artifact_anchors_its_own_digest() {
         tail: &[],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -545,148 +409,6 @@ fn a_stage_without_a_catalog_artifact_anchors_its_own_digest() {
     )])
     .checksum();
     assert_eq!(backend.history[0].checksum, Some(expected));
-}
-
-/// A snapshot disagreeing with the boundary is refused at construction when the
-/// cold-start marker would land exactly on that boundary.
-///
-/// The marker sits at the higher of the newest versioned migration and the
-/// pruned boundary, and a marker recorded at the boundary is measured against
-/// the checkpoint hash. Recording the snapshot digest there would initialise the
-/// target and only then reject it — on every later run as well.
-#[test]
-fn a_snapshot_disagreeing_with_the_boundary_is_refused_at_construction() {
-    let boundary = Checksum::of(b"the boundary stage");
-    let snapshot = SchemaCatalog::default().to_lock();
-    let marker = format!(
-        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
-        boundary.to_hex()
-    );
-
-    let error = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
-        checkpoint: Some(marker.as_str()),
-        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: Some(&snapshot),
-    })
-    .expect_err("the marker would land exactly at the boundary with the snapshot digest");
-
-    assert_eq!(
-        error,
-        Error::IncoherentArtifacts {
-            pruned_up_to_version: "2".to_owned(),
-            snapshot_hash: SchemaCatalog::default().checksum().to_hex(),
-            checkpoint_hash: boundary.to_hex(),
-        }
-    );
-}
-
-/// The refusal does not depend on a stage or a tail migration: a collection
-/// declaring neither still anchors its marker at the boundary it bakes.
-#[test]
-fn a_snapshot_disagreeing_with_the_boundary_is_refused_without_a_tail() {
-    let boundary = Checksum::of(b"the boundary stage");
-    let snapshot = SchemaCatalog::default().to_lock();
-    let marker = format!(
-        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
-        boundary.to_hex()
-    );
-
-    let error = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[],
-        checkpoint: Some(marker.as_str()),
-        stage: &[],
-        schema_lock: Some(&snapshot),
-    })
-    .expect_err("a collection declaring neither a tail nor a stage still anchors the boundary");
-
-    assert_eq!(
-        error,
-        Error::IncoherentArtifacts {
-            pruned_up_to_version: "2".to_owned(),
-            snapshot_hash: SchemaCatalog::default().checksum().to_hex(),
-            checkpoint_hash: boundary.to_hex(),
-        }
-    );
-}
-
-/// A versioned migration above the boundary lets the tail supersede the boundary
-/// state, so the checkpoint and the snapshot legitimately describe two different
-/// catalogs and the collection is assembled.
-#[test]
-fn a_versioned_script_above_the_boundary_keeps_the_artifacts_decodable() {
-    let boundary = Checksum::of(b"an earlier boundary stage");
-    let snapshot = SchemaCatalog::default().to_lock();
-    let marker = format!(
-        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
-        boundary.to_hex()
-    );
-
-    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[("V3__orders.sql", "CREATE TABLE orders (id INTEGER);")],
-        checkpoint: Some(marker.as_str()),
-        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: Some(&snapshot),
-    })
-    .expect("the tail supersedes the boundary state, so the digests may differ");
-
-    assert_eq!(embedded.len(), 1);
-    assert!(embedded.checkpoint().is_some());
-    assert!(embedded.schema_hash().is_some());
-}
-
-/// The refusal targets the disagreement, never the combination: agreeing digests
-/// at the boundary construct and complete the run they describe.
-#[test]
-fn an_agreeing_snapshot_initialises_the_boundary_target() {
-    let catalog = SchemaCatalog::default();
-    let snapshot = catalog.to_lock();
-    let marker = format!(
-        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
-        catalog.checksum().to_hex()
-    );
-
-    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
-        tail: &[],
-        checkpoint: Some(marker.as_str()),
-        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: Some(&snapshot),
-    })
-    .expect("the baked artifacts describe one catalog");
-
-    let mut backend = InMemoryBackend::new();
-    backend.catalog_checksum = Some(catalog.checksum());
-
-    let report = embedded
-        .migrate(&mut backend)
-        .expect("the target is initialised at the boundary");
-
-    assert_eq!(
-        report
-            .cold_start
-            .expect("the cold start runs")
-            .stage_scripts,
-        vec!["users.sql"]
-    );
-    assert_eq!(report.applied_count, 0);
-
-    assert_eq!(backend.history.len(), 1);
-    let recorded = backend.history.first().expect("the marker is recorded");
-    assert!(recorded.success);
-    assert_eq!(
-        recorded.checksum,
-        Some(
-            DeclarativeStage::new(vec![StageScript::new(
-                "users.sql",
-                "CREATE TABLE users (id INTEGER);"
-            )])
-            .checksum()
-        )
-    );
-    assert_eq!(
-        recorded.version.as_ref().map(ToString::to_string),
-        Some("2".to_owned())
-    );
 }
 
 /// A backend that records every interaction with the run lock, so a test can
@@ -722,11 +444,6 @@ impl MigrationBackend for SpanObservingBackend {
         self.inner.read_history()
     }
 
-    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
-        self.record("catalog");
-        self.inner.catalog_checksum()
-    }
-
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         self.record("begin");
         self.inner.begin()
@@ -744,25 +461,20 @@ impl MigrationBackend for SpanObservingBackend {
 }
 
 /// The run lock is taken once at entry and released once when the run returns, so
-/// neither the cold start nor the final comparison sits in a window a concurrent
+/// neither the cold start nor the tail sits in a window a concurrent
 /// lifecycle operation could exploit. The history is read once on a warm target and
 /// twice when the cold start ran, because the marker the cold start records has to
 /// be visible to the tail.
 #[test]
 fn the_whole_lifecycle_runs_inside_one_lock_span() {
-    let catalog = SchemaCatalog::default();
-    let snapshot = catalog.to_lock();
-
     let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
         tail: &[("R__audit.sql", "CREATE VIEW audit AS SELECT id FROM users;")],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: Some(&snapshot),
     })
     .expect("valid artifacts");
 
     let mut backend = SpanObservingBackend::default();
-    backend.inner.catalog_checksum = Some(catalog.checksum());
 
     let cold = embedded
         .migrate(&mut backend)
@@ -879,7 +591,6 @@ fn a_duplicate_version_is_refused_before_the_cold_start_runs() {
         ],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
-        schema_lock: None,
     })
     .expect("assembling the list needs no version to be unique");
 

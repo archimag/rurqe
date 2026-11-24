@@ -9,17 +9,16 @@
 //!
 //! A collection assembled from the full project artifacts —
 //! [`EmbeddedMigrations::from_artifacts`] — carries the migration tail together
-//! with the optional `checkpoint.toml` marker, the declarative stage, and the
-//! `schema.lock` snapshot, so the run itself guards the database:
+//! with the optional `checkpoint.toml` marker and the declarative stage:
 //!
 //! * an empty target is initialised from the declarative stage, and the recorded
 //!   stage marker closes every versioned migration at or below its version;
 //! * repeatable scripts carry no version, so a cold start applies them on top of
 //!   the stage it just created; a repeatable script whose objects the declarative
 //!   stage already declares must therefore be written idempotently;
-//! * a baked checkpoint rejects a target sitting below the pruned boundary;
-//! * a baked snapshot anchors the digest the catalog the run produced is compared
-//!   against once every script has been applied.
+//! * a baked checkpoint rejects a target sitting below the pruned boundary.
+//!
+//! Catalog snapshots are checked explicitly by tooling, not by migration runs.
 //!
 //! Every artifact is optional on its own: a collection that does not bake one
 //! keeps the corresponding step switched off without disturbing the others.
@@ -41,22 +40,16 @@
 //! ```
 //!
 //! ```
-//! use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations, InMemoryBackend, SchemaCatalog};
-//!
-//! let catalog = SchemaCatalog::default();
-//! let snapshot = catalog.to_lock();
+//! use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations, InMemoryBackend};
 //!
 //! let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
 //!     tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
 //!     checkpoint: None,
 //!     stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
-//!     schema_lock: Some(&snapshot),
 //! })
 //! .expect("valid artifacts");
 //!
 //! let mut backend = InMemoryBackend::new();
-//! backend.catalog_checksum = Some(catalog.checksum());
-//!
 //! let report = embedded.migrate(&mut backend).expect("the database is cold started");
 //! assert_eq!(
 //!     report.cold_start.expect("the cold start runs").stage_scripts,
@@ -68,9 +61,7 @@
 use core::ops::Deref;
 use std::sync::Arc;
 
-use crate::catalog::SchemaCatalog;
 use crate::checkpoint::Checkpoint;
-use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::Migration;
@@ -95,8 +86,8 @@ use crate::version::MigrationVersion;
 /// [`baseline_async`](Self::baseline_async). The three history wrappers delegate
 /// to the matching [`Migrator`] wrapper, so the offload mechanics live in a single
 /// place, while [`migrate_async`](Self::migrate_async) runs the collection's own
-/// guard-free lifecycle core — cold start, tail, and final catalog check — on the
-/// dedicated blocking thread. Each counterpart hands the backend back together
+/// guard-free lifecycle core — cold start and tail — on the dedicated blocking
+/// thread. Each counterpart hands the backend back together
 /// with the outcome, so a failure keeps the connection usable for the follow-up
 /// it demands.
 ///
@@ -114,22 +105,10 @@ use crate::version::MigrationVersion;
 /// sharing one script name: one run would otherwise apply two different bodies
 /// under a single recorded identity.
 ///
-/// A baked checkpoint and a baked snapshot that anchor different catalogs are
-/// refused the same way, because the disagreement is decidable from the
-/// artifacts alone: the cold-start marker lands at the higher of the newest
-/// versioned migration and the pruned boundary, so a tail rising no higher
-/// than that boundary puts the marker exactly at it — where the boundary
-/// check measures it against the checkpoint hash. A snapshot anchoring
-/// another digest is therefore refused at construction with
-/// [`Error::IncoherentArtifacts`] instead of initialising a target every
-/// later run rejects.
-///
 /// A collection assembled from the full project artifacts —
 /// [`from_artifacts`](Self::from_artifacts) — carries the project checkpoint, the
-/// declarative stage, and the digest anchored by `schema.lock` as well, so
-/// [`migrate`](Self::migrate) runs the guarded lifecycle: it initialises an empty
-/// target from the stage, rejects a target sitting below the pruned boundary, and
-/// compares the catalog the run produced against the baked digest.
+/// and declarative stage, so [`migrate`](Self::migrate) initialises a target with
+/// empty history from the stage and rejects a target below the pruned boundary.
 ///
 /// Every artifact is held behind an [`Arc`], so cloning a collection — which the
 /// asynchronous lifecycle does on each invocation — copies one pointer per artifact
@@ -139,15 +118,14 @@ pub struct EmbeddedMigrations {
     migrations: Arc<[Migration]>,
     checkpoint: Option<Checkpoint>,
     stage: Option<Arc<DeclarativeStage>>,
-    schema_hash: Option<Checksum>,
 }
 
 /// The raw artifacts a project configuration bakes into an application binary.
 ///
 /// Every artifact is optional on its own, and a missing one switches off exactly
 /// the lifecycle step it feeds: `stage` enables the cold start of an empty
-/// database, `checkpoint` arms the pruning boundary, and `schema_lock` anchors the
-/// final catalog check. The texts are the raw file contents, and
+/// database and `checkpoint` arms the pruning boundary. The texts are raw file
+/// contents, and
 /// [`EmbeddedMigrations::from_artifacts`] parses them with the same parsers the
 /// rest of the crate uses, so a malformed artifact is rejected before any
 /// connection is opened.
@@ -159,8 +137,6 @@ pub struct EmbeddedArtifacts<'a> {
     pub checkpoint: Option<&'a str>,
     /// The `(file name, DDL text)` pairs of the declarative stage.
     pub stage: &'a [(&'a str, &'a str)],
-    /// The raw text of `schema.lock`.
-    pub schema_lock: Option<&'a str>,
 }
 
 impl EmbeddedMigrations {
@@ -184,19 +160,10 @@ impl EmbeddedMigrations {
     /// Creates a collection from the raw artifacts of a project configuration.
     ///
     /// Every text is parsed here — the tail through [`Migration::parse`], the
-    /// marker through [`Checkpoint::parse`], the stage through
-    /// [`StageScript::new`], and the snapshot through [`SchemaCatalog::from_lock`]
+    /// marker through [`Checkpoint::parse`] and the stage through [`StageScript::new`]
     /// — so a malformed artifact is rejected before any connection is opened. An
     /// artifact the caller does not bake leaves the lifecycle step it feeds
     /// switched off without disturbing the others.
-    ///
-    /// A combination the artifacts contradict is refused here as well. The
-    /// cold-start marker lands at the higher of the newest versioned migration
-    /// and the pruned boundary, and a marker recorded exactly at the boundary is
-    /// measured against the checkpoint hash, so a baked snapshot anchoring
-    /// another digest while no versioned migration rises above the boundary is
-    /// rejected with [`Error::IncoherentArtifacts`] before a connection is
-    /// opened — instead of initialising the target and rejecting it afterwards.
     pub fn from_artifacts(artifacts: EmbeddedArtifacts<'_>) -> Result<Self, Error> {
         let mut parsed = Vec::with_capacity(artifacts.tail.len());
         for &(script, sql) in artifacts.tail {
@@ -218,12 +185,7 @@ impl EmbeddedMigrations {
             Some(DeclarativeStage::new(scripts))
         };
 
-        let schema_hash = match artifacts.schema_lock {
-            Some(text) => Some(SchemaCatalog::from_lock(text)?.checksum()),
-            None => None,
-        };
-
-        Self::with_artifacts(parsed, checkpoint, stage, schema_hash)
+        Self::with_artifacts(parsed, checkpoint, stage)
     }
 
     /// Creates an empty embedded migration set.
@@ -232,7 +194,6 @@ impl EmbeddedMigrations {
             migrations: Arc::from(Vec::new()),
             checkpoint: None,
             stage: None,
-            schema_hash: None,
         }
     }
 
@@ -246,9 +207,9 @@ impl EmbeddedMigrations {
         Self::assemble(migrations)
     }
 
-    /// Assembles a pure-tail collection: no checkpoint, stage, or snapshot.
+    /// Assembles a pure-tail collection: no checkpoint or stage.
     fn assemble(migrations: Vec<Migration>) -> Result<Self, Error> {
-        Self::with_artifacts(migrations, None, None, None)
+        Self::with_artifacts(migrations, None, None)
     }
 
     /// Orders `migrations` in place, refuses two entries sharing one script name, and
@@ -257,24 +218,17 @@ impl EmbeddedMigrations {
     /// The scripts were parsed into a list this collection owns, so they are ordered
     /// where they already sit instead of being cloned into a second list, and the
     /// ordered result is shared behind an [`Arc`] rather than duplicated per run.
-    ///
-    /// A checkpoint and a snapshot that anchor different catalogs are refused
-    /// here too, since the disagreement is decidable from the artifacts alone:
-    /// [`validate_artifact_coherence`] holds the rule.
     fn with_artifacts(
         migrations: Vec<Migration>,
         checkpoint: Option<Checkpoint>,
         stage: Option<DeclarativeStage>,
-        schema_hash: Option<Checksum>,
     ) -> Result<Self, Error> {
         let ordered = Migrator::order_scripts(migrations);
         Migrator::validate_script_uniqueness(&ordered)?;
-        validate_artifact_coherence(&ordered, checkpoint.as_ref(), schema_hash)?;
         Ok(Self {
             migrations: Arc::from(ordered),
             checkpoint,
             stage: stage.map(Arc::new),
-            schema_hash,
         })
     }
 
@@ -303,11 +257,6 @@ impl EmbeddedMigrations {
         self.stage.as_deref()
     }
 
-    /// The digest anchored by the baked `schema.lock` snapshot, if any.
-    pub fn schema_hash(&self) -> Option<Checksum> {
-        self.schema_hash
-    }
-
     /// Converts this collection into a vector of [`Migration`]s.
     ///
     /// The returned vector owns a copy of every script body, while the collection
@@ -316,35 +265,25 @@ impl EmbeddedMigrations {
         self.migrations.to_vec()
     }
 
-    /// Runs the embedded lifecycle: the cold start, the migration tail, and the
-    /// final catalog check.
+    /// Runs the embedded lifecycle: the cold start and the migration tail.
     ///
     /// The whole lifecycle runs inside one exclusive span: the run lock is taken
     /// before the history is probed and released only when the run returns, so a
     /// concurrent lifecycle operation can neither initialise, drop, nor advance
     /// the schema at any point of the run — between the probe and the cold start,
-    /// between the cold start and the tail, or between the commit of the tail and
-    /// the final catalog comparison. The span also means the metadata table is
-    /// ensured once per run, and the history is read once, twice when the cold
+    /// between the cold start and the tail. The metadata table is ensured once
+    /// per run, and the history is read once, twice when the cold
     /// start recorded its marker.
     ///
     /// * An empty target is initialised from the baked declarative stage when the
     ///   collection carries one, exactly like [`cold_start`](crate::cold_start): the
     ///   stage marker sits at the newest version the collection declares, and it
-    ///   anchors the catalog digest the collection bakes — the `schema.lock` digest
-    ///   or the boundary hash of a baked checkpoint — so the versioned tail the
+    ///   records the ordered stage SQL digest, so the versioned tail the
     ///   stage already reflects does not run a second time; repeatable scripts
     ///   carry no version and therefore still run on top of the stage.
     /// * A baked `checkpoint.toml` marker arms [`Migrator::with_checkpoint`], so a
     ///   target sitting below the pruned boundary is rejected instead of being
     ///   advanced by a partial tail.
-    /// * A baked `schema.lock` snapshot anchors the digest the catalog the run
-    ///   produced is compared against once every script has been applied; a
-    ///   divergence is reported as [`Error::SchemaHashMismatch`]. The comparison
-    ///   reads the catalog inside the span the run opened at entry, so the schema
-    ///   cannot move between the commit of the tail and the digest read, and a
-    ///   divergence describes the scripts this run applied rather than damage a
-    ///   concurrent lifecycle operation could have caused.
     ///
     /// The script checks of the run — two entries sharing one script name or one
     /// version, a metadata value wider than its column — read the migration list
@@ -387,8 +326,7 @@ impl EmbeddedMigrations {
         let mut cold_start_time = 0;
 
         // The whole lifecycle runs inside one exclusive span: the probe, the cold
-        // start, the tail, and the final comparison all observe the same history
-        // and the same schema under the same lock.
+        // start and the tail observe the same history under the same lock.
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -423,8 +361,6 @@ impl EmbeddedMigrations {
         report.applied_count = tail.applied_count;
         report.total_time_ms = tail.total_time_ms + cold_start_time;
 
-        self.verify_catalog_guarded(&mut guard)?;
-
         Ok(report)
     }
 
@@ -452,52 +388,15 @@ impl EmbeddedMigrations {
     /// higher, and `0` for a collection declaring neither. Repeatable migrations
     /// carry no version, so they stay outside the boundary and run after the cold
     /// start has created the stage.
-    ///
-    /// The value comes from [`marker_version_of`], which the constructor shares:
-    /// the refusal of incoherent artifacts asks the same question about the
-    /// scripts a collection is about to own.
     fn marker_version(&self) -> Result<MigrationVersion, Error> {
         marker_version_of(&self.migrations, self.checkpoint.as_ref())
-    }
-
-    /// Compares the catalog the run produced against the baked digest.
-    ///
-    /// The caller holds the exclusive run lock for the whole lifecycle, so the
-    /// digest is read inside the very span that probed the history, initialised
-    /// the target, and applied the tail: a concurrent `clean` or `migrate` cannot
-    /// drop or advance the schema between the commit of the tail and the
-    /// comparison. A collection that bakes no digest returns before the catalog is
-    /// read.
-    ///
-    /// A backend able to introspect itself reports the digest of the catalog it
-    /// really holds; one that cannot reports nothing, which leaves the anchor
-    /// unverified instead of rejecting a schema the backend never described.
-    fn verify_catalog_guarded<B: MigrationBackend>(
-        &self,
-        guard: &mut LockGuard<'_, B>,
-    ) -> Result<(), Error> {
-        let Some(expected) = self.schema_hash else {
-            return Ok(());
-        };
-
-        let Some(actual) = guard.catalog_checksum()? else {
-            return Ok(());
-        };
-        if actual == expected {
-            return Ok(());
-        }
-
-        Err(Error::SchemaHashMismatch {
-            expected_hash: expected.to_hex(),
-            actual_hash: actual.to_hex(),
-        })
     }
 
     /// Runs the embedded lifecycle on a dedicated blocking thread.
     ///
     /// Delegates to the guard-free core of [`migrate`](Self::migrate), so the whole
-    /// protocol — cold start, checkpoint boundary, tail, and final catalog check —
-    /// runs off the runtime's worker threads.
+    /// protocol — cold start, checkpoint boundary and tail — runs off the
+    /// runtime's worker threads.
     ///
     /// The backend is moved into the blocking task and handed back together with
     /// the outcome: a successful run returns it with the report, a failed run
@@ -647,9 +546,7 @@ impl EmbeddedMigrations {
 ///
 /// That is the newest versioned migration or the pruned boundary, whichever is
 /// higher, and `0` for a collection declaring neither: repeatable scripts carry
-/// no version, so they stay outside the boundary. The constructor asks the same
-/// question about the scripts a collection is about to own, so the two cannot
-/// disagree about where the marker lands.
+/// no version, so they stay outside the boundary.
 fn marker_version_of(
     migrations: &[Migration],
     checkpoint: Option<&Checkpoint>,
@@ -665,44 +562,6 @@ fn marker_version_of(
         Some(version) => Ok(version),
         None => "0".parse(),
     }
-}
-
-/// Refuses baked artifacts that describe two different catalogs.
-///
-/// The refusal covers the disagreement decidable from the artifacts alone. When
-/// a collection bakes both a boundary marker and a snapshot, the cold-start
-/// marker lands where [`marker_version_of`] puts it, and the boundary check
-/// measures a marker recorded exactly at
-/// [`Checkpoint::pruned_up_to_version`] against [`Checkpoint::schema_hash`]. A
-/// versioned migration above the boundary moves the marker past it, where the
-/// checkpoint no longer describes the schema, so the marker is never measured
-/// and the disagreement is legitimate. With the marker at the boundary, two
-/// different digests mean the cold start would record the snapshot digest at a
-/// version measured against the checkpoint hash, and every run after it would be
-/// rejected — so the combination is refused here, before a connection is opened.
-fn validate_artifact_coherence(
-    migrations: &[Migration],
-    checkpoint: Option<&Checkpoint>,
-    snapshot: Option<Checksum>,
-) -> Result<(), Error> {
-    let (Some(checkpoint), Some(snapshot)) = (checkpoint, snapshot) else {
-        return Ok(());
-    };
-
-    let marker_version = marker_version_of(migrations, Some(checkpoint))?;
-    if marker_version != *checkpoint.pruned_up_to_version() {
-        return Ok(());
-    }
-
-    if snapshot == checkpoint.schema_hash() {
-        return Ok(());
-    }
-
-    Err(Error::IncoherentArtifacts {
-        pruned_up_to_version: checkpoint.pruned_up_to_version().to_string(),
-        snapshot_hash: snapshot.to_hex(),
-        checkpoint_hash: checkpoint.schema_hash().to_hex(),
-    })
 }
 
 impl Deref for EmbeddedMigrations {

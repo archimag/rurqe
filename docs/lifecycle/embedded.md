@@ -49,8 +49,8 @@ does not change an already built binary.
 ## Include migrations in the application
 
 Create a PostgreSQL pool for the database the application uses, and embed the
-project's migration artifacts. The example names a repository fixture so it
-compiles without connecting to a database during documentation checks; replace
+project's migration scripts, stage, and checkpoint. The example names a repository
+fixture so it compiles without connecting to a database during documentation checks; replace
 that path with the application's `rurqe.toml`:
 
 ```rust,no_run
@@ -120,11 +120,14 @@ initialize an empty database, if one was embedded. A count of zero is normal
 when the database is already current. An error stops the example before the
 application uses the pool; inspect the error and history instead of continuing.
 
-An empty database is initialized from the declarative stage if one was baked.
+When history is empty, the runner attempts initialization from the declarative
+stage if one was baked; missing history alone does not prove the database has
+no objects.
 Otherwise the versioned tail runs in version order, followed by changed
 repeatable scripts. A baked checkpoint refuses a database older than its
-pruned boundary; a baked `schema.lock` checks the resulting catalog. An
-already migrated database only applies pending changes.
+pruned boundary. `schema.lock` is not embedded or checked by migration; use
+explicit `cargo rurqe verify` to compare the selected live catalog with the
+snapshot. An already migrated database only applies pending changes.
 
 ## Failed deployments
 

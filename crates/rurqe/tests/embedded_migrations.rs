@@ -84,7 +84,6 @@ fn a_baked_stage_cold_starts_an_empty_database_through_the_facade_connection() {
         tail: &[],
         checkpoint: None,
         stage: &[("users.sql", CREATE_USERS)],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -102,7 +101,7 @@ fn a_baked_stage_cold_starts_an_empty_database_through_the_facade_connection() {
     assert_eq!(cold_start.installed_rank, Some(1));
     assert!(report.applied_scripts.is_empty());
 
-    // The applied marker anchors the digest the client backend introspected,
+    // The applied marker anchors the ordered stage SQL digest,
     // and it is the only entry of a run that applied a stage.
     let history = backend.read_history().expect("the history is readable");
     assert_eq!(history.len(), 1);
@@ -110,7 +109,7 @@ fn a_baked_stage_cold_starts_an_empty_database_through_the_facade_connection() {
     assert!(marker.success);
     assert!(
         marker.checksum.is_some(),
-        "the marker anchors a catalog digest"
+        "the marker anchors a stage artifact digest"
     );
 }
 

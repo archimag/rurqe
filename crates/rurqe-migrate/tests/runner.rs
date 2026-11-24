@@ -450,7 +450,6 @@ fn a_baked_stage_cold_starts_an_empty_database_once() {
         tail: &[],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -485,7 +484,6 @@ fn the_stage_marker_closes_every_baked_migration() {
         tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
         checkpoint: None,
         stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -534,7 +532,6 @@ fn a_baked_checkpoint_rejects_a_target_below_the_pruned_boundary() {
         tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
         checkpoint: Some(marker.as_str()),
         stage: &[],
-        schema_lock: None,
     })
     .expect("valid artifacts");
 
@@ -559,43 +556,20 @@ fn a_baked_checkpoint_rejects_a_target_below_the_pruned_boundary() {
 
 #[test]
 fn a_baked_snapshot_anchors_the_catalog_of_the_run() {
-    use rurqe_migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations, SchemaCatalog};
+    use rurqe_migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations};
 
-    let snapshot = SchemaCatalog::default().to_lock();
-    let digest = SchemaCatalog::default().checksum();
-
-    let artifacts = EmbeddedArtifacts {
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
         tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
         checkpoint: None,
         stage: &[],
-        schema_lock: Some(snapshot.as_str()),
-    };
+    })
+    .expect("valid artifacts");
+    let mut backend = InMemoryBackend::new();
+    backend.catalog_checksum = Some(Checksum::of(b"foreign objects"));
 
-    let mut matching = InMemoryBackend::new();
-    matching.catalog_checksum = Some(digest);
-    EmbeddedMigrations::from_artifacts(artifacts)
-        .expect("valid artifacts")
-        .migrate(&mut matching)
-        .expect("the catalog matches the baked snapshot");
-    assert_eq!(matching.history.len(), 1);
-
-    let mut diverged = InMemoryBackend::new();
-    diverged.catalog_checksum = Some(Checksum::of(b"diverged"));
-    let error = EmbeddedMigrations::from_artifacts(artifacts)
-        .expect("valid artifacts")
-        .migrate(&mut diverged)
-        .expect_err("the diverged catalog is reported");
-
-    match error {
-        Error::SchemaHashMismatch {
-            expected_hash,
-            actual_hash,
-        } => {
-            assert_eq!(expected_hash, digest.to_hex());
-            assert_eq!(actual_hash, Checksum::of(b"diverged").to_hex());
-        }
-        other => panic!("expected SchemaHashMismatch, got {other:?}"),
-    }
+    let report = embedded.migrate(&mut backend).expect("SQL succeeds");
+    assert_eq!(report.applied_count, 1);
+    assert_eq!(backend.history.len(), 1);
 }
 
 #[test]
@@ -634,7 +608,6 @@ fn malformed_artifacts_are_rejected_before_a_connection_is_opened() {
         tail: &[],
         checkpoint: Some("[checkpoint]\npruned_up_to_version = \"1\"\n"),
         stage: &[],
-        schema_lock: None,
     })
     .expect_err("a marker without a hash is rejected");
 

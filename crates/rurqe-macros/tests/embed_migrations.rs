@@ -19,7 +19,7 @@
 //! parenthesized expression, so a test drives it as the scrutinee of a `match` and
 //! another leaves it standing alone as a statement.
 
-use rurqe::migrate::{Checkpoint, EmbeddedMigrations, SchemaCatalog};
+use rurqe::migrate::{Checkpoint, EmbeddedMigrations};
 use rurqe_macros::embed_migrations;
 
 /// The scripts the configuration of this crate declares, in the canonical order
@@ -43,7 +43,6 @@ fn discovery_resolves_the_configuration_of_the_calling_crate() {
     // optional artifact stays switched off.
     assert!(embedded.checkpoint().is_none());
     assert!(embedded.stage().is_none());
-    assert!(embedded.schema_hash().is_none());
 }
 
 #[test]
@@ -85,9 +84,7 @@ fn every_artifact_the_configuration_declares_is_baked() {
     let scripts: Vec<&str> = stage.scripts().iter().map(|script| script.name()).collect();
     assert_eq!(scripts, ["users.sql"]);
 
-    let snapshot = include_str!("fixtures/guarded/rurqe/schema.lock");
-    let catalog = SchemaCatalog::from_lock(snapshot).expect("the fixture snapshot is valid");
-    assert_eq!(embedded.schema_hash(), Some(catalog.checksum()));
+    // The fixture's schema.lock is not an input of this macro.
 }
 
 /// The expansion is one expression, so a call parses where a plain expression

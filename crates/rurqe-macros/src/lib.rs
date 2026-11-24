@@ -235,14 +235,14 @@ pub fn sql_type(input: TokenStream) -> TokenStream {
 ///
 /// Only raw text: the `(file name, SQL text)` pairs of the top-level `*.sql`
 /// scripts of the migration directory, the text of the `checkpoint.toml` marker
-/// guarding that tail, the `(file name, DDL text)` pairs of the declarative stage,
-/// and the text of the `schema.lock` snapshot. An absent artifact leaves the
-/// lifecycle step it feeds switched off, while a `checkpoint-stage/` snapshot
-/// beside the marker is an artifact of the toolchain and never becomes a script.
+/// guarding that tail, and the `(file name, DDL text)` pairs of the declarative
+/// stage. An absent artifact leaves the lifecycle step it feeds switched off,
+/// while `schema.lock` is not included and a `checkpoint-stage/` snapshot beside
+/// the marker is an artifact of the toolchain and never becomes a script.
 ///
 /// Nothing is parsed while the macro expands: the collection is assembled through
 /// `::rurqe::migrate::EmbeddedMigrations::from_artifacts` at startup, which parses
-/// the scripts, the marker, the stage, and the snapshot with the parsers of the
+/// the scripts, the marker, and the stage with the parsers of the
 /// migration crate, so a malformed artifact stops the process instead of leaving a
 /// gap in the recorded history.
 ///

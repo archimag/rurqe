@@ -12,7 +12,7 @@ use rurqe_examples::example_pool;
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // ANCHOR: setup
-    // Embed the reviewed project artifacts in the binary at build time.
+    // Embed the reviewed scripts, stage, and checkpoint at build time.
     let embedded = embed_migrations!("tests/fixtures/rurqe.toml")?;
     let pool = example_pool();
 

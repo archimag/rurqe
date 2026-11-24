@@ -99,13 +99,11 @@ fn only_top_level_scripts_are_baked_in_lexicographic_order() {
     let baked = names(&artifacts.tail);
     let marker = artifacts.checkpoint.clone();
     let staged = names(&artifacts.stage);
-    let snapshot = artifacts.schema_lock.clone();
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(baked, ["V1__init.sql", "V2__orders.sql"]);
     assert_eq!(marker, Some(root.join("migrations/checkpoint.toml")));
     assert!(staged.is_empty(), "the stage directory does not exist");
-    assert_eq!(snapshot, Some(root.join("rurqe/schema.lock")));
 }
 
 #[test]
@@ -333,7 +331,6 @@ fn every_artifact_is_included_from_its_absolute_path() {
             name: "users.sql".to_owned(),
             path: PathBuf::from("/s/users.sql"),
         }],
-        schema_lock: Some(PathBuf::from("/m/schema.lock")),
         configuration: Some(PathBuf::from("/m/rurqe.toml")),
     };
 
@@ -343,7 +340,6 @@ fn every_artifact_is_included_from_its_absolute_path() {
     assert!(rendered.contains(r#"include_str!("/m/V1__init.sql")"#));
     assert!(rendered.contains(r#"include_str!("/m/checkpoint.toml")"#));
     assert!(rendered.contains(r#"include_str!("/s/users.sql")"#));
-    assert!(rendered.contains(r#"include_str!("/m/schema.lock")"#));
     assert!(rendered.contains(r#"include_str!("/m/rurqe.toml")"#));
     assert!(
         rendered.starts_with("({") && rendered.ends_with("})"),
@@ -366,7 +362,7 @@ fn an_absent_artifact_renders_as_none() {
 
     let rendered: String = render(&artifacts).to_string().split_whitespace().collect();
 
-    assert_eq!(rendered.matches("Option::None").count(), 2);
+    assert_eq!(rendered.matches("Option::None").count(), 1);
     assert!(rendered.contains("stage:&["));
     // The only inclusion is the baked script: a configuration the bake never read
     // contributes no input of its own.
@@ -419,7 +415,6 @@ fn the_bake_order_is_lexicographic_while_the_run_order_is_versioned() {
             tail: &tail_pairs,
             checkpoint: None,
             stage: &stage_pairs,
-            schema_lock: None,
         })
         .expect("the planned artifacts are valid");
 
@@ -463,18 +458,18 @@ fn a_checkpoint_path_that_is_a_directory_is_rejected() {
 }
 
 #[test]
-fn a_schema_lock_path_that_is_a_directory_is_rejected() {
+fn a_schema_lock_path_that_is_a_directory_is_not_inspected() {
     let root = temporary_directory("snapshot-directory");
     write(&root.join("migrations/V1__init.sql"), "SELECT 1;");
     std::fs::create_dir_all(root.join("rurqe/schema.lock"))
         .expect("create the entry occupying the snapshot path");
 
-    let error = plan(&fixture_configuration("migrations", "schema"), &root, None)
-        .expect_err("a directory cannot be baked as the catalog snapshot");
+    let artifacts = plan(&fixture_configuration("migrations", "schema"), &root, None)
+        .expect("a catalog snapshot is not a migration artifact");
+    let tail = names(&artifacts.tail);
     let _ = std::fs::remove_dir_all(&root);
 
-    assert!(error.contains("schema.lock"), "{error}");
-    assert!(error.contains("not a regular file"), "{error}");
+    assert_eq!(tail, ["V1__init.sql"]);
 }
 
 #[cfg(unix)]

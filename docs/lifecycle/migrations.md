@@ -403,10 +403,9 @@ schemas = ["auth", "billing"]
 * `--schema <name>` wins over the configuration file, and the libpq default
   `public` applies when neither names a primary schema.
 
-`migrate up` compares the summed catalog of the whole selection against a
-checkpoint boundary, so the schema a project declares here is the schema the
-boundary guard measures. `baseline` records no catalog digest and takes no schema
-selection.
+The schema selection applies to catalog-based tooling such as `verify`; migration
+checks the recorded version against the checkpoint boundary, not the live catalog.
+`baseline` records no catalog digest.
 
 ## Applying pending migrations
 
@@ -435,7 +434,7 @@ A run that finds nothing pending reports `Applied 0 migration(s) in 0 ms`.
 | Option | Effect |
 |---|---|
 | `--database-url <url>` | The database to advance. Falls back to `DATABASE_URL`. |
-| `--schema <name>` | The primary schema whose catalog digest the checkpoint guard compares; the secondary schemas come from `schemas` in `rurqe.toml`. |
+| `--schema <name>` | The primary schema selection for the invocation; migration does not compare its catalog digest. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The checkpoint marker belongs to the stage-based lifecycle: a project that pruned
@@ -487,8 +486,8 @@ the table whenever the recorded history stops below it:
 The rows above the line stay `Pending`, because a status describes the recorded
 history rather than the run: what the notice adds is the reason the next `up` stops
 instead of applying them. A target at or above the boundary is not refused by its
-recorded history and gets no such line; a live catalog that drifted from the
-anchored digest is measured by the run itself.
+recorded history and gets no such line; catalog drift is checked separately with
+`cargo rurqe verify`.
 ## Repairing the history
 
 ```bash
@@ -685,6 +684,9 @@ already opens.
 * A binary runs the scripts it was built from. A script edited after the build
   reaches the database only once the binary is rebuilt, and the digest recorded
   is computed from the text the binary executed.
+* `embed_migrations!` includes the tail, stage, and checkpoint, not `schema.lock`.
+  Rebuild existing binaries to adopt this contract. Existing snapshots and history
+  records need no rewrite; catalog comparison remains an explicit `verify` action.
 
 Embedding belongs to the runtime of an application, and it replaces neither the
 directory nor the toolchain: the directory is where a change is written and
