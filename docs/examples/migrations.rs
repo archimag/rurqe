@@ -16,11 +16,8 @@ async fn main() -> Result<(), Error> {
     let embedded = embed_migrations!("tests/fixtures/rurqe.toml")?;
     let pool = example_pool();
 
-    // Constructing the adapter blocks while checking out a pooled connection.
-    let migration_pool = pool.clone();
-    let backend = tokio::task::spawn_blocking(move || PgAsyncMigrationBackend::from_pool(migration_pool))
-        .await
-        .map_err(|error| Error::Backend(error.to_string()))??;
+    // The adapter checks out a connection without blocking the Tokio worker.
+    let backend = PgAsyncMigrationBackend::from_pool_async(pool.clone()).await?;
     // ANCHOR_END: setup
 
     // ANCHOR: status

@@ -47,11 +47,11 @@ Configure credentials, TLS and schema selection for your deployment. When the
 project uses schemas other than `public`, select the same schemas in the
 migration backend with `with_schemas`.
 
-Constructing the backend waits for a pool checkout, so the example does it in
-`spawn_blocking`. The `*_async` methods then run the blocking migration
-protocol off the Tokio worker thread. They return a pair: the operation's
-`Result` and an optional backend for a subsequent operation. A task that
-failed before returning cannot return its backend.
+`from_pool_async` checks out a connection without blocking the Tokio worker.
+The `*_async` methods run the migration protocol off the Tokio worker thread.
+They return a pair: the operation's `Result` and an optional backend for a
+subsequent operation. A task that failed before returning cannot return its
+backend.
 
 ## Inspect migration status
 

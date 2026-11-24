@@ -601,6 +601,18 @@ impl PgAsyncMigrationBackend {
         ))
     }
 
+    /// Checks out a pooled connection without blocking a Tokio worker thread.
+    ///
+    /// Starting the migration worker waits for its connection, so the synchronous
+    /// constructor runs on a blocking thread. The returned backend can then be
+    /// passed to the `*_async` lifecycle methods of `EmbeddedMigrations`.
+    #[cfg(feature = "deadpool-postgres")]
+    pub async fn from_pool_async(pool: crate::PgAsyncPool) -> Result<Self, Error> {
+        tokio::task::spawn_blocking(move || Self::from_pool(pool))
+            .await
+            .map_err(backend_failure)?
+    }
+
     /// Starts the worker thread and wraps it in the backend.
     fn bootstrap(boot: Boot) -> Result<Self, Error> {
         Ok(PgAsyncMigrationBackend {

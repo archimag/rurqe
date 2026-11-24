@@ -1210,7 +1210,9 @@ mod async_backend {
             .build()
             .expect("a one-connection pool builds");
 
-        let mut backend = PgAsyncMigrationBackend::from_pool(PgAsyncPool::new(pool))
+        let mut backend = runtime.block_on(PgAsyncMigrationBackend::from_pool_async(
+            PgAsyncPool::new(pool),
+        ))
             .expect("the migration worker checks a connection out");
 
         let migrations = vec![
