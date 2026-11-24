@@ -13,40 +13,34 @@ models = [
   { model = "meta/muse-spark-1.3-contributor", alias = "Muse Spark"}
 ]
 
+[providers.openai]
+models = [
+  { model = "gpt-6-sol", alias = "GPT Sol" },
+  { model = "gpt-6-astra", alias = "GPT Astra" },
+  { model = "gpt-6-terra", alias = "GPT Terra" },
+  { model = "gpt-6-luna", alias = "GPT Luna" },
+]
+
+
 [models]
-# Semantic model roles: specialized domain roles instead of generic difficulty tiers.
-# `primary` is mandatory and must list at least one model; its first entry is the
-# active model in the idle state and the deterministic default for the other roles.
+
 repl = [
-  { model = "DeepSeek Flash" },
-  { model = "GLM" },
-  "Gemini Flash",
+  "GPT Sol",
+  { model = "GPT Astra", effort = "medium" },
 ]
-scribe = "Claude Haiku"    # history compaction, git squash commit messages, diff summarization
 
-# The coder list is the natural escalation ladder (level up): on verification
-# healing stalls or exhausted retries the turn advances to the next coder entry.
+scribe = "GPT Luna"
+
 coder = [
-  { model = "DeepSeek Flash", effort = "max", attempts = 2 },  
-  { model = "GLM", effort = "max", attempts = 2 },
-  { model = "Gemini Flash", level_up = false },
-  { model = "Claude Sonnet", level_up = false },
-  { model = "Muse Spark", level_up = false },
+  "GPT Sol",
 ]
 
-# Conceptual design, plan refinement, blocked-step replanning.
 architect = [
-  "GLM",
-  { model = "Gemini Flash", level_up = false },
-  { model = "Claude Sonnet", level_up = false }
+  { model = "GPT Astra", effort = "high" },
 ]
 
-# Automated code review of active context files.
 reviewer = [
-  "GLM",
-  "Gemini Argon",
-  "Claude Sonnet",
-  "Claude Opus"
+  { model = "GPT Astra", effort = "high" },
 ]
 
 auto_level_up = true

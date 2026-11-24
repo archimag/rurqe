@@ -26,7 +26,7 @@ publish = false
 # and `migrate` are named here as well, so no target depends on a default that
 # change.
 [dependencies]
-rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres", "r2d2", "migrate"] }
+rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres", "r2d2", "migrate", "tokio"] }
 # The pool is configured through the adapter itself and terminates TLS with the
 # driver's `NoTls` connector, so both crates are named directly.
 deadpool-postgres = "0.14"
