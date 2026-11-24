@@ -37,6 +37,7 @@ use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
 #[cfg(feature = "tokio-postgres")]
 mod async_adapter;
+mod clean;
 mod client;
 mod history;
 
@@ -332,6 +333,20 @@ impl MigrationBackend for PostgresMigrationBackend {
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
         read_history_rows(&mut self.client)
+    }
+
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        Ok(clean::inspect(&mut self.client, &self.selection)?.manifest())
+    }
+
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        let mut tx = self.client.transaction().map_err(backend_error)?;
+        let plan = clean::inspect(&mut tx, &self.selection)?;
+        for statement in plan.statements() {
+            tx.batch_execute(&statement).map_err(backend_error)?;
+        }
+        tx.commit().map_err(backend_error)?;
+        Ok(plan.manifest())
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {

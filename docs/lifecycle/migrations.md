@@ -516,6 +516,18 @@ them — and applies no migration afterwards, so the next run replays the whole
 tail against an empty history. The reset belongs to a test database whose schema
 the project rebuilds at will, not to a deployment.
 
+On PostgreSQL, `clean` drops every schema in the configured selection with
+`DROP SCHEMA IF EXISTS ... CASCADE` and recreates it in one transaction.
+`CASCADE` may also remove dependent objects outside the selected schemas;
+this command does not check who owns them. Previous schema grants are not
+restored. Reserved system schemas cannot be selected. The history table is
+resolved through the connection's `search_path`; if it resides outside the
+selection, the reset drops it separately. Without confirmation, the command
+lists the target schemas and any external history table without changing them.
+The confirmed reset holds the existing migration lock. A complete script set
+can then run again with `migrate up`. With a pruned checkpoint, an empty history
+still fails the boundary check: restore the database with `stage init` instead.
+
 ### The reset cycle
 
 A versioned script that already ran is reworked in place, and the database is

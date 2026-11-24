@@ -42,6 +42,7 @@ use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, ThreadSleeper};
 use crate::backend::sync_conn::PgConnection;
 use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
+use super::clean;
 use super::history::{
     delete_entry_sql, insert_entry_sql, update_checksum_sql, HISTORY_COLUMN_COUNT,
 };
@@ -156,6 +157,26 @@ impl<B: BorrowMut<postgres::Client>> MigrationBackend for PgConnectionMigrationB
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
         read_history_rows(self.connection.client_mut())
+    }
+
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        Ok(clean::inspect(self.connection.client_mut(), &self.selection)?.manifest())
+    }
+
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        self.connection
+            .repair_idle_session()
+            .map_err(backend_failure)?;
+        let mut guard = TransactionGuard::begin(&mut *self.connection).map_err(backend_failure)?;
+        let plan = clean::inspect(guard.client_mut(), &self.selection)?;
+        for statement in plan.statements() {
+            guard
+                .client_mut()
+                .batch_execute(&statement)
+                .map_err(backend_error)?;
+        }
+        guard.commit().map_err(backend_failure)?;
+        Ok(plan.manifest())
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {

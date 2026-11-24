@@ -31,10 +31,10 @@ use tokio::runtime::{Builder, Runtime};
 use crate::backend::async_conn::PgAsyncConnection;
 use crate::introspect::{decode_catalog, query_catalog_rows_async, DEFAULT_SCHEMA};
 
-use super::history::{
-    delete_entry_sql, insert_entry_sql, select_history_sql, update_checksum_sql,
-    HISTORY_COLUMN_COUNT,
-};
+mod history;
+mod worker_clean;
+
+use self::history::{read_history, record_entry, remove_entry, rewrite_checksum};
 use super::{
     apply_unlock_answer, backend_error, backend_failure, poll_advisory_lock,
     ADVISORY_LOCK_RETRY_INTERVAL, DEFAULT_ADVISORY_LOCK_TIMEOUT, MIGRATION_LOCK_ID,
@@ -114,6 +114,10 @@ enum Operation {
     EnsureSchemaHistoryTable,
     /// Reads every recorded history entry in installation order.
     ReadHistory,
+    /// Lists the selected schemas and any separately resolved history table.
+    CleanManifest(SchemaSelection),
+    /// Resets the selected schemas and history in one transaction.
+    Clean(SchemaSelection),
     /// Reports the digest of the selected schemas.
     CatalogChecksum(SchemaSelection),
     /// Takes the session-scoped migration advisory lock.
@@ -150,6 +154,8 @@ enum Response {
     Unit,
     /// The recorded history of the session.
     History(Vec<SchemaHistoryEntry>),
+    /// The targets of a clean.
+    Names(Vec<String>),
     /// The digest of the selected schemas.
     Checksum(Option<Checksum>),
 }
@@ -167,6 +173,13 @@ impl Response {
     fn history(self) -> Result<Vec<SchemaHistoryEntry>, Error> {
         match self {
             Response::History(entries) => Ok(entries),
+            _ => Err(unexpected_reply()),
+        }
+    }
+
+    fn names(self) -> Result<Vec<String>, Error> {
+        match self {
+            Response::Names(names) => Ok(names),
             _ => Err(unexpected_reply()),
         }
     }
@@ -332,6 +345,12 @@ fn perform(
             let entries = runtime.block_on(read_history(session.client()))?;
             Ok(Response::History(entries))
         }
+        Operation::CleanManifest(selection) => {
+            worker_clean::manifest(runtime, session, &selection)
+        }
+        Operation::Clean(selection) => {
+            worker_clean::reset(runtime, session, &selection)
+        }
         Operation::CatalogChecksum(selection) => {
             let client = session.client();
             let catalog = runtime.block_on(read_catalog(client, &selection))?;
@@ -475,69 +494,6 @@ async fn batch_execute(client: &tokio_postgres::Client, statement: &str) -> Resu
     client.batch_execute(statement).await.map_err(backend_error)
 }
 
-/// Reads and decodes the recorded history of `client`.
-async fn read_history(client: &tokio_postgres::Client) -> Result<Vec<SchemaHistoryEntry>, Error> {
-    let rows = client
-        .query(&select_history_sql(), &[])
-        .await
-        .map_err(backend_error)?;
-    super::decode_history_rows(&rows)
-}
-
-/// Records one history entry through the asynchronous client.
-async fn record_entry(
-    client: &tokio_postgres::Client,
-    entry: &SchemaHistoryEntry,
-) -> Result<(), Error> {
-    let sql = insert_entry_sql();
-    let version = entry.version.as_ref().map(ToString::to_string);
-    let checksum = entry.checksum.map(|checksum| checksum.to_hex());
-    let kind = entry.kind.as_str();
-
-    let params: [&(dyn tokio_postgres::types::ToSql + Sync); HISTORY_COLUMN_COUNT] = [
-        &entry.installed_rank,
-        &version,
-        &entry.description,
-        &kind,
-        &entry.script,
-        &checksum,
-        &entry.installed_on,
-        &entry.execution_time_ms,
-        &entry.success,
-    ];
-
-    client
-        .execute(&sql, &params)
-        .await
-        .map(|_| ())
-        .map_err(backend_error)
-}
-
-/// Drops the history entry recorded for `installed_rank`.
-async fn remove_entry(client: &tokio_postgres::Client, installed_rank: i64) -> Result<(), Error> {
-    let sql = delete_entry_sql();
-    client
-        .execute(&sql, &[&installed_rank])
-        .await
-        .map(|_| ())
-        .map_err(backend_error)
-}
-
-/// Rewrites the checksum recorded for `script`.
-async fn rewrite_checksum(
-    client: &tokio_postgres::Client,
-    script: &str,
-    checksum: &Checksum,
-) -> Result<(), Error> {
-    let sql = update_checksum_sql();
-    let hex = checksum.to_hex();
-    client
-        .execute(&sql, &[&hex, &script])
-        .await
-        .map(|_| ())
-        .map_err(backend_error)
-}
-
 /// Introspects the selected schemas through the asynchronous catalog queries.
 async fn read_catalog(
     client: &tokio_postgres::Client,
@@ -661,6 +617,15 @@ impl MigrationBackend for PgAsyncMigrationBackend {
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
         self.submit(Operation::ReadHistory)?.history()
+    }
+
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        self.submit(Operation::CleanManifest(self.selection.clone()))?
+            .names()
+    }
+
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        self.submit(Operation::Clean(self.selection.clone()))?.names()
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
